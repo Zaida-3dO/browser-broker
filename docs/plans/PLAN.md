@@ -218,6 +218,30 @@ So the contract is:
   path and it is meant to be used.
 - **Lease operations return inline.** They are tiny.
 
+### Evaluating inside a page is not running code inside the service
+
+Two parts of this plan pull against each other: the contract keeps `evaluate`, and the
+deliberately-absent list says no arbitrary script execution. Both are right about different things,
+and the line between them is **scope**.
+
+- **In scope: evaluation inside the page.** The expression runs in the page and can do what that
+  page's own scripts can do. It is the cheapest and most accurate way to read a computed style, a
+  contrast ratio, a box's geometry, spacing or line height — a few hundred tokens of structured data,
+  and *more* accurate than a model estimating them off a picture.
+- **Out of scope: code running in the service's own process**, with the automation library, the
+  filesystem and the network in reach. That is a different capability entirely and nothing exposes
+  it.
+
+**And the residual, stated rather than glossed.** On the signed-in browser, an expression evaluated
+in a page can read that page's own stored data, and no rule closes that without breaking the feature
+— a page's scripts reading their own storage is the platform working as designed. The position taken
+is that **a lease on the signed-in browser already grants the ability to act as the signed-in user**,
+which is what the lease is *for*, so evaluation widens nothing. What it could widen is what leaves no
+trace, and the answer to that is that every expression and the size of its result are recorded.
+Narrowly refusing the obvious storage accessors was considered and rejected as theatre: it stops
+nobody and it teaches a reader that the hole is closed. `SCHEMA.md` §3.10 puts the alternative — allow
+it only on the private browser — to the owner as a decision.
+
 ### A deliberately small surface
 
 Around ten tools, not forty. Every tool's description is resident in a connected agent's context on
@@ -310,14 +334,22 @@ This belongs here rather than in a separate tool because the service already hol
 already takes every capture, and is already the place a per-view identity has to be recorded. A
 baseline is pool state.
 
-Two things to be honest about, because they decide whether it earns its place on any given run:
+Three things to be honest about, because they decide whether it earns its place on any given run:
 
 - **It needs a stable baseline**, and it is **useless on a first-time review**, where there is
   nothing to compare against. It is a second-visit optimisation living inside a service whose other
   features are first-visit ones. That tension is real; the answer is that repeat review is the
-  common case, not that the tension is imaginary.
-- **Anti-aliasing, font rendering and animation cause false positives** without a tuned threshold, so
-  the threshold is configurable and the tuning is part of the work rather than an afterthought.
+  common case, not that the tension is imaginary. **Something has to bless that first baseline**, and
+  who is allowed to is an open decision — `SCHEMA.md` §1.8.
+- **Anti-aliasing and font rendering cause false positives** without a tuned threshold, so the
+  threshold is configurable, per baseline, and the tuning is part of the work rather than an
+  afterthought.
+- **Animation is a different problem and a threshold does not touch it.** A colour tolerance compares
+  pixels in place; it has nothing to say about a banner mid-fade, a transition in flight, a blinking
+  caret or an image that arrived a frame later. The answer is to settle the page before the shutter —
+  stop animations, hide the caret, wait for fonts — and to let a caller paint over areas that
+  legitimately move. Without that, the feature reports a change on every run forever, and an agent
+  either burns the tokens the feature exists to save or learns to ignore it.
 
 The comparison itself is a solved problem and gets reused from an existing pixel-diff library. The
 part that needs writing is **bounding-box extraction**: most libraries emit a mask or a count, and
@@ -466,16 +498,20 @@ compose at the orchestration level and nowhere else:
 
 ## Open questions for you
 
-The list is short, which is the point of having settled the rest.
+**They live in `SCHEMA.md`, where each one sits beside the thing it is about**, written as a block
+with the problem, the options and their real trade-offs, a recommendation, and what changes if you
+pick differently. `SCHEMA.md` indexes all eleven at the top.
 
-1. **The licence.** Not chosen here, because it is not a build's to choose. It has to be settled
+Two of them are worth naming here because they reach beyond a table:
+
+1. **Who creates the first baseline** (`SCHEMA.md` §1.8). Blessing one is a person's decision on the
+   operations surface, so as written, an agent's second visit to a view is refused until somebody has
+   stood between the two visits. The refusal itself is right — a comparison that quietly reports
+   "nothing changed" against nothing is worse than one that says it cannot. What is open is whether a
+   caller may bless one explicitly.
+2. **The licence.** Not chosen here, because it is not a build's to choose. It has to be settled
    before anything is published: a public repository with no `LICENSE` file grants its readers no
    rights at all, which is almost never what publishing was for.
-2. **How the one-live-claim-per-session constraint is enforced** — a hand-written unique index with
-   a documented exception in the schema-drift check, or serialised enforcement in the application.
-   Deliberately left to the pull request that lands it, because it should be decided with the actual
-   transaction in front of it rather than in the abstract. The one thing already decided is that it
-   will not be skipped: an unguarded read-then-write is not enforcement. `DECISIONS.md` §13b.
 
 Everything else the design interview raised is settled and recorded in `DECISIONS.md` §§13a–13d. The
 capture-policy numbers are **settled as provisional** rather than open: they are the starting
