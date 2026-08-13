@@ -621,7 +621,7 @@ shown cannot be edited on the surface the table exists to feed. Credentials belo
 
 **The rule in question:** a session may hold **at most one live lease**. Two more rules have the same
 shape: two live tab rows must never name the same physical tab, and a view may have at most one live
-baseline per breakpoint.
+baseline per browser, kind and breakpoint (§1.8).
 
 **The problem, from the beginning.** To grant a lease, the service checks whether that session
 already has one. So it reads: *"does a live lease exist for session S?"* The answer comes back no,
