@@ -274,6 +274,9 @@ the long edge, and a full-page capture of a long page is the worst offender ther
 **Nothing is ever refused on capture grounds.** Past the accounting threshold a capture is served
 with a loud warning that names the cheaper alternative — the snapshot or the evaluate that answers
 the same question. See `DECISIONS.md` §13d for why a warning beats a wall here.
+
+| Control | Lives in | Why there |
+|---|---|---|
 | Prefer a snapshot to a screenshot for anything structural | **Both** | The service makes the snapshot cheap and accounts for the screenshot; only the caller knows which question it is asking |
 | How many breakpoints, and which interaction states | **The caller** | The service has no concept of a "key view" |
 | Delegating the looking to a sub-agent, so images live and die in a context that is thrown away | **The caller** | An orchestration pattern, not a browser operation |
