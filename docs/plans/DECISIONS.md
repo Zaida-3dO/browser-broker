@@ -501,3 +501,7 @@ recommendation rather than a decision.
 5. **The partial-index question in §13b** — a hand-written migration with a documented drift-check
    exception, or serialised application-level enforcement. Owned by the pull request that lands the
    constraint.
+6. **The licence.** Deliberately not chosen here, because it is the owner's to choose and not a
+   detail a build decides by default. It has to be settled **before** the repository is published:
+   a public repository with no `LICENSE` file grants no rights to anyone who reads it, which is
+   almost never what publishing was for. Blocks `MILESTONES.md` #2.

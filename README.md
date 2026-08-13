@@ -42,4 +42,5 @@ Planning. Nothing is built yet. Read [`docs/plans/PLAN.md`](docs/plans/PLAN.md) 
 
 ## Licence
 
-MIT.
+Not chosen yet — see `docs/plans/DECISIONS.md` §14. A public repository with no `LICENSE` file grants
+no rights to anyone, so this is decided before the repository is published, not after.

@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "description": "Leases over tabs in a fixed set of browsers: bounded capacity, a queue, reclamation, and an enforced capture policy.",
-  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
