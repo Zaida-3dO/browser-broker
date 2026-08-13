@@ -4,9 +4,9 @@
 tabs**, queues callers when capacity is full, reclaims capacity from callers that die, and enforces a
 capture policy on everything that comes back out. The command you type is `broker`.
 
-The stack is settled at the design interview and recorded in `DECISIONS.md`; the shape these docs
-assume is a long-lived service over a relational store, with the image built in CI and **pulled**
-where it runs rather than built on the host.
+Node · TypeScript · Prisma · Postgres. A long-lived service process; the one visual surface is a
+read-only operations page served as static HTML by the HTTP adapter, with no application framework
+behind it. The image is built in CI and **pulled** where it runs, never built on the host.
 
 Plans live in [`docs/plans/`](docs/plans/): `PLAN.md` (how it works), `SCHEMA.md` (tables, tools,
 endpoints, commands, settings, guards), `DECISIONS.md` (why, including what was rejected),

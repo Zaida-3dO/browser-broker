@@ -260,24 +260,39 @@ a small piece of code, not a project.
 
 ## Where it runs
 
-**The service and the browsers run on the same machine. The database can be anywhere.**
+**One machine. The service, the browsers and the database all sit on the host that renders the
+pages.** No network dependency, nothing to reach across, nothing to be partitioned from.
 
 The automation tool the service drives is machine-local: it has no listening socket and no server
 mode, and its sessions persist because the browser processes stay up. A service on one machine
-therefore cannot drive a browser on another by shelling out to it, so "state in one place, execution
-in another" is satisfied by putting the **database** in the other place and keeping the whole service
-next to its browsers.
+therefore cannot drive a browser on another by shelling out to it — so the service has to live beside
+its browsers, and once it does, putting the database somewhere else buys nothing that a lease
+lasting ten minutes actually needs.
 
 That deletes an entire distributed-systems problem from the first version. A service that can only
 *ask* a remote agent to touch a browser has to invent its own remote-call protocol, its own liveness
 model and its own failure semantics before it can arbitrate anything.
 
-**The trade, stated plainly:** if the machine with the browsers reboots, arbitration goes down with
-them. That is acceptable — with no browsers there is nothing to arbitrate — and the lease table
-survives elsewhere, so state reconciles on restart.
+**The trade, stated plainly:** lease state lives and dies with the host. If that machine reboots,
+arbitration and its record go down together. That is acceptable — with no browsers there is nothing
+to arbitrate, and a lease is a short-lived fact, not an archive — but it is a real property being
+given up, and it is given up on purpose in exchange for the simplest thing that works.
 
-**The seam is pre-cut.** The browser driver sits behind an interface. If a second machine ever needs
-browsers, that interface grows a remote implementation and nothing else changes.
+**The seam is pre-cut, and it is now the only thing preserving the option.** The browser driver sits
+behind an interface. If a second machine ever needs browsers, that interface grows a remote
+implementation and nothing else changes.
+
+### The stack
+
+**Node and TypeScript, Prisma, Postgres.** Long-lived service process; the schema lands as one
+baseline migration and changes additively after that.
+
+**No application framework.** The only visual surface is a single read-only operations page — live
+claims, queue depth, tab budget, each claim's stated purpose, no controls and no sign-in — and that
+is one static HTML file served by the HTTP adapter, fetching the JSON endpoint that has to exist
+anyway and rendering it in the browser. A framework would add a build step, a dependency tree and a
+release surface to a page whose entire job is to display six numbers. If the page ever needs to be
+something else, that is a decision to make then, with a reason.
 
 ### One process, not one per connection
 
@@ -398,10 +413,13 @@ The research pass has a recommendation on each of these. They are recommendation
    yes* — the service refuses to operate on any browser it did not launch, full stop. It is a
    cleaner boundary than adopting it, and the cost of getting adoption wrong is somebody's real
    session.
-4. **The stack.** These documents assume a long-lived service in Node and TypeScript over a
-   relational store, because that is what the operations described need and what the automation tool
-   is distributed for. Settle it at the design interview before `SCHEMA.md` names a single column
-   type.
+4. **The capture-policy defaults.** Three numbers, and they set what every caller pays. *Recommended
+   as starting values: a long-edge ceiling of 1568 pixels* — the boundary of the cheaper vision tier,
+   so a capture above it costs roughly three times one below it for no gain on layout critique;
+   *a budget of twelve screenshots per lease*, warning at three-quarters; *and full-page capture off
+   by default*, because unbounded page height is what pushes an image over the ceiling far more often
+   than width does. All three are settings. **They should be replaced by the ladder's evidence rather
+   than defended** — that is what the ladder is for.
 
 ---
 
