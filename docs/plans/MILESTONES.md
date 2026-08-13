@@ -185,22 +185,31 @@ registering it fails.
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **31** | Capture pipeline: take, downscale to the ceiling, write, return `{path, width, height, bytes}` | 22 | |
-| **32** | Per-capture telemetry: dimensions, bytes, downscaled-from, estimated token cost | 31, 11 | |
-| **33** | Capture accounting per claim: **a strong warning, not a refusal**, naming the cheaper alternative — plus higher resolution as an explicit opt-in, so the cheap path needs no parameter | 31, 12 | |
-| **34** | Resolution-ladder harness and the one-off study; publish the chosen ceiling **with its evidence** | 32 | |
+| **31** | Capture pipeline: take, downscale to the tier, write, return `{path, width, height, bytes}`. **Three tiers, cheapest by default with no parameter**; the highest additionally requires a `reason`; full-page off by default | 22 | |
+| **32** | Per-capture telemetry: dimensions, bytes, downscaled-from, the tier, the escalation `reason`, estimated token cost | 31, 11 | |
+| **33** | Capture accounting per claim: **a loud warning, never a refusal**, naming the cheaper alternative | 31, 12 | |
+| **34** | Resolution-ladder harness and the one-off study; publish the chosen tiers **with their evidence**, superseding the provisional numbers | 32 | |
 
+> **#31 carries the lever, not #33.** The low default is what does nearly all the work, because most
+> callers never pass an optional parameter — so getting "cheapest tier when nothing is asked for"
+> right matters more than any threshold downstream of it (`DECISIONS.md` §13d). The mandatory
+> `reason` on the highest tier is not bureaucracy either: it is the only mechanism that produces
+> data about *why* anyone escalates, which is what #34 needs to tune the default.
+>
 > **#33's warning message is the mechanism, not decoration.** A bare "you have taken a lot of
 > captures" teaches a caller to ask for a bigger budget. A warning that names the snapshot or the
-> evaluate answering the same question teaches the thing the policy exists to teach. It is a warning
-> rather than a refusal on purpose: refusing mid-review strands work that is already half-done, and
-> the goal is to change the next capture, not to destroy the run (`DECISIONS.md` §13c).
+> evaluate answering the same question teaches the thing the policy exists to teach. **It never
+> becomes a refusal** — an agent stopped mid-run on a legitimate job concludes the service is an
+> obstacle, and a service that is occasionally expensive survives that where one that is occasionally
+> unusable does not.
 >
-> **#34 settles the defaults with evidence rather than defending them.** Expect more than one
-> threshold: text stops being legible before layout critique stops working.
+> **#34 settles the numbers with evidence rather than defending them.** The tiers that ship in #31
+> are provisional and are labelled as such everywhere. Expect more than one threshold: text stops
+> being legible before layout critique stops working, which is the property that makes a low default
+> push a caller toward the text-returning tools rather than merely make its pictures worse.
 
-**Milestone done when:** no capture can leave the service above the ceiling, and every one of them is
-accounted for.
+**Milestone done when:** the cheapest tier is what a caller gets for asking for nothing, every
+escalation is recorded with its reason, and no capture is ever refused.
 
 ---
 

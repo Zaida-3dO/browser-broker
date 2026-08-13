@@ -604,17 +604,62 @@ the cheaper alternative does that; a bare refusal teaches a caller to ask for a 
 
 ---
 
+## 13d. Capture policy, settled (2026-08-13)
+
+**This reverses the research recommendation**, which was a hard service-enforced ceiling with a
+refusal past a per-lease budget. What ships instead is a low default, an explicit opt-in to go
+higher, and a warning that never becomes a wall.
+
+### The tiers
+
+**Provisional defaults** — reasoned to, not measured, and the resolution-ladder study (`MILESTONES.md`
+#34) exists to settle them with evidence. The documents say "provisional" everywhere on purpose,
+because a number presented as settled fact stops being questioned.
+
+| Tier | Long edge | How a caller gets it |
+|---|---|---|
+| default | 1024 px | **passes nothing** |
+| `detail` | 1568 px | asks for it — the ceiling of the cheap vision tier |
+| `max` | 2576 px | asks for it **and gives a mandatory `reason`**, which is recorded |
+
+Full-page capture is off by default: unbounded page height crosses the long edge far more often than
+width does, and a full-page capture of a long page is the worst offender there is.
+
+### Why a default beats a ceiling
+
+**1. Defaults are a stronger lever than refusals.** Most callers never pass an optional parameter, so
+a low default does nearly all of the work of a ceiling without blocking anyone. And it removes the
+one failure mode that would genuinely kill this service: an agent stopped mid-run on a legitimate job
+concludes the service is an obstacle and starts looking for a way around it. A service that is
+occasionally expensive survives that; a service that is occasionally *unusable* does not.
+
+**2. An opt-in teaches something a refusal cannot.** Escalating to a higher tier is a deliberate act
+that lands in telemetry with its reason attached, so what accumulates is *who* escalates and *why* —
+which is precisely the data needed to tune the default. A refusal produces one fact: somebody hit a
+wall. It cannot distinguish a caller who needed the pixels from a caller who was being careless, and
+those want opposite responses.
+
+**3. The cheap path and the correct path coincide, and that is designed rather than lucky.** Text
+legibility breaks at a **higher** resolution than layout critique does — spacing, alignment and
+rhythm are judgeable on an image far too coarse to read the labels on. So a low default naturally
+pushes a caller that needs to *read* something toward the snapshot or the evaluate, which return text
+and cost almost nothing. The policy does not have to argue anyone into the cheaper tool; the default
+makes the expensive tool bad at the job the cheaper one is good at. **State it as a property, because
+a property survives someone raising the default and a coincidence does not.**
+
+### What is still enforced
+
+The default, the opt-in and the mandatory reason are all service-side, because the service takes the
+capture. What is given up is only the *refusal* — and giving that up is the point, not a concession.
+
+---
+
 ## 14. Still open
 
-1. **The capture-policy numbers.** The shape is settled (§13c); the arithmetic is not — what long
-   edge counts as "low", what the opt-in ceiling is, and how many captures precede the warning. All
-   are settings. **To be settled by the resolution ladder's evidence rather than argued**, which is
-   the entire reason the ladder is scheduled work. Expect more than one threshold: text stops being
-   legible before layout critique stops working.
-2. **The partial-index question in §13b** — a hand-written migration with a documented drift-check
+1. **The partial-index question in §13b** — a hand-written migration with a documented drift-check
    exception, or serialised application-level enforcement. Owned by the pull request that lands the
    constraint, decided with the transaction shape in front of it.
-3. **The licence.** Deliberately not chosen here, because it is the owner's to choose and not a
+2. **The licence.** Deliberately not chosen here, because it is the owner's to choose and not a
    detail a build decides by default. It has to be settled **before** the repository is published:
    a public repository with no `LICENSE` file grants no rights to anyone who reads it, which is
    almost never what publishing was for. Blocks `MILESTONES.md` #2.

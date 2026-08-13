@@ -37,8 +37,10 @@ Every table, every column, every constraint, and what each one is *for*. Expecte
   here.
 - **`events`** — append-only, one row per decision, **allow and deny alike**. A gate that only
   records refusals cannot answer "was this ever actually running".
-- **`captures`** — dimensions, bytes, what it was downscaled from, and an estimated token cost, so
-  the capture policy's defaults can be replaced by evidence.
+- **`captures`** — dimensions, bytes, what it was downscaled from, the tier it was taken at, the
+  mandatory `reason` where the highest tier was asked for, and an estimated token cost. This is the
+  table the resolution ladder reads to settle the provisional defaults with evidence
+  (`DECISIONS.md` §13d).
 - **`baselines`** — a baseline image per view and breakpoint, its identity, when it was promoted and
   from what, plus the comparison threshold in force for it (`DECISIONS.md` §13a).
 - **`settings`** — overrides only; the typed registry is declared in code so a fresh database boots
@@ -63,6 +65,12 @@ connected session's context on every turn.
 Includes the comparison operation for changed-region review: **one operation, not a family**
 (`DECISIONS.md` §13a). Baseline management belongs on the operations surface rather than in the
 agent-facing tool list.
+
+The capture tool's argument list is where §13d lands concretely: the resolution tier is **optional
+and defaults to the cheapest**, the highest tier additionally requires a `reason`, `full_page`
+defaults to off, and **no argument combination produces a refusal on capture grounds** — past the
+accounting threshold the result carries a warning naming the snapshot or evaluate that answers the
+same question.
 
 This section also carries the **deliberately absent** list, which is part of the contract: nothing
 browser-scoped and destructive, nothing that attaches to a browser the service did not launch,

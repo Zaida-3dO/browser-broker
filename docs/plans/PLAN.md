@@ -257,9 +257,23 @@ capture.
 | A **strong warning** rather than a refusal once a lease has taken a lot of captures, naming the cheaper alternative | **The service** | A refusal mid-review strands work that is already half-done; a warning that says what to do instead changes behaviour without destroying the run |
 | Full-page capture off by default | **The service** | Unbounded page height is what pushes an image over the expensive tier, more often than width |
 
-**The shape is settled; the numbers are not** — what counts as "low", what the opt-in ceiling is, and
-where the warning fires. Those are an open question below, and they should be settled by the ladder's
-evidence rather than argued.
+### The resolution tiers
+
+**Provisional defaults.** They are numbers somebody reasoned to, not numbers anybody measured, and
+the resolution-ladder study exists to settle them with evidence. Treat them as the starting position.
+
+| Tier | Long edge | How you get it |
+|---|---|---|
+| **default** | 1024 px | **Pass nothing.** This is the normal case and it requires no parameter at all |
+| **`detail`** | 1568 px | Asked for explicitly. The ceiling of the cheap vision tier |
+| **`max`** | 2576 px | Asked for explicitly, **and a `reason` string is mandatory** — which is recorded |
+
+**Full-page capture is off by default.** Unbounded page height is what actually pushes an image over
+the long edge, and a full-page capture of a long page is the worst offender there is.
+
+**Nothing is ever refused on capture grounds.** Past the accounting threshold a capture is served
+with a loud warning that names the cheaper alternative — the snapshot or the evaluate that answers
+the same question. See `DECISIONS.md` §13d for why a warning beats a wall here.
 | Prefer a snapshot to a screenshot for anything structural | **Both** | The service makes the snapshot cheap and accounts for the screenshot; only the caller knows which question it is asking |
 | How many breakpoints, and which interaction states | **The caller** | The service has no concept of a "key view" |
 | Delegating the looking to a sub-agent, so images live and die in a context that is thrown away | **The caller** | An orchestration pattern, not a browser operation |
@@ -451,16 +465,18 @@ compose at the orchestration level and nowhere else:
 
 The list is short, which is the point of having settled the rest.
 
-1. **The capture-policy numbers.** The shape is settled — low resolution by default with nothing to
-   pass, higher by explicit opt-in, a strong warning rather than a refusal. What is open is the
-   arithmetic: what long edge counts as "low", what the opt-in ceiling is, and how many captures a
-   lease takes before the warning fires. All are settings, so being wrong is cheap and reversible.
-   **They should be settled by the resolution ladder's evidence rather than argued**, which is the
-   entire reason the ladder is scheduled work — and the ladder should expect more than one
-   threshold, because text stops being legible before layout critique stops working.
-2. **The licence.** Not chosen here, because it is not a build's to choose. It has to be settled
+1. **The licence.** Not chosen here, because it is not a build's to choose. It has to be settled
    before anything is published: a public repository with no `LICENSE` file grants its readers no
    rights at all, which is almost never what publishing was for.
+2. **How the one-live-claim-per-session constraint is enforced** — a hand-written unique index with
+   a documented exception in the schema-drift check, or serialised enforcement in the application.
+   Deliberately left to the pull request that lands it, because it should be decided with the actual
+   transaction in front of it rather than in the abstract. The one thing already decided is that it
+   will not be skipped: an unguarded read-then-write is not enforcement. `DECISIONS.md` §13b.
+
+Everything else the design interview raised is settled and recorded in `DECISIONS.md` §§13a–13d. The
+capture-policy numbers are **settled as provisional** rather than open: they are the starting
+position, and the resolution ladder is scheduled to settle them with evidence.
 
 ---
 

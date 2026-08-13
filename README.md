@@ -22,8 +22,10 @@ account for what it costs.
 - **References, not payloads.** Screenshots and page snapshots are written to disk and returned as a
   path with its dimensions and size. An agent opens one only when it genuinely needs to look, so a
   capture is paid for once instead of on every subsequent turn.
-- **A capture policy that is enforced rather than recommended.** A resolution ceiling and a
-  per-lease screenshot budget are applied by the thing that takes the capture.
+- **A capture policy applied by the thing that takes the capture.** Screenshots come back at a low
+  resolution unless you ask for more, and asking for the most expensive tier costs a stated reason.
+  Nothing is ever refused — going over budget warns loudly and names the cheaper way to get the same
+  answer.
 - **Changed-region review.** Captures can be compared against a stored baseline for a view, and the
   regions that actually moved are returned as crops — so a repeat review looks at what changed
   instead of at everything.
