@@ -109,7 +109,7 @@ database overrides, and every service call can write a decision row.
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **12** | Capacity model: per-browser tab budget and the admission predicate | 10 | |
+| **12** | Capacity model: **one total tab budget across both browsers** and the admission predicate over it | 10 | |
 | **13** | Claim: atomic grant-or-queue, secret key issue, one live claim per session | 12 | |
 | **14** | Renew, plus the implicit renew on every keyed call | 13 | |
 | **15** | Release: terminal, closes exactly that claim's tabs, triggers the admission sweep | 13 | |
@@ -135,7 +135,7 @@ and every rejection test asserts the physical side-effect as well as the respons
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
 | **19** | Driver interface **+ a fake driver with a call log** — what makes a rejection test able to assert that nothing happened | 10 | |
-| **20** | Real driver over `@playwright/cli`: hold the two browsers, **explicit profile paths, never the default**, restart on crash | 19 | |
+| **20** | Real driver over `@playwright/cli`: hold the two browsers, **explicit profile directories, never a default path**, restart on crash. Ships the inward-isolation test — **starts cleanly while an unrelated browser already holds the default profile** | 19 | |
 | **21** | Tab lifecycle: open and close by opaque identifier, the identifier mapping, orphan sweep on restart | 20, 18 | |
 | **22** | Navigate and act, tab-addressed, snapshot-to-path on every mutation | 21 | |
 | **23** | Read: snapshot, console, network, cookie summary — all path-returning; **cookie values never returned** | 21 | |
@@ -145,10 +145,12 @@ and every rejection test asserts the physical side-effect as well as the respons
 > nothing but a service layer, and every rejection test written before it exists can only assert a
 > response — which is the assertion that proves the least. See `DECISIONS.md` §5.
 >
-> **#20's explicit profile paths are not a preference.** The default persistent profile path is not
-> documented as being keyed by session, so two persistent sessions may contend on one directory and
-> its lock file. Passing an explicit path costs nothing and removes the question
-> (`DECISIONS.md` §11).
+> **#20's explicit profile directories are a hard requirement, not a preference**, and the test that
+> proves it is the *inward* half of bidirectional isolation (`DECISIONS.md` §6a). A default profile
+> path is shared with anything else that also takes the default, and two processes on one profile
+> contend on its lock file — so an unrelated run that started first would stop this service starting
+> at all. "Do not disturb the wrong browser" cannot be tested; "starts while something else holds the
+> default profile" can, and that is the assertion this row owes.
 
 **Milestone done when:** a claim can open a tab, navigate it, act on it, read from it and close it,
 and nothing in the surface can touch a browser the service did not launch.
@@ -185,12 +187,14 @@ registering it fails.
 |---|---|---|---|
 | **31** | Capture pipeline: take, downscale to the ceiling, write, return `{path, width, height, bytes}` | 22 | |
 | **32** | Per-capture telemetry: dimensions, bytes, downscaled-from, estimated token cost | 31, 11 | |
-| **33** | Screenshot budget per claim: warn threshold, and a typed refusal that names the cheaper alternative | 31, 12 | |
+| **33** | Capture accounting per claim: **a strong warning, not a refusal**, naming the cheaper alternative — plus higher resolution as an explicit opt-in, so the cheap path needs no parameter | 31, 12 | |
 | **34** | Resolution-ladder harness and the one-off study; publish the chosen ceiling **with its evidence** | 32 | |
 
-> **#33's refusal message is the mechanism, not decoration.** A bare "budget exceeded" teaches a
-> caller to ask for a bigger budget. A refusal that names the snapshot or evaluate that answers the
-> same question teaches it the thing the policy exists to teach.
+> **#33's warning message is the mechanism, not decoration.** A bare "you have taken a lot of
+> captures" teaches a caller to ask for a bigger budget. A warning that names the snapshot or the
+> evaluate answering the same question teaches the thing the policy exists to teach. It is a warning
+> rather than a refusal on purpose: refusing mid-review strands work that is already half-done, and
+> the goal is to change the next capture, not to destroy the run (`DECISIONS.md` §13c).
 >
 > **#34 settles the defaults with evidence rather than defending them.** Expect more than one
 > threshold: text stops being legible before layout critique stops working.

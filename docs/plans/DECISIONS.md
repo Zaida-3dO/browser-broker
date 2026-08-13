@@ -156,17 +156,44 @@ per tab rather than by a browser per caller, so ten concurrent tabs is a gigabyt
 number of connected clients. **Process count is bounded by configuration, not by how many clients
 connect** — that is the property, and it is the one worth defending against every future convenience.
 
+### The tab budget is a single total, not an allowance per browser
+
+**One counter across both browsers. Default 15.** A claim is admitted if
+`total open tabs + requested ≤ budget`, whichever browser it asked for.
+
+The scarce resource is renderer processes and the memory they hold, and a renderer costs the same
+whichever browser owns it. A per-browser cap would ration something that is not the scarce thing: it
+would refuse a fourteenth regular tab while a private allowance sat unused — a refusal that protects
+nothing and costs a caller its work. With one counter the split falls out of demand (14/1, 5/10,
+whatever the day is), and there is exactly one number to reason about, which is the one that maps to
+memory.
+
+**Rejected: per-browser caps.** They look like fairness and are actually two budgets, each of which
+can be exhausted while the machine is idle.
+
 **The behaviour change this implies must be stated rather than discovered.** "Private" means *not
 signed in as the operator*. It does **not** mean isolated from other callers: tabs in the private
 browser share its cookie jar, so two concurrent reviewers are clean-room relative to the regular
 profile and not relative to each other. Fine for design review. Not fine for multi-account work or
 two parallel sign-in flows.
 
-**The escape hatch, and its bounds.** A genuinely isolated third browser exists for the duration of
-one claim, explicitly requested and explicitly released. It is granted, never defaulted. Unbounded it
-re-opens "browser count scales with caller count", which is precisely what this decision exists to
-guarantee, so if it ships it ships with its own hard cap. Whether it lands in the first version is
-open (§14).
+**Rejected: an isolated third browser as an escape hatch.** An earlier draft held one open — granted
+for the duration of a single claim, explicitly requested and explicitly released — for the
+multi-account case. It is **dropped, not deferred**, and the reasoning is better than the exception
+was:
+
+- **Sequential execution already solves it.** Two independent authenticated sessions can be run one
+  after the other. The escape hatch buys parallelism, not capability.
+- **An exception that mints a browser on demand undoes the bound it sits inside.** "Exactly two,
+  except when someone asks" is the same thing as "as many as are asked for", with a politer name and
+  a delay before anyone notices.
+- **A capability held open in advance, on the chance it might be wanted, is a surface with no
+  caller.** If a case genuinely arises, it is a decision to take then, with the real requirement in
+  front of it rather than an imagined one.
+
+**Exactly two browsers, no exceptions, ever.** What is given up is stated rather than buried:
+**testing two independent authenticated sessions in parallel is not possible through this service, by
+design.**
 
 **Rejected: a library of purpose-named profiles**, one per site or per account. It sounds like it
 buys isolation and mostly buys processes: one persistent browser holds many sign-ins simultaneously,
@@ -178,6 +205,42 @@ accident.
 **One caveat no design removes:** per-tab session storage is per-tab in every browser, whatever is on
 disk. A site binding its session to it loses that on a new tab. The service reports this as a field
 on the response rather than pretending to guard it.
+
+---
+
+## 6a. Bidirectional isolation — a first-class property, not a rule about behaviour
+
+**The service runs its own two browsers, and is isolated from everything else on the host in both
+directions.**
+
+Other browsers exist on the same machine. A person's own. Automation that is not part of this system
+at all, which typically takes the default profile. **The service does not manage any of them, and
+leaves them entirely free for whoever is using them.** It runs its own.
+
+**Outward: nothing this service does can disturb a browser it does not own.** It never adopts,
+attaches to, closes or reaches any process it did not start, and it refuses any operation naming one.
+
+**Inward: nothing outside can block this service either.** This half is the one that changes the
+design, because it is not a rule about what the service does — being blocked is something done *to*
+it, and no amount of careful behaviour prevents it. Three consequences, all structural:
+
+- **The service always launches with an explicit profile directory of its own, and never relies on a
+  default path.** This is a **hard requirement**, not a precaution. The default persistent profile
+  location is shared by anything else that also takes the default, and two processes on one profile
+  contend on its lock file — so an unrelated run that happened to start first would stop the service
+  starting at all. That is precisely the inward failure, arriving through the most ordinary door
+  there is.
+- **No shared lock file, no shared port, no shared temporary directory.** Anything the service has to
+  acquire, it acquires somewhere it owns.
+- **No assumption that a browser it did not launch is absent.** The service has to be correct on a
+  machine where three unrelated browsers are already running, because it never looks for "the
+  browser" — only for the ones it started.
+
+**Why this framing rather than a list of things not to touch:** a list of prohibitions can only be
+reviewed, and reviews are exactly the mechanism this design is trying to stop depending on. *"Do not
+disturb the wrong browser"* has no test. *"Starts successfully while an unrelated process holds the
+default profile"* is a test, and it fails loudly the day someone removes the explicit path because it
+looked redundant.
 
 ---
 
@@ -278,7 +341,7 @@ fact and a plan.
 | **The automation tool is machine-local** | No listening socket, no server mode. Sessions persist because processes stay up; attaching over a debugging port is a client-side attach. §8 rests entirely on this |
 | **A stdio server is spawned per connecting session; an HTTP server is not** | The single structural reason the primary adapter is HTTP. It is also what makes a cross-caller ownership check meaningful — with private browsers per session there is nothing for one to protect |
 | **The raw tool surface is large and includes credential operations** | Roughly fifty commands, including arbitrary code evaluation, whole storage-state save and load, full cookie and storage CRUD, and attach-to-an-external-browser. This is why §2's corollary is a precondition rather than hygiene |
-| **The default persistent profile path is not documented as session-keyed** | Two persistent sessions may therefore contend on the same profile directory and its lock file. **Unverified — needs a live run.** The mitigation is free and adopted regardless: always pass an explicit profile path, never rely on the default |
+| **The default persistent profile path is not documented as session-keyed** | Two processes taking the default therefore contend on one profile directory and its lock file. **Unverified — needs a live run**, and it does not matter that it is unverified, because §6a makes an explicit profile path a hard requirement either way: relying on a default is how something outside the service blocks it from starting |
 | **High-resolution vision tiers bill an image at up to roughly 4,800 tokens** at a 2576-pixel long edge, against roughly 1,600 at the 1568-pixel tier | Why the ceiling is a service-enforced number rather than advice, and why full-page capture is off by default: unbounded page height crosses the boundary more often than width |
 | **A page snapshot is text** | Headings, labels, alternative text, focus order, element geometry and touch-target size are all readable from the accessibility tree, and a large share of a design-review checklist is measurable from the document rather than from a picture |
 | **Changed-region extraction is not off-the-shelf** | Diff libraries emit a mask, a count or a boolean; test-runner-shaped tools are built to *fail a build*, not to hand crops to a reader. Connected components over the mask is the missing piece and it is small |
@@ -482,26 +545,76 @@ written for it.
 
 ---
 
+## 13c. Design interview, round three (2026-08-13)
+
+Three rulings. One changed the capacity model, one deleted a planned feature, and one corrected a
+premise the research had wrong.
+
+### The tab budget is one total, not one per browser
+
+**Settled: a single counter across both browsers, default 15.** Reasoning and the rejected
+alternative are in §6. The short version: the scarce thing is renderer processes, a renderer costs
+the same in either browser, and two budgets can each be exhausted while the machine is idle.
+
+**Consequence for the work queue:** the capacity pull request builds one admission predicate over one
+counter, not a per-browser allowance table.
+
+### The isolated third browser is dropped, not deferred
+
+**Settled: exactly two browsers, no exceptions, ever.** Reasoning in §6, including the plain
+statement of what it costs — two independent authenticated sessions cannot run in parallel through
+this service, and the answer is to run them sequentially.
+
+Worth recording *why this is a better outcome than deferring it*, because "we'll add it if anyone
+asks" sounds like the safe option and is not. A deferred exception still shapes the design: every
+capacity decision has to leave room for it, every count is really a count-plus-maybe-one, and the
+first time anything is tight somebody argues the exception is the fix. Dropping it outright makes the
+bound a fact rather than a default.
+
+### The unmanaged browser: the premise was wrong, and the correction is better
+
+The research framed the browser outside the service as *the owner's own everyday browser*, and built
+a guard-and-exception story around not touching it. **That premise was wrong.** What actually sits
+outside is a **default browser profile used by automation that is not part of this system**, and the
+ruling is not "guard it" but *"leave it alone entirely — the service runs its own two"*.
+
+The requirement attached to it is the valuable part, and it is **bidirectional**: the service must
+neither disturb what is outside it nor be blocked by it. That is written up as a first-class property
+in **§6a**, because it is a cleaner boundary than a list of prohibitions and — the reason it earns
+its own section — it is **testable**, which a list of prohibitions is not.
+
+The concrete thing this changes: an explicit profile directory stops being a sensible precaution
+against an unverified quirk and becomes a **hard requirement**, because a default path is the most
+ordinary way for something outside the service to stop it starting.
+
+### Capture policy: the shape, without the numbers
+
+**Settled in shape:** low resolution **by default, with no parameter required to get it**; higher
+resolution by **explicit opt-in**; and a **strong warning rather than a refusal** once a lease has
+taken a lot of captures.
+
+Each half of that is a decision. Low-by-default with nothing to pass means the cheap path is the path
+of least effort, which is the only version of a default that actually holds. Opt-in for the expensive
+path means the cost is a decision somebody made rather than something that happened to them. And a
+warning rather than a refusal because a refusal mid-review strands work that is already half-done —
+the goal is to change what the next capture looks like, not to destroy the run. A warning that names
+the cheaper alternative does that; a bare refusal teaches a caller to ask for a bigger budget.
+
+**The numbers are still open** (§14).
+
+---
+
 ## 14. Still open
 
-Carried into the design interview. Each has a recommendation from the research pass, attributed as a
-recommendation rather than a decision.
-
-1. **Starting tab budgets** for the regular and private browsers. *Recommended: six and six.* Both
-   are settings, so being wrong is cheap.
-2. **The isolated third browser — first version or second?** *Recommended: second*, and with its own
-   hard cap whenever it lands, because unbounded it undoes §6.
-3. **Does a browser the operator drives themselves stay permanently out of scope?** *Recommended:
-   yes.* The service refuses to operate on any browser it did not launch, and that boundary is
-   cleaner than adopting it. Awaiting clarification.
-4. **The capture-policy defaults** — long-edge ceiling, screenshot budget per lease, and whether
-   full-page capture is ever on by default. *Recommended starting values: 1568 pixels, twelve
-   captures, and off.* These should be settled by the resolution ladder's evidence rather than
-   argued, which is the entire reason the ladder is scheduled work.
-5. **The partial-index question in §13b** — a hand-written migration with a documented drift-check
+1. **The capture-policy numbers.** The shape is settled (§13c); the arithmetic is not — what long
+   edge counts as "low", what the opt-in ceiling is, and how many captures precede the warning. All
+   are settings. **To be settled by the resolution ladder's evidence rather than argued**, which is
+   the entire reason the ladder is scheduled work. Expect more than one threshold: text stops being
+   legible before layout critique stops working.
+2. **The partial-index question in §13b** — a hand-written migration with a documented drift-check
    exception, or serialised application-level enforcement. Owned by the pull request that lands the
-   constraint.
-6. **The licence.** Deliberately not chosen here, because it is the owner's to choose and not a
+   constraint, decided with the transaction shape in front of it.
+3. **The licence.** Deliberately not chosen here, because it is the owner's to choose and not a
    detail a build decides by default. It has to be settled **before** the repository is published:
    a public repository with no `LICENSE` file grants no rights to anyone who reads it, which is
    almost never what publishing was for. Blocks `MILESTONES.md` #2.

@@ -95,7 +95,7 @@ they bank, what their machine is called, which account is signed in. So:
   | "it stops the process explosion we had" | "process count is bounded by configuration, not by the number of connected clients" |
   | "the shared login kept getting destroyed" | "a shared authenticated profile must not be destroyable by any single client's action" |
   | "replaces the per-client guard scripts" | "rules enforced in one server-side place cannot drift the way per-client scripts do" | <!-- external-ref-ok: this row has to quote the phrasing it forbids in order to teach it -->
-  | "the reserved browser is the owner's real one" | "a browser the service does not own must be unreachable through the service" |
+  | "it kept getting blocked by whatever else was running" | "the service must be startable on a host where unrelated browsers are already running" |
 
 ### The check that enforces the last two rules
 

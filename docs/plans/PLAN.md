@@ -69,24 +69,70 @@ So the design expresses concurrency **entirely in tabs**:
 - **Two browser processes is a hard ceiling that does not move with the number of callers.** Ten
   callers and one caller cost the same in processes. Memory grows by a renderer per tab (tens to a
   couple of hundred megabytes each) rather than by a browser per caller.
-- **The bound the service enforces is a tab budget per browser**, not a count of slots. A claim asks
-  for *n* tabs and is admitted only if the browser it wants still has room for *n*.
+- **The bound is one total tab budget across both browsers** — not a count of slots, and not a
+  separate allowance per browser. A claim asks for *n* tabs and is admitted if
+  `total open tabs + n ≤ budget`, whichever browser it wants. **Default: 15.**
+
+**Why one total and not one each.** The scarce resource is renderer processes and the memory they
+hold, and a renderer costs the same whichever browser it belongs to. A per-browser cap would ration
+something that is not scarce: it would refuse a fourteenth regular tab while a private allowance sat
+unused, which is a refusal that protects nothing. One counter means the split falls out of demand —
+14/1 on a stateful afternoon, 5/10 during a review sweep — and the only number anyone has to reason
+about is the one that maps to memory.
 
 ### Be explicit about what "private" does and does not mean
 
 **"Private" means "not signed in as the operator". It does not mean "isolated from other callers."**
 Tabs in the private browser share its cookie jar, so two concurrent review callers are clean-room
 relative to the regular profile but **not relative to each other**. That is fine for design review.
-It is **not** fine for multi-account testing or two parallel sign-in flows.
 
-The answer for those is an **escape hatch**: a third, short-lived browser for the duration of one
-claim, explicitly requested and explicitly released. It is something the service *grants*, never a
-default, and it is stated here so nobody quietly reintroduces a browser per caller by another name.
-Whether it lands in the first version is an open question below.
+**It is not fine for multi-account work or two parallel sign-in flows, and there is no escape hatch
+for those.** A third browser for the duration of one claim was considered and **rejected**: two
+independent authenticated sessions can be done one after the other, and an exception that mints a
+browser on demand would undo the exact bound it sits inside. **Exactly two browsers, no exceptions.**
+
+What that gives up, stated plainly: **testing two independent authenticated sessions in parallel is
+not possible through this service, by design.** Run them sequentially. If a case ever arises where
+that genuinely will not do, it is a decision to take then, with the reason in front of it — not a
+capability held open in advance on the chance it might be wanted.
 
 One caveat that no design can remove: **per-tab session storage is per-tab in every browser**, so a
 site that binds its session to it loses that on a new tab regardless of the shared partition. The
 service reports this as a field on the response rather than pretending to guard it.
+
+---
+
+## Bidirectional isolation
+
+The service runs **its own two browsers**, and the isolation between them and everything else on the
+host runs in **both directions**. Both halves are requirements, and the second is the one that is
+easy to miss.
+
+**Outward — nothing this service does can disturb a browser it does not own.** Other things run
+browsers on the same machine: a person's own, and automation that is not part of this system at all,
+which typically uses the default profile. The service never manages, adopts, attaches to, closes or
+otherwise reaches any of them, and it refuses any operation naming one. It leaves them entirely
+alone and entirely available.
+
+**Inward — nothing outside can block this service either.** This is the half that turns a good
+intention into a design constraint, because "do not touch the wrong browser" is a rule about
+behaviour, whereas being blocked is something that happens to you:
+
+- **The service always launches with an explicit profile directory of its own, and never relies on a
+  default path.** This is a hard requirement, not a precaution. The default persistent profile
+  location is shared by anything else that also takes the default, and two processes on one profile
+  contend on its lock file — so an unrelated automation run that happened to start first would stop
+  the service starting at all.
+- **No shared lock file, no shared port, no shared temporary directory.** Everything the service
+  needs to acquire, it acquires somewhere it owns.
+- **No assumption that a browser it did not launch is absent.** The service is correct on a machine
+  where three other browsers are already running, because it never looks for "the browser" — only
+  for the ones it started.
+
+This is a cleaner statement of the boundary than a list of things not to touch, and — the reason it
+is worth having as a property rather than as a habit — **it is testable**. "Do not disturb the wrong
+browser" can only be reviewed. "Starts successfully while an unrelated browser holds the default
+profile" is a test.
 
 ---
 
@@ -206,9 +252,14 @@ capture.
 
 | Control | Lives in | Why there |
 |---|---|---|
-| Resolution ceiling — downscale to a long-edge cap before returning the path | **The service** | It takes the capture, so it can apply the ceiling. A client convention can only advise, and advice is the thing this design exists to stop relying on |
-| Screenshot budget per lease — warn approaching it, refuse past it with a message naming the cheaper alternative | **The service** | Same |
+| Low resolution by default, **with no parameter required to get it** | **The service** | It takes the capture, so it can apply the ceiling. A client convention can only advise, and advice is the thing this design exists to stop relying on |
+| Higher resolution by **explicit opt-in**, never by accident | **The service** | The expensive thing should cost a decision. Asking for it is fine; getting it without asking is the failure |
+| A **strong warning** rather than a refusal once a lease has taken a lot of captures, naming the cheaper alternative | **The service** | A refusal mid-review strands work that is already half-done; a warning that says what to do instead changes behaviour without destroying the run |
 | Full-page capture off by default | **The service** | Unbounded page height is what pushes an image over the expensive tier, more often than width |
+
+**The shape is settled; the numbers are not** — what counts as "low", what the opt-in ceiling is, and
+where the warning fires. Those are an open question below, and they should be settled by the ladder's
+evidence rather than argued.
 | Prefer a snapshot to a screenshot for anything structural | **Both** | The service makes the snapshot cheap and accounts for the screenshot; only the caller knows which question it is asking |
 | How many breakpoints, and which interaction states | **The caller** | The service has no concept of a "key view" |
 | Delegating the looking to a sub-agent, so images live and die in a context that is thrown away | **The caller** | An orchestration pattern, not a browser operation |
@@ -368,11 +419,10 @@ browser.
 | **3** | Sign the regular profile in **once, by hand, by the operator**. Run a real authenticated flow end to end. Only then move stateful work over | A profile is proven by a real sign-in, not by a code read |
 | **4** | Remove the alternatives, in dependency order | Anything that reads state another component writes has to go before the component that writes it |
 
-**One boundary that is deliberately permanent:** a browser the operator drives themselves stays
-outside the service entirely. The service never manages it, never reaches it, and refuses any
-operation naming it. Adopting it would be a larger surface for no gain, and the failure it protects
-against — a caller treating somebody's real, signed-in browser as spare capacity — is exactly the
-thing this design exists to make impossible.
+**Nothing in this sequence adopts a browser the service did not launch.** Enablement adds a route to
+the service's own two browsers and takes routes away; at no point does it take ownership of something
+that was already running. That is the outward half of bidirectional isolation, and it holds during
+the rollout as well as after it.
 
 ---
 
@@ -399,27 +449,18 @@ compose at the orchestration level and nowhere else:
 
 ## Open questions for you
 
-The research pass has a recommendation on each of these. They are recommendations, not decisions.
+The list is short, which is the point of having settled the rest.
 
-1. **Starting tab budgets.** How many concurrent tabs on the regular browser, and how many on the
-   private one? *Recommended: six and six* — enough for a handful of parallel reviewers plus a
-   stateful worker, and low enough that ten tabs is a couple of gigabytes rather than a frozen
-   machine. Both are settings, so being wrong is cheap.
-2. **The escape hatch — first version or second?** A genuinely isolated third browser for the
-   duration of one claim. *Recommended: second.* The mechanism is small, but unbounded it re-opens
-   "browser count scales with caller count", which is the property the two-browser design exists to
-   guarantee. If it ships early it needs its own hard cap.
-3. **Does a browser the operator drives themselves stay permanently out of scope?** *Recommended:
-   yes* — the service refuses to operate on any browser it did not launch, full stop. It is a
-   cleaner boundary than adopting it, and the cost of getting adoption wrong is somebody's real
-   session.
-4. **The capture-policy defaults.** Three numbers, and they set what every caller pays. *Recommended
-   as starting values: a long-edge ceiling of 1568 pixels* — the boundary of the cheaper vision tier,
-   so a capture above it costs roughly three times one below it for no gain on layout critique;
-   *a budget of twelve screenshots per lease*, warning at three-quarters; *and full-page capture off
-   by default*, because unbounded page height is what pushes an image over the ceiling far more often
-   than width does. All three are settings. **They should be replaced by the ladder's evidence rather
-   than defended** — that is what the ladder is for.
+1. **The capture-policy numbers.** The shape is settled — low resolution by default with nothing to
+   pass, higher by explicit opt-in, a strong warning rather than a refusal. What is open is the
+   arithmetic: what long edge counts as "low", what the opt-in ceiling is, and how many captures a
+   lease takes before the warning fires. All are settings, so being wrong is cheap and reversible.
+   **They should be settled by the resolution ladder's evidence rather than argued**, which is the
+   entire reason the ladder is scheduled work — and the ladder should expect more than one
+   threshold, because text stops being legible before layout critique stops working.
+2. **The licence.** Not chosen here, because it is not a build's to choose. It has to be settled
+   before anything is published: a public repository with no `LICENSE` file grants its readers no
+   rights at all, which is almost never what publishing was for.
 
 ---
 

@@ -24,9 +24,11 @@ is, not merely its order.
 Every table, every column, every constraint, and what each one is *for*. Expected:
 
 - **`browsers`** — a fixed two-row table: the regular (persistent, signed-in) browser and the private
-  (ephemeral) one. Fixed rows, not a collection. **There is no profiles table and no named-profile
-  concept**; a purpose-named profile is a purpose-named tab on the regular browser (`DECISIONS.md`
-  §6).
+  (ephemeral) one. **Exactly two rows, always** — not a collection, and with no third-browser
+  exception (`DECISIONS.md` §6). **There is no profiles table and no named-profile concept**; a
+  purpose-named profile is a purpose-named tab on the regular browser. Each row carries the
+  **explicit profile directory** the service launches it with, which is a hard requirement rather
+  than a setting with a sensible default (`DECISIONS.md` §6a).
 - **`claims`** — the lease: its secret key, its state, which browser, how many tabs, its stated
   purpose, its expiry, and the timestamps that make the state machine auditable.
 - **`tabs`** — opaque tab identifiers, which claim owns each one, and the mapping to whatever the
@@ -86,6 +88,15 @@ else is a settings row.** Anything machine-specific is a setting, never a litera
 
 Each rule stated as a rule, with the rejection it produces: ownership, capacity, budget, state
 preconditions, and the operations that are refused unconditionally.
+
+**The capacity guard is one predicate over one counter**: `total open tabs + requested ≤ budget`,
+across both browsers, default 15. There is **no per-browser cap** — the scarce resource is renderer
+processes, and a renderer costs the same in either browser (`DECISIONS.md` §6).
+
+**The isolation guards are bidirectional** (`DECISIONS.md` §6a), and the inward half is the one
+easily left untested: the service refuses to operate on any browser it did not launch, *and* it must
+start correctly while unrelated browsers are already running on the host, because it never relies on
+a default profile path, a shared lock or a shared port.
 
 Every guard here must be enforced somewhere executable. **A property that is only written down is not
 a property** (`DECISIONS.md` §12).
