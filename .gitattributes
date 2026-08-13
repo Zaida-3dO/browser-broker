@@ -1,0 +1,4 @@
+# Normalise line endings on the way in, check them out as LF everywhere.
+# CI runs on Linux and contributors may not; without this a formatter fails
+# on a whole file for reasons no one can see in the diff.
+* text=auto eol=lf
