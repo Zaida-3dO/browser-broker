@@ -431,10 +431,10 @@ browser.
 | Phase | What happens | Why it is safe |
 |---|---|---|
 | **0** | Service up, tab budgets set to zero, one manual test claim | Nothing is routed to it |
-| **1** | Registered as an available route, HTTP transport, one shared process. Callers are still briefed on whatever they were using | It holds its own browsers, so the worst case is resource contention rather than interference |
+| **1** | Registered as an available route, HTTP transport, one shared process. Nothing yet depends on it | It holds its own browsers, so the worst case is resource contention rather than interference |
 | **2** | Move the clean-room work over first — reviewers claim `private` | Lowest blast radius: disposable tabs, no sign-in to lose |
 | **3** | Sign the regular profile in **once, by hand, by the operator**. Run a real authenticated flow end to end. Only then move stateful work over | A profile is proven by a real sign-in, not by a code read |
-| **4** | Remove the alternatives, in dependency order | Anything that reads state another component writes has to go before the component that writes it |
+| **4** | Close every other route to a browser, in dependency order | Anything that reads state another component writes has to go before the component that writes it |
 
 **Nothing in this sequence adopts a browser the service did not launch.** Enablement adds a route to
 the service's own two browsers and takes routes away; at no point does it take ownership of something

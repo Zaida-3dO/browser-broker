@@ -259,8 +259,8 @@ the threshold can be tuned without anyone guessing.
 > (`DECISIONS.md` §13b).
 >
 > **#38's ordering is the substance of it, not the prose.** Anything that reads state another
-> component writes has to be removed before the component that writes it, or the readers spend the
-> gap consulting a record nothing is updating.
+> component writes has to be removed before the component that writes it, or the reader keeps
+> consuming a value that has silently stopped changing.
 
 **Milestone done when:** the service is the only route to a browser, and the sequence that got it
 there is written down.
