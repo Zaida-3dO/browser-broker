@@ -43,6 +43,18 @@ jobs:
       # tree with nothing installed can still be checked.
       - run: npm run check:external-refs
 
+  arbitration:
+    name: arbitration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      # No install step, deliberately: these scans read the tree off disk, so a
+      # checkout with nothing installed is exactly what they need.
+      - run: npm run check:arbitration
+
   typecheck:
     name: typecheck
     runs-on: ubuntu-latest
