@@ -139,6 +139,10 @@ test('the real tree contains at least one adapter, so the check above is not vac
     found.some((adapter) => adapter.id === 'cli'),
     'the command-line adapter was not discovered',
   );
+  assert.ok(
+    found.some((adapter) => adapter.id === 'tool-stdio'),
+    'the tool-surface adapter was not discovered',
+  );
 });
 
 test('an adapter DESCRIBED in a comment is not mistaken for one that exists', () => {
@@ -178,7 +182,11 @@ test('the registry names every mounted route, by name', () => {
   // Named rather than counted. `MILESTONES.md` records a hollow test that
   // "iterated a list rather than naming its entries, so deleting an entry
   // stayed green" — a length assertion here would have exactly that shape.
-  assert.deepEqual([...ADAPTER_IDS], ['cli']);
+  // Two routes, not three: nothing is served (`SCHEMA.md` §4, §8), so there
+  // is no third adapter to conform, and the generated operations document is
+  // not a route — it performs no operation and refuses nothing.
+  assert.deepEqual([...ADAPTER_IDS], ['tool-stdio', 'cli']);
+  assert.ok(isAdapterId('tool-stdio'));
   assert.ok(isAdapterId('cli'));
   assert.equal(isAdapterId('not-a-route'), false);
 });
