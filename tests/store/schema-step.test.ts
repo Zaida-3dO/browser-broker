@@ -23,17 +23,36 @@ function withStore(fn: (store: StoreHandle) => Promise<void>): () => Promise<voi
   };
 }
 
-test('the step list is empty — step one is the whole schema and belongs to a later row', () => {
-  assert.equal(STEPS.length, 0);
-  assert.equal(EXPECTED_VERSION, 0);
+test('the step list is one-based, contiguous, and ends at the version this build expects', () => {
+  // The version is stamped rather than counted, so the two can disagree —
+  // and this is the assertion that says so if they ever do.
+  STEPS.forEach((step, index) => {
+    assert.equal(step.version, index + 1);
+  });
+  assert.equal(STEPS.at(-1)?.version, EXPECTED_VERSION);
 });
 
 test(
-  'a fresh store reports version zero and stepping it is a no-op',
+  'a fresh store is at version zero and stepping it applies every step in order',
   withStore(async (store) => {
     assert.equal(readStoreVersion(store.db), 0);
     const result = await stepSchema(store.db);
-    assert.deepEqual(result, { from: 0, to: 0, applied: [] });
+    assert.equal(result.from, 0);
+    assert.equal(result.to, EXPECTED_VERSION);
+    assert.deepEqual(
+      result.applied,
+      STEPS.map((step) => step.version),
+    );
+  }),
+);
+
+test(
+  'stepping a store that is already at the expected version does nothing',
+  withStore(async (store) => {
+    await stepSchema(store.db);
+    // The second call is the one every spawn after the first makes.
+    const again = await stepSchema(store.db);
+    assert.deepEqual(again, { from: EXPECTED_VERSION, to: EXPECTED_VERSION, applied: [] });
   }),
 );
 

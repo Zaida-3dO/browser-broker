@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import { StartupRefusal } from '../../src/errors.ts';
-import { BUSY_TIMEOUT_MS, openStore } from '../../src/store/open.ts';
-import { hasNetworkShareRoot } from '../../src/store/network-path.ts';
+import { BUSY_TIMEOUT_MS, openStore, prepareStore } from '../../src/store/open.ts';
+import { EXPECTED_VERSION } from '../../src/store/schema/steps.ts';
+import { readStoreVersion } from '../../src/store/schema/step.ts';
 import { makeTempStore } from '../helpers/temp-store.ts';
-import { sharePath } from '../helpers/paths.ts';
+import { checksReporting, sharePath } from '../helpers/paths.ts';
 
 test('opening creates the file and its directory', () => {
   const temp = makeTempStore();
@@ -103,7 +104,7 @@ test('opening a store on a network location refuses before the file is created',
           artifactsRoot: location,
           profileRoot: location,
         },
-        { checks: { resolveRealPath: (target) => target, hasNetworkShareRoot } },
+        { checks: checksReporting({}) },
       ),
     (error: unknown) => {
       assert.ok(error instanceof StartupRefusal);
@@ -111,4 +112,64 @@ test('opening a store on a network location refuses before the file is created',
       return true;
     },
   );
+});
+
+/**
+ * ── Every spawn opens, steps, and is ready ───────────────────────────────
+ */
+
+test('preparing the store steps it to the version this build expects', async () => {
+  const temp = makeTempStore();
+  try {
+    const store = await prepareStore(temp.environment);
+    try {
+      assert.equal(readStoreVersion(store.db), EXPECTED_VERSION);
+    } finally {
+      store.close();
+    }
+  } finally {
+    temp.remove();
+  }
+});
+
+test('a second spawn against the same file steps nothing and finds the schema', async () => {
+  // A store already at the right version is left untouched, which is what
+  // makes running this on every spawn cost a version read.
+  const temp = makeTempStore();
+  try {
+    const first = await prepareStore(temp.environment);
+    first.db.prepare("UPDATE browsers SET restart_count = 7 WHERE id = 'regular'").run();
+    first.close();
+
+    const second = await prepareStore(temp.environment);
+    try {
+      assert.equal(readStoreVersion(second.db), EXPECTED_VERSION);
+      const row = second.db
+        .prepare("SELECT restart_count FROM browsers WHERE id = 'regular'")
+        .get() as { restart_count: number };
+      // Untouched: a step that re-ran would have recreated the table.
+      assert.equal(row.restart_count, 7);
+    } finally {
+      second.close();
+    }
+  } finally {
+    temp.remove();
+  }
+});
+
+test('a store newer than the build refuses the spawn and holds no handle open', async () => {
+  const temp = makeTempStore();
+  try {
+    const seed = openStore(temp.environment);
+    seed.db.pragma('user_version = 99');
+    seed.close();
+
+    await assert.rejects(prepareStore(temp.environment), (error: unknown) => {
+      assert.ok(error instanceof StartupRefusal);
+      assert.equal(error.rule, 'startup.schema_stepped');
+      return true;
+    });
+  } finally {
+    temp.remove();
+  }
 });

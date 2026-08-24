@@ -15,6 +15,7 @@ import Database from 'better-sqlite3';
 import type { Environment } from '../config/environment.ts';
 import { resolveStoreLocation } from './location.ts';
 import type { NetworkPathChecks } from './network-path.ts';
+import { stepSchema } from './schema/step.ts';
 import { immediate, type TransactionResult, type TransactionScope } from './transaction.ts';
 
 /**
@@ -26,6 +27,17 @@ import { immediate, type TransactionResult, type TransactionScope } from './tran
  * shape (`MILESTONES.md`): a pool shares connections between concurrent work
  * inside one long-lived process, and here the callers are separate operating
  * system processes, each opening the file, doing its work and exiting.
+ *
+ * ── Opening and stepping are two functions, and `openStore` is the first ──
+ *
+ * `SCHEMA.md` §1.2d puts stepping on **every spawn**, so `prepareStore` below
+ * is what a spawn calls and it does both. They are separate because stepping
+ * is asynchronous — it goes through the transaction helper, which is — and an
+ * open that had to be awaited would make every test and every caller that
+ * wants a handle pay for a schema it may not touch. **A caller that opens
+ * without stepping gets a store at whatever version it is at**, which is the
+ * right answer for the stepper's own tests and the wrong one for a spawn;
+ * `prepareStore` is the name a spawn is meant to reach for.
  */
 
 /** How long a blocked writer waits before giving up, in milliseconds. */
@@ -106,4 +118,33 @@ export function openStore(environment: Environment, options: OpenStoreOptions = 
     },
     db,
   };
+}
+
+/**
+ * What a spawn calls: open the store and step it to the version this build
+ * expects, in that order, before anything else happens.
+ *
+ * `startup.schema_stepped` (§7.2) and §1.2d — **on every spawn, not just the
+ * first**. There is no deployment moment at which "run the migrations" could
+ * be a separate act: a caller that has just upgraded and a caller that has not
+ * may both spawn within the same minute, so the check belongs on every spawn
+ * or it belongs nowhere. A store already at the right version is left
+ * untouched, so the ordinary cost of this is a version read.
+ *
+ * **The handle is closed if stepping refuses**, because a caller that gets a
+ * throw has no handle to close and the file would otherwise be held open by a
+ * process that has already decided not to run.
+ */
+export async function prepareStore(
+  environment: Environment,
+  options: OpenStoreOptions = {},
+): Promise<StoreHandle> {
+  const store = openStore(environment, options);
+  try {
+    await stepSchema(store.db);
+  } catch (error) {
+    store.close();
+    throw error;
+  }
+  return store;
 }

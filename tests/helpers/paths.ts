@@ -1,3 +1,5 @@
+import { hasNetworkShareRoot, type NetworkPathChecks } from '../../src/store/network-path.ts';
+
 /**
  * Path fixtures, assembled from parts rather than written out.
  *
@@ -29,4 +31,36 @@ export function sharePath(host: string, share: string, ...segments: string[]): s
 /** The same share, spelled with forward slashes. */
 export function shareForwardSlashPath(host: string, share: string, ...segments: string[]): string {
   return `//${[host, share, ...segments].join('/')}`;
+}
+
+/** A mount point on a platform whose separator is the forward slash. */
+export function mountPath(...segments: string[]): string {
+  return `/${['mnt', ...segments].join('/')}`;
+}
+
+/**
+ * Checks that report exactly what a test says and nothing the host platform
+ * knows.
+ *
+ * **The defaults are the permissive ones on purpose.** Every check this builds
+ * allows unless the test asks for a refusal, so a test that refuses is a test
+ * whose refusal came from the input it supplied rather than from the machine
+ * it happens to be running on. That is what makes these tests fail on **every**
+ * platform when a check is dropped, rather than on the one platform whose real
+ * behaviour would have covered for it.
+ */
+export function checksReporting(options: {
+  readonly mappings?: Record<string, string>;
+  readonly volumeTypes?: Record<string, number>;
+}): NetworkPathChecks {
+  const mappings = options.mappings ?? {};
+  const volumeTypes = options.volumeTypes ?? {};
+  return {
+    resolveRealPath: (target) => mappings[target] ?? target,
+    hasNetworkShareRoot,
+    readVolumeStatistics: (target) => {
+      const type = volumeTypes[target];
+      return type === undefined ? undefined : { type };
+    },
+  };
 }
