@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { Adapter } from '../../../src/adapter/contract.ts';
+import { ADAPTER_IDS, type Adapter } from '../../../src/adapter/contract.ts';
 import type { ConformanceCase } from '../../../src/adapter/conformance/case.ts';
 import type {
   ConformanceDriver,
   ConformanceDrivers,
 } from '../../../src/adapter/conformance/driver.ts';
 import { CONFORMANCE_CASES } from '../../../src/adapter/conformance/cases.ts';
+import { OPERATION_NAMES } from '../../../src/adapter/operations.ts';
 import {
   DOUBLE_RULE_REGISTRY,
   makeServiceDouble,
@@ -38,9 +39,25 @@ function kinds(findings: readonly Finding[]): FindingKind[] {
   return findings.map((finding) => finding.kind);
 }
 
-/** The real drivers, with the command line's one swapped for the caller's. */
+/**
+ * A driver map in which **every** mounted route is the driver under test.
+ *
+ * Both keys rather than one, and the reason matters: the map's type requires
+ * every mounted route, so a control that supplied a single key would not
+ * compile — and the obvious fix, filling the other key with a real driver,
+ * would make each control run the honest route alongside the broken one and
+ * report findings from both. Pointing every key at the driver under test
+ * keeps a control measuring exactly one behaviour, which is what lets it
+ * assert the *kind* of finding rather than merely that one appeared.
+ *
+ * The consequence is that a control's findings arrive once per mounted route.
+ * The assertions below are written as "this kind is present" rather than as
+ * counts, so they hold whatever the route count is — a control asserting a
+ * count would have to be rewritten every time a route lands, which is how a
+ * suite decays.
+ */
 function driversWith(driver: ConformanceDriver): ConformanceDrivers {
-  return { cli: driver };
+  return { 'tool-stdio': driver, cli: driver };
 }
 
 /** A driver over an adapter the caller has bent out of shape. */
@@ -61,7 +78,16 @@ test('the suite is GREEN over the real routes — the control every control belo
   // A green run over an empty matrix is the failure mode `MILESTONES.md`
   // names, so the count of pairs actually run is asserted rather than assumed.
   assert.ok(report.pairsRun > 0, 'no case-and-route pair ran at all');
-  assert.equal(report.pairsRun, CONFORMANCE_CASES.length, 'not every case ran on the one route');
+  // Every case, on every mounted route. Derived from `ADAPTER_IDS` rather
+  // than written as a number, so landing a route raises the bar instead of
+  // breaking this line — a hardcoded count is a test that has to be edited
+  // every time the thing it measures grows, and an edited test is one nobody
+  // reads.
+  assert.equal(
+    report.pairsRun,
+    CONFORMANCE_CASES.length * ADAPTER_IDS.length,
+    'not every case ran on every mounted route',
+  );
 });
 
 test('CONTROL — a route reaching past the service layer is caught, because its outcome differs', async () => {
@@ -275,7 +301,22 @@ test('CONTROL — a route declining to expose anything does not pass vacuously',
   const missing = report.findings.filter(
     (entry) => entry.kind === 'operation-neither-offered-nor-waived',
   );
-  assert.equal(missing.length, 10, 'a route offering nothing was not fully caught');
+  // **Named, not counted.** `MILESTONES.md` records a hollow test that
+  // "iterated a list rather than naming its entries, so deleting an entry
+  // stayed green" — and a count has exactly that shape: drop an operation
+  // from the list and drop the number, and this stays green while covering
+  // one operation less. Comparing the sorted set of operation names against
+  // `OPERATION_NAMES` fails on a deletion.
+  for (const adapterId of ADAPTER_IDS) {
+    assert.deepEqual(
+      missing
+        .filter((entry) => entry.adapter === adapterId)
+        .map((entry) => entry.operation)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+      [...OPERATION_NAMES].sort((a, b) => a.localeCompare(b)),
+      `a route offering nothing was not caught for every operation on ${adapterId}`,
+    );
+  }
 });
 
 test('CONTROL — a WRITE route may not buy its way out with waivers', async () => {

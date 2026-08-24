@@ -110,6 +110,8 @@ export interface Adapter {
  * Do not add it here.
  */
 export const ADAPTER_REGISTRY = {
+  'tool-stdio':
+    'The tool surface over standard input and output. Spawned by its caller, serves that session, exits with it. The primary route.',
   cli: 'The command line. In process, because there is nothing else for a command to talk to.',
 } as const satisfies Readonly<Record<string, string>>;
 
@@ -121,9 +123,11 @@ export const ADAPTER_REGISTRY = {
  * moment {@link ADAPTER_REGISTRY} does, so a map keyed by it stops compiling
  * when a route is added and its entry is not.
  *
- * The tool surface over stdio (row #27) joins this registry when it lands,
- * and the compiler will require its conformance driver in the same change.
- * That is the intended experience, not an inconvenience.
+ * The tool surface over stdio (row #27) joined this registry when it landed,
+ * and the compiler required its conformance driver in the same change. That
+ * is the intended experience, not an inconvenience — and the run-time half
+ * was watched to fire first: the adapter existed on disk for one commit
+ * before this key did, and the discovery walk named it.
  */
 export type AdapterId = keyof typeof ADAPTER_REGISTRY;
 
