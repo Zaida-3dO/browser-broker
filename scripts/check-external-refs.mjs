@@ -675,15 +675,30 @@ export function isScannable(path) {
   return !BINARY_EXTENSIONS.has(extension);
 }
 
-/** Every tracked file, so a new file is covered the moment it is added. */
+/**
+ * Every file this repository would carry: tracked, plus untracked ones that are
+ * not ignored.
+ *
+ * Untracked files are included deliberately. Enumerating only tracked files
+ * makes a local run over brand-new work **vacuous** — the same bytes exit 0
+ * before `git add` and exit 1 after it, so a crew gets a confident green run
+ * immediately before a red one in the pipeline, and the check appears to have
+ * looked at work it never opened. A gate whose verdict depends on staging state
+ * is not a gate. Ignored files stay out, because those are the ones this
+ * repository genuinely does not carry.
+ */
 function trackedFiles() {
-  const result = spawnSync("git", ["ls-files", "-z"], { encoding: "utf8" });
+  const result = spawnSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    { encoding: "utf8" },
+  );
   if (result.status !== 0) {
     throw new Error(
       `git ls-files failed: ${result.stderr || result.error?.message || "unknown error"}`,
     );
   }
-  return result.stdout.split("\0").filter(Boolean);
+  return [...new Set(result.stdout.split("\0").filter(Boolean))];
 }
 
 function describe(violation, path) {
