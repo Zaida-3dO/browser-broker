@@ -230,6 +230,83 @@ export interface ArtifactResult {
   readonly truncated: boolean;
 }
 
+/**
+ * A rectangle to paint over before a picture is taken (`SCHEMA.md` §3.11's
+ * `mask`).
+ *
+ * **Masking before the pixels exist beats filtering afterwards**, because a
+ * region that was never captured cannot be reported as changed. That is why
+ * this is on the seam rather than something the pipeline does to the image it
+ * got back: a mask applied after the shutter is a mask that was, for one
+ * moment, not applied.
+ */
+export interface CaptureMask {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * What a driver is asked for when a picture is wanted.
+ *
+ * **No tier and no resolution.** The driver takes the picture the page can
+ * give; deciding which rung it is shrunk to, and doing the shrinking, is the
+ * pipeline's (#31) — see {@link RawCapture} for why that split is where it is.
+ */
+export interface CaptureRequest {
+  /** `viewport` unless the caller asked otherwise; `element` names a selector. */
+  readonly fullPage: boolean;
+  readonly selector?: string;
+  /** Areas painted over **before** the shutter, never after. */
+  readonly mask?: readonly CaptureMask[];
+}
+
+/**
+ * A picture, as the browser produced it, **in memory**.
+ *
+ * ── Why the driver returns bytes and not a path ─────────────────────────
+ *
+ * Every other artefact on this seam comes back as a path
+ * ({@link ArtifactResult}) because a snapshot or a network log entering a
+ * conversation is paid for on every later turn. A capture is different in one
+ * specific way and identical in every other: the image still never reaches a
+ * caller — §3.11 is explicit that what comes back is *"a path, the dimensions
+ * … **never the image**"* — but between the shutter and the file there is a
+ * **downscale**, and the thing that downscales is the pipeline rather than the
+ * browser.
+ *
+ * So the choice is between a driver that writes a file the pipeline
+ * immediately rewrites, and a driver that hands over bytes the pipeline writes
+ * once. The second is chosen, and the deciding argument is not the extra
+ * write: it is **`SCHEMA.md` §1.7a's "the service decides where the file may
+ * go"**. A driver that picked a path would be a second thing choosing
+ * locations under the artifact root, and rule two of `artifacts/store.ts` —
+ * nothing lands outside the tree — would then hold in one place and be a
+ * convention in another.
+ *
+ * The cost is stated rather than hidden: **a full-page capture of a long page
+ * is held in memory in full.** That is bounded by what a browser was willing
+ * to produce in one image, and it is the same bound a downscaler would face on
+ * reading the file back.
+ */
+export interface RawCapture {
+  /** The encoded image. PNG, which is what every driver here produces. */
+  readonly image: Uint8Array;
+  /** What the browser produced, before any shrinking (`captures.source_*`). */
+  readonly width: number;
+  readonly height: number;
+  /**
+   * The viewport width the picture was taken at — **the breakpoint**
+   * (`captures.viewport_width`, §1.7). Read from the page rather than from
+   * whatever the caller last asked to resize to, because those disagree
+   * whenever a resize did not take.
+   */
+  readonly viewportWidth: number;
+  /** Where the tab actually is, for `captures.url` (§1.7). */
+  readonly url: string;
+}
+
 /** What evaluating an expression produced (`SCHEMA.md` §3.10). */
 export interface EvaluationResult {
   /**
@@ -292,6 +369,41 @@ export interface TabOperations {
 
   /** Evaluate an expression in the page (`SCHEMA.md` §3.10). */
   readonly evaluate: (tab: TabHandle, expression: string) => Promise<EvaluationResult>;
+
+  /**
+   * Stop the page moving: animations and transitions stopped, the text caret
+   * hidden, web fonts waited for (`SCHEMA.md` §3.11).
+   *
+   * **Separate from {@link TabOperations.capture} rather than folded into
+   * it**, and the separation is the whole reason it is testable. §3.11 calls
+   * settling *"the highest-value line in the whole comparison feature"*,
+   * because without it **the same page produces different pixels run to run** —
+   * a fading banner, a transition mid-flight, a blinking caret, a spinner, an
+   * image that arrived one frame later. No threshold fixes any of that: a
+   * colour tolerance is a per-pixel comparison and has nothing to say about
+   * something that moved.
+   *
+   * A driver that settled inside its own capture would make *"every capture
+   * settles first"* an implementation detail of whichever driver is installed,
+   * provable only by inspecting it. As two calls, the ordering is the
+   * pipeline's, it is one assertion on the fake's call log, and a driver that
+   * forgot to settle cannot hide the omission.
+   */
+  readonly settlePage: (tab: TabHandle) => Promise<void>;
+
+  /**
+   * Take a picture and hand back the pixels.
+   *
+   * **The correct-surface setting is not a parameter here, and that is
+   * deliberate.** `capture.surface_required` (§7.3) says no capture is ever
+   * taken with it disabled — in a windowed browser it returns another tab's
+   * pixels, with no error, *a wrong answer that looks exactly like a right
+   * one*. A parameter would be a way to disable it, so there is none: it is a
+   * property of an implementation of this seam, owed by row #20, and a build
+   * rule rather than a run-time check because the correct behaviour is that the
+   * call never happens.
+   */
+  readonly capture: (tab: TabHandle, request: CaptureRequest) => Promise<RawCapture>;
 }
 
 /**

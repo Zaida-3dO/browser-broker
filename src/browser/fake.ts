@@ -1,6 +1,7 @@
 import { BROWSER_IDS, type ActionRequest } from './driver.ts';
 import type {
   ArtifactResult,
+  CaptureRequest,
   BrowserDescription,
   BrowserDriver,
   BrowserId,
@@ -10,6 +11,7 @@ import type {
   DiscoveryRecord,
   EvaluationResult,
   NavigationResult,
+  RawCapture,
   ReadArtifact,
   TabHandle,
 } from './driver.ts';
@@ -71,6 +73,8 @@ export type DriverCallName =
   | 'act'
   | 'read'
   | 'evaluate'
+  | 'settlePage'
+  | 'capture'
   | 'detach';
 
 /**
@@ -113,10 +117,36 @@ export interface FakeBrowserOptions {
   readonly pid?: number;
 }
 
+/**
+ * What the fake's shutter produces, when a test needs a particular picture.
+ *
+ * **This is canned geometry, never a rendering.** The fake does not simulate a
+ * browser (see this file's header), so a test that sets `width` here is
+ * stating what it wants the pipeline to have been handed — which is exactly
+ * the input a downscale test needs and exactly the wrong thing to read as
+ * evidence that a browser would have produced it.
+ */
+export interface FakeCaptureOptions {
+  readonly width?: number;
+  readonly height?: number;
+  readonly viewportWidth?: number;
+  readonly url?: string;
+  /**
+   * The encoded bytes handed back.
+   *
+   * Defaults to a real, decodable one-pixel image rather than arbitrary
+   * bytes, because a pipeline that decodes what it was given must be given
+   * something decodable — and a fake that handed back nonsense would make
+   * every downscale test a test of the decoder's error path.
+   */
+  readonly image?: Uint8Array;
+}
+
 /** Where the fake's canned answers come from, when a test needs a particular one. */
 export interface FakeDriverOptions {
   readonly regular?: FakeBrowserOptions;
   readonly private?: FakeBrowserOptions;
+  readonly capture?: FakeCaptureOptions;
 }
 
 const DEFAULT_MODE: Readonly<Record<BrowserId, BrowserMode>> = {
