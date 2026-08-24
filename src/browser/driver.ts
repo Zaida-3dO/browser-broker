@@ -322,8 +322,8 @@ export interface BrowserSession extends TabOperations {
   readonly openTab: () => Promise<TabHandle>;
 
   /**
-   * Every page currently open in this browser, including ones no lease of
-   * this service's owns.
+   * Every page open in this browser at the moment it is asked, including ones
+   * no lease of this service's owns.
    *
    * Row #21's reconciliation is against the browser rather than against a
    * restart: a live browser is **asked what is actually open**, a page no live
