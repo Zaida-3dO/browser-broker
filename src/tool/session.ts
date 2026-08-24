@@ -160,8 +160,7 @@ export async function handleRequest(
     // A grant has to carry the key it issued or the lease is unreachable;
     // everything else is stripped. The exception is named rather than
     // implicit, so widening it is a visible change.
-    const value =
-      tool.operation === 'claim' ? outcome.value : (withoutSecrets(outcome.value) as unknown);
+    const value = tool.operation === 'claim' ? outcome.value : withoutSecrets(outcome.value);
     return { id: request.id, result: { outcome: 'accepted', value } };
   }
 
@@ -179,9 +178,7 @@ export async function handleRequest(
       code: outcome.code,
       rule: outcome.rule,
       message: outcome.message,
-      ...(outcome.details === undefined
-        ? {}
-        : { details: withoutSecrets(outcome.details) as unknown }),
+      ...(outcome.details === undefined ? {} : { details: withoutSecrets(outcome.details) }),
     },
   };
 }

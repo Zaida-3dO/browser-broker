@@ -109,8 +109,7 @@ export function decodeMessage(line: string): DecodedMessage {
 
   const record = parsed as Record<string, unknown>;
   const rawId: unknown = record['id'];
-  const id =
-    typeof rawId === 'number' || typeof rawId === 'string' ? (rawId as MessageId) : undefined;
+  const id = typeof rawId === 'number' || typeof rawId === 'string' ? rawId : undefined;
 
   if (id === undefined) {
     return {

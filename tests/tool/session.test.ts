@@ -6,6 +6,7 @@ import type { BrokerService, OperationRequest } from '../../src/adapter/service-
 import { encodeMessage, METHODS } from '../../src/tool/protocol.ts';
 import { linesFrom, listTools, serveSession, withoutSecrets } from '../../src/tool/session.ts';
 import { TOOL_DEFINITIONS } from '../../src/tool/tools.ts';
+import { asyncLines } from '../helpers/async-lines.ts';
 
 /**
  * The session loop: the lifecycle, the dispatch, and the two rules this route
@@ -31,11 +32,7 @@ function recordingService(answer?: (request: OperationRequest) => unknown): {
   return { service, requests };
 }
 
-async function* lines(...given: string[]): AsyncGenerator<string> {
-  for (const line of given) {
-    yield line;
-  }
-}
+const lines = asyncLines;
 
 /** Run a session over the given lines and return what it wrote, parsed. */
 async function serve(
@@ -128,7 +125,10 @@ test('THERE IS NO SEPARATE RENEW TOOL, and browser_status says it renews', () =>
 
 test('a tool call reaches the service as ONE operation, on this adapter', async () => {
   const { service, requests } = recordingService();
-  await serve(service, callTool('browser_navigate', { lease_key: 'k', url: 'https://example.com/' }));
+  await serve(
+    service,
+    callTool('browser_navigate', { lease_key: 'k', url: 'https://example.com/' }),
+  );
 
   assert.equal(requests.length, 1, 'one tool call must be one service call');
   assert.equal(requests[0]?.operation, 'navigate');
@@ -262,10 +262,13 @@ test('THE SESSION ENDS WHEN ITS INPUT ENDS — it serves that session and exits 
 test('blank lines are skipped without being answered', async () => {
   const { service } = recordingService();
   const written: string[] = [];
-  const answered = await serveSession(lines('', '   ', callTool('browser_status', { lease_key: 'k' })), {
-    service,
-    streams: { write: (line) => written.push(line) },
-  });
+  const answered = await serveSession(
+    lines('', '   ', callTool('browser_status', { lease_key: 'k' })),
+    {
+      service,
+      streams: { write: (line) => written.push(line) },
+    },
+  );
   assert.equal(answered, 1);
 });
 
@@ -310,7 +313,10 @@ test('THE LEASE KEY IS NEVER RETURNED — except by the grant that issues it', a
   >;
   assert.equal(grantValue['lease_key'], 'the-issued-key', 'the grant withheld the key it issued');
 
-  const [status] = await serve(service, callTool('browser_status', { lease_key: 'the-issued-key' }));
+  const [status] = await serve(
+    service,
+    callTool('browser_status', { lease_key: 'the-issued-key' }),
+  );
   const statusValue = (status?.['result'] as Record<string, unknown>)['value'] as Record<
     string,
     unknown
@@ -337,12 +343,11 @@ test('the never-returned rule reaches every depth, and removes rather than masks
 });
 
 test('a final line with no trailing newline is still a message', async () => {
-  async function* chunks(): AsyncGenerator<string> {
-    yield '{"id":1,"method":"tools/list"}\n{"id":2,';
-    yield '"method":"tools/list"}';
-  }
+  // Two chunks that split a message mid-way, so the second one ends without a
+  // trailing newline — which is what a caller's last write often looks like.
+  const chunks = asyncLines('{"id":1,"method":"tools/list"}\n{"id":2,', '"method":"tools/list"}');
   const collected: string[] = [];
-  for await (const line of linesFrom(chunks())) {
+  for await (const line of linesFrom(chunks)) {
     collected.push(line);
   }
   assert.deepEqual(collected, ['{"id":1,"method":"tools/list"}', '{"id":2,"method":"tools/list"}']);

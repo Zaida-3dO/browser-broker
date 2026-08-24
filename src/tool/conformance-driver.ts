@@ -119,7 +119,7 @@ export function outcomeFrom(line: string | undefined): OperationOutcome {
       // The sentence is worded for this transport and is never compared
       // across routes (§3.14), so it is carried but not read back for the
       // comparison.
-      message: String(record['message'] ?? ''),
+      message: typeof record['message'] === 'string' ? record['message'] : '',
       ...(record['details'] === undefined
         ? {}
         : { details: record['details'] as Record<string, unknown> }),
@@ -129,9 +129,28 @@ export function outcomeFrom(line: string | undefined): OperationOutcome {
   throw new Error(`the result names no outcome: ${line}`);
 }
 
-/** One line in, as an async iterable, because that is what the loop reads. */
-async function* oneLine(line: string): AsyncGenerator<string> {
-  yield line;
+/**
+ * One line in, as an async iterable, because that is what the loop reads.
+ *
+ * The loop's input is asynchronous because a real standard input is; a
+ * driver supplying one line has nothing to wait for, so this adapts a value
+ * to the shape rather than pretending to be asynchronous.
+ */
+function oneLine(line: string): AsyncIterable<string> {
+  return {
+    [Symbol.asyncIterator]: () => {
+      let sent = false;
+      return {
+        next: () => {
+          if (sent) {
+            return Promise.resolve({ done: true as const, value: undefined });
+          }
+          sent = true;
+          return Promise.resolve({ done: false as const, value: line });
+        },
+      };
+    },
+  };
 }
 
 /** The tool surface's conformance driver. */
