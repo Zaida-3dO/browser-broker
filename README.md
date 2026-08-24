@@ -55,9 +55,83 @@ not refresh. It is generated from inside a live session, so it reads each tab's 
 browser itself; a browser that does not answer within a timeout renders as unreachable rather than
 hanging the report.
 
+## Install
+
+**Installation is the whole of deployment.** There is no image to pull, no daemon to register and no
+service to keep running: the process is started by whatever calls it and exits with it. So getting it
+working is a clone and an install, and there is no step after that.
+
+You need **Node 22.18 or newer**. The sources are TypeScript and run through the runtime's own type
+stripping, so there is no build step to perform.
+
+```bash
+git clone https://github.com/Zaida-3dO/browser-broker.git
+cd browser-broker
+npm install
+```
+
+That compiles the one runtime dependency's native binding, which is the only part of the install that
+does real work. Then run it:
+
+```bash
+node src/bin/broker.ts
+```
+
+The first run creates the store, brings its schema up to the version the build expects, prints where
+the file is, and exits:
+
+```
+store: <the resolved store location>
+schema: stepped from version 0 to version 1 (1 step(s) applied)
+```
+
+Run it again and it says the schema is already where it should be. **Every spawn does this**, not
+just the first — with no long-lived process, there is no other moment at which it could happen, and a
+caller that has upgraded and one that has not may both start within the same minute.
+
+To get the command on your path as `broker`, link the package from the checkout:
+
+```bash
+npm link          # then: broker --help
+```
+
+### Configuring it
+
+**Nothing needs setting.** Every value is an environment variable with a working default, so the
+install above runs as-is; [`.env.example`](.env.example) documents the whole set, with placeholders
+rather than real values. Nothing reads that file — configuration is the process environment.
+
+The default store location is a directory of the service's own under the per-user application-data
+location your platform defines. It is computed rather than written down anywhere, because writing one
+down would name one machine. To put it somewhere else, set `BROKER_DB`:
+
+```bash
+BROKER_DB=/some/writable/path/broker.db node src/bin/broker.ts
+```
+
+A variable that is set but cannot be read as its type **refuses the spawn and names the variable**,
+rather than quietly falling back to the default — a configuration nobody chose is worse than a
+refusal nobody missed. A store location that resolves to a network share is refused for the same
+reason it has to be: the write-ahead log coordinates through shared memory that requires every
+process using the file to sit on one host.
+
+### Checking an install
+
+```bash
+npm run check:install
+```
+
+This spawns the executable as a real process against a temporary store, and asserts it creates the
+file, steps the schema to the version the build expects, answers a command and **exits**. It is what
+continuous integration runs on a clean hosted runner, and it is the check that stands in for the one
+an image build would have given: proof that the thing actually starts.
+
+Run everything the pipeline runs with `npm run check`.
+
 ## Status
 
-Planning. Nothing is built yet. Read [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
+Under construction — the store, the executable and the pipeline are in place, and the arbitration
+surface is being built. Read [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
 [`docs/plans/DECISIONS.md`](docs/plans/DECISIONS.md) for why it is shaped this way, and
 [`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue.
 

@@ -13,12 +13,13 @@
   },
   "scripts": {
     "check:external-refs": "node scripts/check-external-refs.mjs",
+    "check:install": "node scripts/check-install.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test \"tests/**/*.test.mjs\" \"tests/**/*.test.ts\"",
-    "check": "npm run check:external-refs && npm run typecheck && npm run lint && npm run format:check && npm test"
+    "check": "npm run check:external-refs && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"

@@ -65,9 +65,9 @@ unchecked.*
 | **1** | The four planning documents and the directives file, **plus the public-repo hygiene gate and its self-test**, committed straight to `main` | — | `done` |
 | **2** | Publish the repository and protect `main` — linear history, no force-push, no deletions, pull request required. **Ships the `LICENSE` file** (MIT, `DECISIONS.md` §13e) | 1 | |
 | **3** | **The boilerplate (fan-out point).** Application skeleton, the store driver wired up, the executable entry point, CI workflow, test harness, lint and format | 2 | |
-| **4** | Required status checks pointed at the jobs from #3 | 3 | |
+| **4** | Required status checks pointed at the jobs from #3 | 3 | `done` |
 | **5** | Public-repo hygiene gate wired into CI on every pull request | 3 | `done` |
-| **6** | **Install and run from a clean checkout** — a documented install, then a real spawn against a temporary store that steps the schema, answers one command and exits | 3 | |
+| **6** | **Install and run from a clean checkout** — a documented install, then a real spawn against a temporary store that steps the schema, answers one command and exits | 3 | `done` |
 
 > **#1 and #2 are not really pull requests** — they are the two setup steps that make pull requests
 > possible. They keep numbers because everything downstream points at them.
@@ -94,6 +94,17 @@ unchecked.*
 > expects, a command answers, and the process exits. That covers the failure an image build would
 > have caught — the thing does not actually start — and it covers it against the artefact people will
 > really use.
+>
+> **#4's required checks are the six job names, spelled as the platform reports them.** A required
+> check is matched by the job's *name*, so the matrix jobs are required as `test (node 22.18)` and
+> `test (node 24)` rather than as `test` — the names are read off a real run rather than off the
+> workflow file, because that is the only place the matrix expansion is visible. Renaming a job in
+> `.github/workflows/ci.yml` therefore silently drops a required check: the pull request shows no
+> red, it simply stops being gated. Rename one and update the protection in the same change.
+>
+> **What is deliberately NOT required: reviews, and administrator enforcement.** Review is a gate
+> kept as a process rather than one the platform enforces, and requiring approvals would deadlock a
+> loop in which the same account authors and merges. That is a decision, not an omission.
 >
 > **#5 is marked done because the gate shipped inside #1**, which is deliberate rather than
 > convenient: a public-repo gate that lands *after* the first prose is a gate that never ran against

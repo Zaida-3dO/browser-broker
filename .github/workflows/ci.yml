@@ -86,6 +86,30 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # Install and run from a clean checkout.
+  #
+  # This is the release check for a service that has no image to build and no
+  # runtime to deploy: it is spawned by its caller and exits with it, so
+  # installation is the whole of deployment. A hosted runner is exactly the
+  # clean case — nothing mapped, no store, nothing configured — so the job
+  # installs the package the way a stranger would and then proves the
+  # executable actually starts, steps its own schema, answers and exits.
+  #
+  # `npm ci --ignore-scripts` is deliberately NOT used: the single runtime
+  # dependency compiles or downloads a native binding in its install script,
+  # and skipping that would test an installation nobody performs.
+  install:
+    name: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      - run: npm run check:install
+
   # Windows earns a job because the network-location refusal has a
   # platform-specific path that would otherwise never execute in continuous
   # integration at all. A hosted runner has nothing mapped, so this proves the
