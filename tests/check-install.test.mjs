@@ -38,6 +38,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   SPAWN_TIMEOUT_MS,
+  ambientEnvironment,
   readExpectation,
   readSchemaVersionFromFile,
   repositoryRoot,
@@ -181,12 +182,7 @@ describe('the schema version is read from the file, not from the code that wrote
 
     const result = await spawnBroker([], {
       env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        USERPROFILE: process.env.USERPROFILE,
-        SystemRoot: process.env.SystemRoot,
-        TEMP: process.env.TEMP,
-        TMP: process.env.TMP,
+        ...ambientEnvironment(),
         BROKER_DB: location,
         BROKER_ARTIFACTS_ROOT: path.join(directory, 'artefacts'),
         BROKER_PROFILE_ROOT: path.join(directory, 'profiles'),
@@ -222,6 +218,37 @@ describe('the schema version is read from the file, not from the code that wrote
       expectedVersion,
       'the seeded version must not accidentally be the real one',
     );
+  });
+});
+
+describe('the child environment carries nothing that configures the service', () => {
+  it('passes through only the keys the runtime needs to start', () => {
+    const ambient = ambientEnvironment({
+      PATH: '/a/path',
+      TEMP: '/a/temp',
+      BROKER_DB: '/somebody/elses/store.db',
+      BROKER_PROFILE_ROOT: '/somebody/elses/profiles',
+      UNRELATED: 'value',
+    });
+
+    assert.equal(ambient.PATH, '/a/path');
+    assert.equal(ambient.TEMP, '/a/temp');
+    // The point of the whole helper: a store location set on the machine
+    // running this check must not reach the child and decide the outcome.
+    assert.equal(
+      ambient.BROKER_DB,
+      undefined,
+      'a service variable from the ambient environment must not be inherited',
+    );
+    assert.equal(ambient.BROKER_PROFILE_ROOT, undefined);
+    assert.equal(ambient.UNRELATED, undefined);
+  });
+
+  it('omits a key that is absent rather than setting it undefined', () => {
+    const ambient = ambientEnvironment({ PATH: '/a/path' });
+
+    assert.equal(Object.hasOwn(ambient, 'HOME'), false);
+    assert.deepEqual(Object.keys(ambient), ['PATH']);
   });
 });
 

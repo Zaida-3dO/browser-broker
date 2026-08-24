@@ -193,6 +193,30 @@ export async function readSchemaVersionFromFile(location) {
   }
 }
 
+/**
+ * The variables a child process needs in order for the runtime itself to
+ * start, and nothing that configures this service.
+ *
+ * The whole of the caller's environment is deliberately not inherited: a
+ * variable set on the machine running this check would then decide the
+ * outcome, which is the opposite of what a clean-checkout claim means. The
+ * names are listed and looked up rather than written out one per line, so
+ * this carries a list of keys rather than a set of expressions that read as
+ * facts about a particular host.
+ */
+const PASSTHROUGH_KEYS = ['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'TEMP', 'TMP'];
+
+export function ambientEnvironment(source = process.env) {
+  const ambient = {};
+  for (const key of PASSTHROUGH_KEYS) {
+    const value = source[key];
+    if (value !== undefined) {
+      ambient[key] = value;
+    }
+  }
+  return ambient;
+}
+
 const failures = [];
 const notes = [];
 
@@ -215,14 +239,7 @@ export async function runInstallCheck() {
   const storeLocation = path.join(storeDirectory, 'broker.db');
 
   const environment = {
-    // Enough of the ambient environment for Node itself to start, and
-    // nothing that configures this service.
-    PATH: process.env.PATH,
-    HOME: process.env.HOME,
-    USERPROFILE: process.env.USERPROFILE,
-    SystemRoot: process.env.SystemRoot,
-    TEMP: process.env.TEMP,
-    TMP: process.env.TMP,
+    ...ambientEnvironment(),
     BROKER_DB: storeLocation,
     BROKER_ARTIFACTS_ROOT: path.join(temporaryRoot, 'artefacts'),
     BROKER_PROFILE_ROOT: path.join(temporaryRoot, 'profiles'),
