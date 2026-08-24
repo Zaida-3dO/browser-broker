@@ -19,7 +19,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test \"tests/**/*.test.mjs\" \"tests/**/*.test.ts\"",
-    "check": "npm run check:external-refs && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install"
+    "check": "npm run check:external-refs && npm run check:arbitration && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install",
+    "check:arbitration": "node scripts/check-arbitration.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
