@@ -74,9 +74,24 @@ test('an unrecognised option is refused with a non-zero code', async () => {
 });
 
 test('a command noun this build does not define is refused rather than guessed at', async () => {
-  const result = await drive(['init'], {});
+  // The example was `init` while the command surface was empty. `init` is now
+  // one of the four commands with no operation behind them (`SCHEMA.md`
+  // §5.5), so it is a *defined* command that reports it is not built — a
+  // different answer, and the right one. The assertion this test exists to
+  // make is about a noun the build genuinely does not have, so it takes one.
+  const result = await drive(['teleport'], {});
   assert.equal(result.code, 2);
   assert.match(result.err.join('\n'), /Unrecognised command/);
+});
+
+test('a command with no operation behind it is named, and says it is not built', async () => {
+  // The other half of the change above: `init` is refused, but for its own
+  // reason rather than as an unknown word. A command that silently did
+  // nothing, or that reported success, would be worse than either.
+  const result = await drive(['init'], {});
+  assert.notEqual(result.code, 0);
+  assert.doesNotMatch(result.err.join('\n'), /Unrecognised command/);
+  assert.match(result.err.join('\n'), /not built yet/);
 });
 
 test('a refusal exits non-zero and names the rule on the error stream', async () => {
