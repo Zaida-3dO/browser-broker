@@ -478,7 +478,7 @@ export class FakeBrowserDriver implements BrowserDriver {
         // has no value field, so there is nothing here to redact — which is
         // the property #23's test exists to pin, not something this fake
         // performs.
-        return Promise.resolve([...this.#cookies.get(tab.driverTabId) ?? DEFAULT_COOKIES]);
+        return Promise.resolve([...(this.#cookies.get(tab.driverTabId) ?? DEFAULT_COOKIES)]);
       },
 
       evaluate: (tab: TabHandle, expression: string): Promise<EvaluationResult> => {
