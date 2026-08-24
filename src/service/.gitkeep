@@ -1,0 +1,6 @@
+The service layer.
+
+Empty on purpose. This is the seam the service-layer row fills, and it is a
+named directory here so the import allowlist has a stable name to allow rather
+than a directory invented later: only the service layer, the configuration
+resolver and the schema steps reach the store client.

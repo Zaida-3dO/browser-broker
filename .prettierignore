@@ -1,0 +1,21 @@
+node_modules/
+package-lock.json
+
+# Prose is formatted by hand, not by a tool.
+#
+# This is not a preference. The hygiene gate's waiver comments cover the line
+# they sit on and the line after, so a formatter that rewraps a paragraph can
+# move a waived line out from under its waiver — turning a documented
+# exception into a failure, in a file nobody edited. Reflowing prose also
+# makes review harder for no gain: the diff fills with rewrapping.
+*.md
+docs/
+
+# The hygiene gate and its self-test.
+#
+# They are pinned by their own tests down to line numbers and exemption lists,
+# and they must keep running on a tree with nothing installed. Reformatting
+# them is a change to a gate, which is a thing to do deliberately rather than
+# as a side effect of running a formatter.
+scripts/check-external-refs.mjs
+tests/check-external-refs.test.mjs

@@ -1,0 +1,104 @@
+# Continuous integration.
+#
+# The job names below are an interface: the row that pins required status
+# checks points at them by name, and renaming one after that silently removes
+# a required check — the pull request shows no red, it just stops being gated.
+#
+# The pull-request trigger filters on `main` deliberately. A pull request
+# opened against a branch that is itself not `main` matches no event and runs
+# zero checks, and no runs at all reads as quiet rather than red.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The floor declared in the package manifest's engines field. Native
+  # TypeScript type stripping is unflagged from this version, which is what
+  # lets the sources run with no build step.
+  NODE_FLOOR: '22.18'
+
+jobs:
+  # The public-repo hygiene gate, as its own job so a failure names the gate
+  # rather than naming a job that runs five things.
+  external-refs:
+    name: external-refs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      # No install step, deliberately: the gate runs with no dependencies so a
+      # tree with nothing installed can still be checked.
+      - run: npm run check:external-refs
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+
+  # The test suite, on the lowest supported version and on the current one.
+  # Running the floor is what makes the engines field a claim something checks.
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.18', '24']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  # Windows earns a job because the network-location refusal has a
+  # platform-specific path that would otherwise never execute in continuous
+  # integration at all. A hosted runner has nothing mapped, so this proves the
+  # code path runs rather than exercising the mapped-drive case — which is
+  # exactly why that case is driven through an injected resolver in the tests.
+  test-windows:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
