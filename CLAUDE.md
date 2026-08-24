@@ -4,12 +4,19 @@
 tabs**, queues callers when capacity is full, reclaims capacity from callers that die, and enforces a
 capture policy on everything that comes back out. The command you type is `broker`.
 
-Node · TypeScript · Prisma · Postgres. A long-lived service process; the one visual surface is a
-read-only operations page served as static HTML by the HTTP adapter, with no application framework
-behind it. The image is built in CI and **pulled** where it runs, never built on the host.
+Node · TypeScript · SQLite in a single file, reached with plain SQL rather than through an
+object-relational mapper. **There is no long-lived process:** the service is spawned by its caller,
+serves that session, and exits with it — so installation is the whole of deployment, and every fact
+two callers share lives in the store. **Nothing is served over a socket:** the read-only operations
+view is a self-contained HTML file that a command generates and a person opens from disk, labelled
+with the moment it describes (`docs/plans/DECISIONS.md` §13f).
+
+**Every value the service reads is an environment variable with a working default**, so a fresh
+install runs with nothing set; `.env.example` documents the whole set. There is no settings table
+and no configuration surface to write one from.
 
 Plans live in [`docs/plans/`](docs/plans/): `PLAN.md` (how it works), `SCHEMA.md` (tables, tools,
-endpoints, commands, settings, guards), `DECISIONS.md` (why, including what was rejected),
+commands, configuration, guards), `DECISIONS.md` (why, including what was rejected),
 `MILESTONES.md` (the work, as PR-sized pieces with prerequisites).
 
 ---
@@ -94,7 +101,7 @@ they bank, what their machine is called, which account is signed in. So:
   |---|---|
   | "it stops the process explosion we had" | "process count is bounded by configuration, not by the number of connected clients" |
   | "the shared login kept getting destroyed" | "a shared authenticated profile must not be destroyable by any single client's action" |
-  | "replaces the per-client guard scripts" | "rules enforced in one server-side place cannot drift the way per-client scripts do" | <!-- external-ref-ok: this row has to quote the phrasing it forbids in order to teach it -->
+  | "replaces the per-client guard scripts" | "rules enforced in one service layer cannot drift the way per-client scripts do" | <!-- external-ref-ok: this row has to quote the phrasing it forbids in order to teach it -->
   | "it kept getting blocked by whatever else was running" | "the service must be startable on a host where unrelated browsers are already running" |
 
 ### The check that enforces the last two rules
@@ -299,10 +306,12 @@ you.
 - **A row is available to pick up when everything in its `Needs` column is merged.** That rule is
   what makes the milestone list a work queue instead of a wish list, and it is what lets you compute
   your next job without asking anyone.
-- **Migrations are additive.** The whole schema lands as one baseline; change it with an `ALTER`,
-  never by editing a migration that has already been applied. A migration that has run somewhere is
-  history, and editing history means two installations with the same version number and different
-  schemas — a difference nothing will report until something breaks far away from the cause.
+- **Migrations are additive.** The schema is a version stepper the service applies to its own store
+  on every spawn, so there is no deployment moment at which anyone runs one by hand. The first step
+  lands the whole schema; change it by adding a step with an `ALTER`, never by editing a step that has
+  already been applied. A step that has run somewhere is history, and editing history means two
+  installations reporting the same version with different schemas — a difference nothing will report
+  until something breaks far away from the cause.
 - **Every adapter is a thin shell over a service call.** No adapter may reach the database or a guard
   directly — it resolves its input, calls one service operation, and shapes the result for its
   transport. Every rule that decides whether an operation is allowed lives in the service layer, or
