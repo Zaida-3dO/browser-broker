@@ -1,0 +1,408 @@
+import type { Database } from 'better-sqlite3';
+
+import type { StoreHandle } from '../store/open.ts';
+import { append, type EventAdapter, type EventKind } from './events.ts';
+import { CallRefusal } from './refusals.ts';
+
+/**
+ * The arbitration transaction, which is one shape, provided once.
+ *
+ * `MILESTONES.md`'s implementation note for #10, #12, #13 and #16 gives the
+ * shape in full, and it is a shape rather than a suggestion — "a path that
+ * opens its own transaction differently is the bug both build checks in #50
+ * exist to catch":
+ *
+ * ```
+ * BEGIN IMMEDIATE
+ *   1. Sweep, globally
+ *   2. Answer, from the reconciled state
+ * COMMIT
+ *   3. After the commit, outside every transaction: close the collected tabs
+ * ```
+ *
+ * ── What this module makes structural, and what it does not ─────────────
+ *
+ * Stated exactly, in the manner `transaction.ts` states its own bypasses,
+ * because #50's checks have to be built against the difference rather than
+ * against a hope:
+ *
+ * **Structural — you cannot get this wrong through this module.**
+ *
+ * - **The sweep is the runner's, not the operation's.** {@link runArbitration}
+ *   calls it before the handler, unconditionally, and a handler has no way to
+ *   skip it: it is not a flag, not an option, and not a function the handler
+ *   is passed. **This is the standing invariant made mechanical** — §1.0a's
+ *   guarantee is writer serialisation rather than full serialisability, and
+ *   it "holds only because every arbitration path writes". A handler that
+ *   returns without writing a thing still ran a global sweep, so the
+ *   transaction is still a writer.
+ * - **A handler cannot reach the transaction helper.** It is given a
+ *   {@link ArbitrationScope}, which carries the driver handle and the swept
+ *   state, and no means of opening anything. The transaction is already open
+ *   by the time a handler runs.
+ * - **After-commit work is declared, not performed.** A handler returns the
+ *   closures it wants run afterwards; it does not run them. The runner passes
+ *   them to the transaction helper's own `afterCommit`, which is the seam
+ *   that already exists for this — §2.4b, and the reason it exists is that
+ *   the most natural way to invent a parallel one is by doing browser work
+ *   inside the callback, which is the violation.
+ * - **An unregistered operation cannot be dispatched.** {@link ArbitrationName}
+ *   is the union of the registry's keys, so a name that is not registered is a
+ *   compile error at every internal call site.
+ *
+ * **Conventional — this module makes the correct path the easy one and does
+ * not make the wrong one impossible.**
+ *
+ * - **Nothing stops a future module opening its own transaction.** The store
+ *   handle exports `immediate`, and `transaction.ts` records that a savepoint
+ *   and a bare statement both bypass even that. What this module buys is that
+ *   the arbitration surface is a **single enumerable registry**, which is what
+ *   makes `arbitration.no_read_only_path` checkable at all: a check can walk
+ *   the registry and know it has seen every arbitration operation this build
+ *   has. It cannot know whether somebody wrote a query somewhere else and
+ *   called it something other than arbitration.
+ * - **Nothing here stops a handler doing browser work.** `ArbitrationScope`
+ *   deliberately does not carry a driver, so the obvious path has nothing to
+ *   call — but a handler that imports one directly would compile.
+ *   `arbitration.no_browser_io` (§7.3) is a separate check and a separate row;
+ *   this module's contribution to it is the after-commit collection, which
+ *   makes the correct place to close a tab the path of least resistance.
+ */
+
+/**
+ * A tab the sweep found and the commit orphaned.
+ *
+ * **A leaked tab is not a leaked lease** (§2.4b). By the time one of these is
+ * closed the capacity is already back — the transaction reclaimed it, and the
+ * commit made that true. What remains is a page in a browser that nobody
+ * owns, which costs memory and does not cost budget.
+ */
+export interface OrphanedTab {
+  readonly tabId: string;
+  readonly claimId: string;
+  readonly browserId: string;
+}
+
+/**
+ * What the global sweep did, handed to the handler so it does not repeat the
+ * work.
+ *
+ * **The sweep is global rather than scoped to the caller** (§2.4, and the
+ * implementation note's "step 1 is global"): capacity held by something that
+ * died must come back on the next call from *anyone*, and a caller asking
+ * about its own lease is often the only call that will arrive for a while.
+ * Scoping it would leave a machine's capacity pinned by a process nobody is
+ * ever going to ask about again.
+ */
+export interface SweepResult {
+  /** Claims whose expiry had elapsed, now `expired`. */
+  readonly expiredClaimIds: readonly string[];
+  /** Their tabs, to be closed after the commit and not before. */
+  readonly orphanedTabs: readonly OrphanedTab[];
+  /**
+   * The timestamp the sweep ran at, read from the database's own clock.
+   *
+   * Handed to the handler rather than recomputed, so every derivation inside
+   * one call uses one instant. Several processes are running by design
+   * (§1.0a) and a handler calling the clock again could otherwise decide an
+   * expiry against a moment its own sweep did not use.
+   */
+  readonly sweptAt: string;
+}
+
+/** What a handler is given. It has a transaction; it cannot open one. */
+export interface ArbitrationScope {
+  /**
+   * The driver handle, inside the open transaction.
+   *
+   * Only the service layer reaches the store client (`db.import_isolated`,
+   * §7.3) and this is where that reach lives for arbitration.
+   */
+  readonly db: Database;
+  /** What the sweep reconciled, before this handler was called. */
+  readonly swept: SweepResult;
+  /** Which door the call came in through, for the ledger row. */
+  readonly adapter: EventAdapter;
+}
+
+/**
+ * What a handler returns.
+ *
+ * `afterCommit` is in the signature from the start for the same reason
+ * `TransactionResult` has it: a handler that had only "run this inside" would
+ * leave the author of the first browser-touching path to invent the
+ * outside-the-transaction seam, and the natural way to invent it is by doing
+ * the work in the callback (§2.4b).
+ */
+export interface ArbitrationOutcome<T> {
+  readonly value: T;
+  /** Ran after the commit, in order, each failure swallowed. */
+  readonly afterCommit?: readonly (() => void | Promise<void>)[];
+}
+
+export type ArbitrationHandler<Input, Output> = (
+  scope: ArbitrationScope,
+  input: Input,
+) => ArbitrationOutcome<Output> | Promise<ArbitrationOutcome<Output>>;
+
+/**
+ * One registered arbitration operation.
+ *
+ * `writes` is not a field, and its absence is the design. An operation cannot
+ * declare itself read-only, because the runner sweeps for it either way — the
+ * invariant is enforced by there being no way to express the violation, not
+ * by a flag somebody could set. A field here would be the first thing a
+ * well-intentioned optimisation reached for.
+ */
+export interface ArbitrationOperation<Input = unknown, Output = unknown> {
+  /** The ledger kind this operation records against (§1.6). */
+  readonly kind: EventKind;
+  /** One line, for a person reading the registry. */
+  readonly summary: string;
+  readonly handler: ArbitrationHandler<Input, Output>;
+}
+
+/**
+ * Every arbitration operation this build has.
+ *
+ * **This registry is the set `arbitration.no_read_only_path` walks**, and the
+ * reason it is one object in one file rather than a call to a `register()`
+ * function scattered across modules: a check that has to *find* the
+ * registrations can only find the ones written the way it expects, and the
+ * first one written differently is invisible to it. A single object literal
+ * is enumerable statically and at run time, and the two enumerations can be
+ * asserted equal.
+ *
+ * **It is empty in this row, and that is a real hole rather than a tidy
+ * placeholder.** `MILESTONES.md` #50 asks for "a registry test asserting the
+ * set of arbitration operations is not empty — an assertion over an empty set
+ * passes forever and silently", and the operations themselves belong to #12
+ * onward. So the emptiness is handled by making it **loud**: the checked-in
+ * check refuses an empty registry outright (see `scripts/check-arbitration.mjs`,
+ * which carries the one declared exemption and the row that retires it). What
+ * is not done is pretending otherwise by registering a fake operation to make
+ * a count go up.
+ */
+export const ARBITRATION_OPERATIONS = {} as const satisfies Readonly<
+  Record<string, ArbitrationOperation>
+>;
+
+/** The name of an operation this build registers. Anything else is a type error. */
+export type ArbitrationName = keyof typeof ARBITRATION_OPERATIONS;
+
+/** The registered names as data, for the registry test and the ledger. */
+export const ARBITRATION_NAMES: readonly string[] = Object.keys(ARBITRATION_OPERATIONS);
+
+/**
+ * Expire every lapsed claim and every lapsed queue entry, across the whole
+ * store, and collect the tabs they held.
+ *
+ * **This is what makes even a question a write** (§1.0a, §2.4). It is not
+ * conditional, not skippable and not scoped to the caller, and those three
+ * properties are the standing invariant rather than three separate choices.
+ *
+ * ── Why the lapse time is computed rather than stamped ──────────────────
+ *
+ * §2.4a: `claims.expired_at` is when the lease *lapsed*, which is not when
+ * the sweep noticed. A lease whose caller stopped talking lapsed at its own
+ * expiry, whether the next caller arrived one second later or forty minutes
+ * later. Stamping the sweep's own moment produces a record in which leases
+ * expire in clusters at instants when nothing happened to them — an artifact
+ * of the observer, and a bad kind, because it is a strong, clean, entirely
+ * fictitious pattern.
+ *
+ * So `expired_at` is set to the row's own `expires_at`, which is the last
+ * renewal plus the duration that was in force. The ledger row carries the
+ * sweep's moment, and says so by being a ledger row.
+ */
+function sweep(db: Database): SweepResult {
+  const sweptAt = db.prepare("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS now").get() as {
+    now: string;
+  };
+  const now = sweptAt.now;
+
+  // Read before writing, inside the transaction. Which tabs the lapsed claims
+  // held cannot be read after the update on the claims alone — the claims are
+  // still there — but reading first keeps the two statements over one set of
+  // rows rather than over whatever the second statement re-derives.
+  const lapsed = db
+    .prepare(
+      `SELECT id FROM claims
+       WHERE state IN ('queued', 'active') AND expires_at <= @now
+       ORDER BY id`,
+    )
+    .all({ now }) as { id: string }[];
+
+  if (lapsed.length === 0) {
+    return { expiredClaimIds: [], orphanedTabs: [], sweptAt: now };
+  }
+
+  const placeholders = lapsed.map(() => '?').join(', ');
+  const ids = lapsed.map((row) => row.id);
+
+  const orphanedTabs = db
+    .prepare(
+      `SELECT id AS tabId, claim_id AS claimId, browser_id AS browserId
+       FROM tabs
+       WHERE claim_id IN (${placeholders}) AND state IN ('opening', 'open')
+       ORDER BY id`,
+    )
+    .all(...ids) as OrphanedTab[];
+
+  // Positional parameters throughout, not a mix. The driver refuses a
+  // statement that carries both spellings, and the list of identifiers has to
+  // be positional because its length varies per call.
+  db.prepare(
+    `UPDATE claims
+     SET state = 'expired',
+         -- Section 2.4a: when it lapsed, not when this noticed.
+         expired_at = expires_at,
+         ended_at = expires_at,
+         updated_at = ?
+     WHERE id IN (${placeholders})`,
+  ).run(now, ...ids);
+
+  // The tab rows follow their claims. 'closing' rather than 'closed', because
+  // the close has not happened yet and will not until after the commit —
+  // section 1.4 puts it plainly: 'closing' is "the honest representation of
+  // the tool was asked and has not answered", and it is what stops a page
+  // that may still exist being counted as free.
+  if (orphanedTabs.length > 0) {
+    const tabPlaceholders = orphanedTabs.map(() => '?').join(', ');
+    db.prepare(
+      `UPDATE tabs SET state = 'closing', updated_at = ? WHERE id IN (${tabPlaceholders})`,
+    ).run(now, ...orphanedTabs.map((tab) => tab.tabId));
+  }
+
+  return { expiredClaimIds: ids, orphanedTabs, sweptAt: now };
+}
+
+/**
+ * Record what the sweep did, on the call that performed it.
+ *
+ * §1.6's `internal` adapter, and the reason it exists: "that last one is not a
+ * background job — with no long-lived process there is nothing running in the
+ * background — so a sweep is attributed to the call that performed it". The
+ * adapter recorded here is therefore the **caller's**, not `internal`; the
+ * kind is what says this was a sweep.
+ *
+ * **A sweep that found nothing writes no row.** The ledger records decisions,
+ * and finding nothing to expire is not one — a row per call on a quiet
+ * installation would be the ledger's largest category and would carry no
+ * information. What is recorded is each claim that actually expired, which is
+ * a decision about that lease.
+ */
+function recordSweep(scope: ArbitrationScope, swept: SweepResult): void {
+  for (const claimId of swept.expiredClaimIds) {
+    append(scope.db, {
+      kind: 'claim_expired',
+      outcome: 'allow',
+      adapter: scope.adapter,
+      claimId,
+      detail: {
+        sweptAt: swept.sweptAt,
+        orphanedTabs: swept.orphanedTabs.filter((tab) => tab.claimId === claimId).length,
+      },
+    });
+  }
+}
+
+/**
+ * How a swept tab is actually closed, supplied by the caller.
+ *
+ * **A function rather than a driver**, and that is the seam doing work: this
+ * module has no import of anything that talks to a browser, so
+ * `arbitration.no_browser_io` has nothing to find here even by call graph.
+ * The caller that owns a browser session supplies a closure, and the runner
+ * only ever calls it after the commit.
+ *
+ * **It is expected to fail sometimes, and failing is not an error.** §2.4b:
+ * best effort, and a tab that will not close is a leaked tab rather than a
+ * leaked lease. Whatever this throws is swallowed by the transaction
+ * helper's own after-commit handling.
+ */
+export type CloseOrphanedTab = (tab: OrphanedTab) => void | Promise<void>;
+
+export interface RunArbitrationOptions<Input> {
+  readonly store: StoreHandle;
+  readonly name: string;
+  readonly adapter: EventAdapter;
+  readonly input: Input;
+  /**
+   * What to do with the tabs the sweep orphaned, after the commit.
+   *
+   * **Optional, and omitting it leaks tabs rather than leases** — which is
+   * the documented consequence rather than a gap. A caller with no browser
+   * session (a command-line read, a test) has nothing to close with, and the
+   * capacity still came back at commit. The rows stay `closing`, which is
+   * what §1.4 calls the honest representation of "the tool was asked and has
+   * not answered", and the administrative operation that clears a leaked tab
+   * (§4.3) is what deals with them.
+   */
+  readonly closeTab?: CloseOrphanedTab;
+}
+
+/**
+ * Dispatch one arbitration operation: sweep, answer, commit, then close.
+ *
+ * **The only way an arbitration operation is invoked.** Everything in the
+ * shape that must not vary lives here rather than in the operations — the
+ * transaction, the sweep, the ledger row for what the sweep did, and the
+ * ordering of all three — so an operation cannot get the order wrong by
+ * writing it differently. What an operation supplies is step 2 alone.
+ *
+ * The transaction is opened by `immediate` from `transaction.ts` and by
+ * nothing else in this module. There is no second path, no fast path and no
+ * option that skips it, which is the whole of what
+ * `arbitration.immediate_transaction` can be enforced against on this side —
+ * the check itself explains what it can and cannot prove.
+ */
+export async function runArbitration<Input, Output>(
+  options: RunArbitrationOptions<Input>,
+): Promise<Output> {
+  const operation = (ARBITRATION_OPERATIONS as Readonly<Record<string, ArbitrationOperation>>)[
+    options.name
+  ];
+
+  if (operation === undefined) {
+    // Refused before the transaction opens, deliberately. An unregistered
+    // name is not a decision about capacity and there is nothing to sweep on
+    // behalf of — opening a transaction to refuse it would serialise every
+    // caller on the machine behind a mistyped operation name.
+    throw new CallRefusal(
+      'unknown_operation',
+      `There is no arbitration operation named ${JSON.stringify(options.name)}. This build registers ${ARBITRATION_NAMES.length === 0 ? 'none yet' : ARBITRATION_NAMES.join(', ')}.`,
+      { detail: { requested: options.name, registered: ARBITRATION_NAMES } },
+    );
+  }
+
+  return options.store.immediate(async ({ db }) => {
+    // Step 1, always, before anything the operation does. Unconditional is
+    // the point: this is what makes the transaction a writer even when the
+    // operation only asks a question (section 1.0a).
+    const swept = sweep(db);
+    const scope: ArbitrationScope = { db, swept, adapter: options.adapter };
+    recordSweep(scope, swept);
+
+    // Step 2: the operation answers from the reconciled state.
+    const outcome = (await operation.handler(scope, options.input)) as ArbitrationOutcome<Output>;
+
+    // Step 3 is handed to the transaction helper, which runs it after the
+    // commit and outside every transaction. The sweep's own orphaned tabs are
+    // scheduled here rather than by the operation, because an operation that
+    // had to remember to close them is an operation that can forget — and the
+    // sweep is not its work in the first place.
+    //
+    // The sweep's closes go first: they are reclamation of capacity that has
+    // already come back, and an operation's own after-commit work may well be
+    // opening the tab that capacity is for.
+    const closeTab = options.closeTab;
+    const closes: (() => void | Promise<void>)[] =
+      closeTab === undefined ? [] : swept.orphanedTabs.map((tab) => () => closeTab(tab));
+
+    return {
+      value: outcome.value,
+      afterCommit: [...closes, ...(outcome.afterCommit ?? [])],
+    };
+  });
+}
