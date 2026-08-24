@@ -2,6 +2,7 @@ import { BROWSER_IDS, type ActionRequest } from './driver.ts';
 import type {
   ArtifactResult,
   BrowserDescription,
+  CookieSummary,
   BrowserDriver,
   BrowserId,
   BrowserMode,
@@ -70,6 +71,7 @@ export type DriverCallName =
   | 'navigate'
   | 'act'
   | 'read'
+  | 'cookies'
   | 'evaluate'
   | 'detach';
 
@@ -131,6 +133,40 @@ const DEFAULT_PID: Readonly<Record<BrowserId, number>> = {
   private: 4002,
 };
 
+/**
+ * What a tab's cookies look like when a test has not said otherwise.
+ *
+ * Two entries rather than none, and it matters: a redaction test that asserts
+ * a secret appears nowhere in the output is trivially satisfied by output
+ * with nothing in it, and would stay green with the redaction deleted. Two
+ * cookies with flags that differ also mean a test asserting the flags survive
+ * cannot pass by returning one shape for everything.
+ *
+ * **No value field appears here because {@link CookieSummary} has none.** The
+ * seeding lever is what carries a secret value — see
+ * {@link FakeBrowserDriver.seedCookies}.
+ */
+const DEFAULT_COOKIES: readonly CookieSummary[] = [
+  {
+    name: 'session',
+    domain: 'example.com',
+    path: '/',
+    expires: null,
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Lax',
+  },
+  {
+    name: 'preference',
+    domain: 'example.com',
+    path: '/settings',
+    expires: '2027-01-01T00:00:00.000Z',
+    httpOnly: false,
+    secure: false,
+    sameSite: 'Strict',
+  },
+];
+
 /** A seeded failure: the next call to this operation throws instead of answering. */
 interface SeededFailure {
   readonly name: DriverCallName;
@@ -149,6 +185,7 @@ export class FakeBrowserDriver implements BrowserDriver {
   readonly #options: FakeDriverOptions;
   readonly #openTabs = new Map<BrowserId, Set<string>>();
   readonly #keeperTabs = new Map<BrowserId, string>();
+  readonly #cookies = new Map<string, readonly CookieSummary[]>();
   readonly #failures: SeededFailure[] = [];
   #nextTabNumber = 1;
 
@@ -227,6 +264,27 @@ export class FakeBrowserDriver implements BrowserDriver {
     error: Error = new Error(`the fake was told to fail ${name}`),
   ): void {
     this.#failures.push({ name, error });
+  }
+
+  /**
+   * Give a tab a particular set of cookies.
+   *
+   * **The lever a redaction test needs, and the shape of it is the point.**
+   * A test proving `read.cookies_no_values` (§7.1) seeds a cookie whose
+   * *value* is a known secret and then asserts that string appears nowhere in
+   * the response or in the file. This method takes {@link CookieSummary}
+   * entries, which have no value field — so the secret is supplied to the
+   * test's own driver-level fixture rather than through here, and this method
+   * exists to control the **names and flags** that do come back.
+   *
+   * That asymmetry is deliberate and it is the honest position: this fake
+   * cannot demonstrate that a value was dropped, because at this seam there
+   * was never a value to drop. What it can demonstrate is that everything
+   * else survives, which is the half of §3.9 a redaction is most likely to
+   * break by over-reaching.
+   */
+  seedCookies(tab: TabHandle, cookies: readonly CookieSummary[]): void {
+    this.#cookies.set(tab.driverTabId, [...cookies]);
   }
 
   attach(browser: BrowserId, record: DiscoveryRecord): Promise<BrowserSession> {
@@ -368,7 +426,15 @@ export class FakeBrowserDriver implements BrowserDriver {
           name: 'act',
           browser,
           tab,
-          detail: { action: request.action, ref: request.ref, value: request.value },
+          // The whole request, not a hand-picked few of its fields.
+          // `ActionRequest` is a union over the verb, so each member carries
+          // different arguments — a `resize` has a viewport and no reference,
+          // a `drag` has two references. Copying named fields would silently
+          // drop every argument belonging to a verb added after the copy was
+          // written, and a test asserting "it was asked to resize to 375
+          // wide" would then pass against a driver asked to resize to
+          // anything at all.
+          detail: { ...request },
         });
         if (failure) return Promise.reject(failure);
         // A fresh snapshot after every change (`SCHEMA.md` §3.8). No file is
@@ -400,6 +466,19 @@ export class FakeBrowserDriver implements BrowserDriver {
             truncated: false,
           })),
         );
+      },
+
+      cookies: (tab: TabHandle): Promise<readonly CookieSummary[]> => {
+        const failure = this.#enter({ name: 'cookies', browser, tab });
+        if (failure) return Promise.reject(failure);
+        // A canned pair rather than an empty list, because a redaction test
+        // asserting "no value appeared" against nothing at all is the
+        // assertion-over-an-empty-set this repository has already been caught
+        // by: it stays green when the redaction is deleted. `CookieSummary`
+        // has no value field, so there is nothing here to redact — which is
+        // the property #23's test exists to pin, not something this fake
+        // performs.
+        return Promise.resolve([...this.#cookies.get(tab.driverTabId) ?? DEFAULT_COOKIES]);
       },
 
       evaluate: (tab: TabHandle, expression: string): Promise<EvaluationResult> => {
