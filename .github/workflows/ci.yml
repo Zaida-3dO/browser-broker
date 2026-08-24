@@ -55,6 +55,20 @@ jobs:
       # checkout with nothing installed is exactly what they need.
       - run: npm run check:arbitration
 
+  # The capture/diff sequencing rule (SCHEMA.md 7.3,
+  # capture.no_diff_dependency), as its own job for the same reason the
+  # hygiene gate is one: a failure should name the rule, not a job that runs
+  # five things. No install step — the gate reads sources and needs nothing.
+  capture-isolation:
+    name: capture-isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      - run: npm run check:capture-isolation
+
   typecheck:
     name: typecheck
     runs-on: ubuntu-latest

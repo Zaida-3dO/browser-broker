@@ -44,9 +44,9 @@
  * - **It is not a data-flow analysis.** If a diff-feature *value* were passed
  *   into a capture function as an argument by some third module, no import
  *   from the capture side would exist and this check would pass. What keeps
- *   that from mattering today is that {@link CAPTURE_ENTRY_POINTS}'s signatures
- *   take a tab, an artifact store and plain options — but that is a property
- *   of the current signatures, not something checked here.
+ *   that from mattering is that {@link CAPTURE_ENTRY_POINTS}'s signatures take
+ *   a tab, an artifact store and plain options — but that is a property of
+ *   those signatures, not something checked here.
  * - **It cannot see a module that does not exist yet.** {@link DIFF_OWNED} is
  *   the list of paths the diff feature owns, and a diff module added somewhere
  *   not on that list is invisible to this check. **This is the maintenance cost
@@ -177,7 +177,9 @@ function resolveSpecifier(fromFile, specifier, root) {
 
 /** Is this path owned by the diff feature? */
 function isDiffOwned(relativePath) {
-  return DIFF_OWNED.some((owned) => relativePath === owned.replace(/\/$/, '') || relativePath.startsWith(owned));
+  return DIFF_OWNED.some(
+    (owned) => relativePath === owned.replace(/\/$/, '') || relativePath.startsWith(owned),
+  );
 }
 
 /**

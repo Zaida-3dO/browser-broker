@@ -169,8 +169,8 @@ export interface CaptureResult {
  * or escalates by trial and error, and both waste a call.
  *
  * Composed from {@link TIER_LONGEST_EDGE} and {@link TIER_REQUIRING_REASON}
- * rather than written out, so a rung the study moves (#34) cannot leave this
- * text quoting a number that is no longer true.
+ * rather than written out, so this text always quotes the rungs the pipeline
+ * actually shrinks to, whatever the study (#34) sets them to.
  */
 function escalationGuidance(): string {
   return (

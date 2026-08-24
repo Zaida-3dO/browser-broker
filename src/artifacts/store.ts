@@ -147,7 +147,12 @@ export class ArtifactStore {
    * daemonless service at which a setup step could have run instead.
    */
   directoryFor(claimId: string, kind: ArtifactKind): string {
-    const directory = path.join(this.#root, 'claims', safeSegment(claimId, 'A claim identifier'), kind);
+    const directory = path.join(
+      this.#root,
+      'claims',
+      safeSegment(claimId, 'A claim identifier'),
+      kind,
+    );
     fs.mkdirSync(directory, { recursive: true });
     return directory;
   }

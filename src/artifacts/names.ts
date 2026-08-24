@@ -187,7 +187,10 @@ export function sanitiseLabel(label: string | undefined): string {
  * rather than formatted by hand so that it is the same on every platform.
  */
 export function stampFromInstant(when: Date): string {
-  return when.toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+  return when
+    .toISOString()
+    .replace(/[^0-9]/g, '')
+    .slice(0, 14);
 }
 
 /**
@@ -212,11 +215,13 @@ export function captureFileName(parts: {
   readonly id: string;
 }): string {
   const width = reduce(String(Math.trunc(parts.viewportWidth)));
-  return [
-    slugFromUrl(parts.url),
-    sanitiseLabel(parts.label),
-    width,
-    stampFromInstant(parts.takenAt),
-    reduce(parts.id),
-  ].join('-') + '.png';
+  return (
+    [
+      slugFromUrl(parts.url),
+      sanitiseLabel(parts.label),
+      width,
+      stampFromInstant(parts.takenAt),
+      reduce(parts.id),
+    ].join('-') + '.png'
+  );
 }

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { BROWSER_IDS, PAGE_ACTIONS, type BrowserId } from '../../src/browser/driver.ts';
 import { FakeBrowserDriver } from '../../src/browser/fake.ts';
+import { decodePng } from '../../src/capture/image.ts';
 
 const RECORD = { endpoint: 'http://127.0.0.1:9222', browserUuid: 'expected-uuid' };
 
@@ -301,4 +302,57 @@ test('the action list is the fixed set §3.8 names, with no way to move the fore
     PAGE_ACTIONS.some((action) => /front|focus|activate|raise/i.test(action)),
     false,
   );
+});
+
+// ── The capture operations added for the capture pipeline (#31, #45) ────────
+
+test('the fake records a settle and a shutter, with the mask it was given', async () => {
+  const driver = new FakeBrowserDriver();
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+  driver.clearCalls();
+
+  const mask = [{ x: 1, y: 2, width: 3, height: 4 }];
+  await session.settlePage(tab);
+  await session.capture(tab, { fullPage: false, mask });
+
+  assert.deepEqual(
+    driver.calls.map((call) => call.name),
+    ['settlePage', 'capture'],
+  );
+  // The rectangles themselves, so a pipeline that dropped the mask on the way
+  // through is caught rather than merely a pipeline that passed nothing.
+  assert.deepEqual(driver.callsOf('capture')[0]?.detail?.['mask'], mask);
+});
+
+test('the fake hands back a real, decodable picture at the geometry it was given', async () => {
+  const driver = new FakeBrowserDriver({
+    capture: { width: 300, height: 200, viewportWidth: 375, url: 'https://example.com/x' },
+  });
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  const raw = await session.capture(tab, { fullPage: false });
+  assert.equal(raw.width, 300);
+  assert.equal(raw.height, 200);
+  assert.equal(raw.viewportWidth, 375);
+  assert.equal(raw.url, 'https://example.com/x');
+  // Decodable, because a pipeline that decodes what it was handed must be
+  // handed something decodable — otherwise every downscale test becomes a test
+  // of the decoder's error path.
+  const decoded = decodePng(raw.image);
+  assert.equal(decoded.width, 300);
+  assert.equal(decoded.height, 200);
+});
+
+test('a seeded capture failure is still RECORDED, so "asked and refused" is not "never asked"', async () => {
+  const driver = new FakeBrowserDriver();
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+  driver.clearCalls();
+
+  driver.failNext('capture');
+  await assert.rejects(() => session.capture(tab, { fullPage: false }));
+  assert.equal(driver.callsOf('capture').length, 1, 'the failed shutter left no trace');
+  assert.equal(driver.callsOf('capture')[0]?.failed, true);
 });

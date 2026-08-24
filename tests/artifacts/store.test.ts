@@ -48,7 +48,10 @@ test('a written path is RELATIVE to the root — never absolute', () => {
     // The mutation this dies on: returning `absolutePath` as `relativePath`.
     // That is the plausible mistake, and it is invisible until the root moves.
     assert.equal(stored.relativePath, 'claims/claim1/images/picture.png');
-    assert.ok(!path.isAbsolute(stored.relativePath), `stored an absolute path: ${stored.relativePath}`);
+    assert.ok(
+      !path.isAbsolute(stored.relativePath),
+      `stored an absolute path: ${stored.relativePath}`,
+    );
     assert.ok(
       !stored.relativePath.includes(root),
       `the root leaked into the stored path: ${stored.relativePath}`,
@@ -64,7 +67,10 @@ test('a stored path uses forward slashes whatever platform wrote it', () => {
     const stored = store.write('claim1', 'images', 'picture.png', new Uint8Array([1]));
     // A row written on one machine has to read on another; a separator baked
     // into the stored value reintroduces machine-specificity one layer down.
-    assert.ok(!stored.relativePath.includes(BACK), `a back separator was stored: ${stored.relativePath}`);
+    assert.ok(
+      !stored.relativePath.includes(BACK),
+      `a back separator was stored: ${stored.relativePath}`,
+    );
     assert.equal(stored.relativePath.split('/').length, 4);
   });
 });
@@ -74,7 +80,10 @@ test('the relative path resolves back to exactly the file that was written', () 
     const stored = store.write('claim1', 'images', 'picture.png', new Uint8Array([9, 9]));
     // The round trip is the property that makes rule one usable: a row records
     // the relative path, and the image endpoint resolves it under the root.
-    assert.equal(path.resolve(store.resolve(stored.relativePath)), path.resolve(stored.absolutePath));
+    assert.equal(
+      path.resolve(store.resolve(stored.relativePath)),
+      path.resolve(stored.absolutePath),
+    );
     assert.equal(fs.readFileSync(store.resolve(stored.relativePath))[0], 9);
   });
 });
@@ -146,7 +155,8 @@ test('resolve refuses a recorded path that escapes — traversal has no input to
     for (const escaping of ['../outside.png', '../../outside.png', `..${BACK}outside.png`]) {
       assert.throws(
         () => store.resolve(escaping),
-        (error: unknown) => error instanceof BrokerError && error.rule === 'artifact.no_request_path',
+        (error: unknown) =>
+          error instanceof BrokerError && error.rule === 'artifact.no_request_path',
         `resolve allowed ${escaping}`,
       );
     }
@@ -162,7 +172,8 @@ test('resolve refuses an absolute recorded path in either spelling', () => {
     ]) {
       assert.throws(
         () => store.resolve(absolute),
-        (error: unknown) => error instanceof BrokerError && error.rule === 'artifact.no_request_path',
+        (error: unknown) =>
+          error instanceof BrokerError && error.rule === 'artifact.no_request_path',
         `resolve allowed ${absolute}`,
       );
     }
@@ -174,7 +185,8 @@ test('a claim identifier that is not a plain segment is refused', () => {
     for (const bad of ['../escape', `..${BACK}escape`, 'a/b', '']) {
       assert.throws(
         () => store.directoryFor(bad, 'images'),
-        (error: unknown) => error instanceof BrokerError && error.rule === 'artifact.no_request_path',
+        (error: unknown) =>
+          error instanceof BrokerError && error.rule === 'artifact.no_request_path',
         `a claim identifier of ${JSON.stringify(bad)} was accepted`,
       );
     }
