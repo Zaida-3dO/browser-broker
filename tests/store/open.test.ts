@@ -99,6 +99,7 @@ test('opening a store on a network location refuses before the file is created',
       openStore(
         {
           databasePath: location,
+          configuredDatabasePath: location,
           artifactsRoot: location,
           profileRoot: location,
         },

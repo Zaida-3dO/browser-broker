@@ -117,6 +117,20 @@ export interface NetworkPathChecks {
   readonly hasNetworkShareRoot: (target: string) => boolean;
 }
 
+/**
+ * The two checks run against **both** the value as it was configured and the
+ * value after resolution, and the first of those is not redundant.
+ *
+ * Resolving a path applies the host platform's own rules, and those rules
+ * disagree about what a share even is: on a platform whose separator is the
+ * forward slash, the two-backslash spelling is not a root at all — it is an
+ * ordinary relative filename that happens to contain backslashes, so
+ * resolving it prefixes the working directory and the share root is gone.
+ * A check that only ever saw the resolved value would therefore refuse a
+ * share on one platform and silently create a bizarrely-named local file on
+ * another, from identical configuration.
+ */
+
 export const realChecks: NetworkPathChecks = {
   resolveRealPath,
   hasNetworkShareRoot,
@@ -134,7 +148,8 @@ export function refuseNetworkLocation(
   target: string,
   checks: NetworkPathChecks = realChecks,
 ): void {
-  // Check one: the path as written names a share.
+  // Check one: the path as written names a share. Tested before resolution,
+  // for the reason above.
   if (checks.hasNetworkShareRoot(target)) {
     throw new StartupRefusal(
       'store.not_on_network_filesystem',

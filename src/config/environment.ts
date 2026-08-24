@@ -74,6 +74,14 @@ export const DECLARED_VARIABLES: readonly string[] = DECLARATIONS.map((d) => d.k
 
 export interface Environment {
   readonly databasePath: string;
+  /**
+   * `BROKER_DB` as it was configured, before this platform's path rules were
+   * applied to it. The network-location refusal needs it: resolving a path
+   * applies the host platform's own idea of what a root is, and that is
+   * exactly the information a share-shaped value loses on a platform that
+   * does not recognise the spelling.
+   */
+  readonly configuredDatabasePath: string;
   readonly artifactsRoot: string;
   readonly profileRoot: string;
 }
@@ -149,6 +157,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
 
   return {
     databasePath: get('BROKER_DB'),
+    configuredDatabasePath: env['BROKER_DB'] ?? get('BROKER_DB'),
     artifactsRoot: get('BROKER_ARTIFACTS_ROOT'),
     profileRoot: get('BROKER_PROFILE_ROOT'),
   };

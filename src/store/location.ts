@@ -18,6 +18,9 @@ import { refuseNetworkLocation, type NetworkPathChecks } from './network-path.ts
  */
 export function resolveStoreLocation(environment: Environment, checks?: NetworkPathChecks): string {
   const location = environment.databasePath;
+  // Checked as configured as well as resolved: a share-shaped value loses its
+  // root when a platform that does not recognise the spelling resolves it.
+  refuseNetworkLocation(environment.configuredDatabasePath, checks);
   refuseNetworkLocation(location, checks);
   return location;
 }

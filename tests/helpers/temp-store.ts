@@ -24,6 +24,7 @@ export function makeTempStore(): TempStore {
     directory,
     environment: {
       databasePath: path.join(directory, 'broker.db'),
+      configuredDatabasePath: path.join(directory, 'broker.db'),
       artifactsRoot: path.join(directory, 'artefacts'),
       profileRoot: path.join(directory, 'profiles'),
     },

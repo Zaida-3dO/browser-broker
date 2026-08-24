@@ -95,3 +95,22 @@ test('the share root check reads the root, not the rest of the path', () => {
   assert.equal(hasNetworkShareRoot(sharePath('host', 'share')), true);
   assert.equal(hasNetworkShareRoot(localDrivePath('D', 'work', 'broker.db')), false);
 });
+
+test('a share-shaped value is refused whatever this platform makes of the string', () => {
+  // The same configuration must not refuse on one platform and quietly create
+  // a strangely-named local file on another. A platform whose separator is
+  // the forward slash does not read the two-backslash spelling as a root at
+  // all, so resolving it prefixes the working directory and the share root is
+  // lost — which is why the value is checked as configured, before any
+  // platform's path rules touch it.
+  const configured = sharePath('host', 'share', 'broker.db');
+  const flattenedByThisPlatform = `/working/directory/${configured}`;
+
+  // Standing in for what a forward-slash platform's resolver does to it.
+  assert.equal(hasNetworkShareRoot(flattenedByThisPlatform), false);
+
+  // The refusal still fires, because the configured form is checked too.
+  assert.throws(() => {
+    refuseNetworkLocation(configured, resolverReporting({}));
+  }, StartupRefusal);
+});
