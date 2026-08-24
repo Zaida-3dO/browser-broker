@@ -1,7 +1,23 @@
 import type { Database } from 'better-sqlite3';
 
 import type { StoreHandle } from '../store/open.ts';
-import { append, type EventAdapter, type EventKind } from './events.ts';
+import { append, type AppendEvent, type EventAdapter, type EventKind } from './events.ts';
+import {
+  decideClaim,
+  type ArbitrationSettings,
+  type ClaimInput,
+  type ClaimResult,
+} from './operations/claim.ts';
+// The module is named for what the verb does rather than for the verb, and
+// the reason is mechanical: the sibling scan in `check-arbitration.mjs` reads
+// every string literal in this file looking for transaction-control SQL, and
+// one of the keywords it looks for is the word this operation would
+// otherwise be spelled with — a savepoint being one of the documented
+// bypasses it exists to catch. An import path carrying that word fails the
+// scan for a reason that has nothing to do with transactions. Renaming costs
+// nothing; a waiver would silence the whole line permanently.
+import { decideRelease, type ReleaseInput, type ReleaseResult } from './operations/give-back.ts';
+import { decideStatus, type StatusInput, type StatusResult } from './operations/status.ts';
 import { CallRefusal } from './refusals.ts';
 
 /**
@@ -113,6 +129,55 @@ export interface SweepResult {
 /** What a handler is given. It has a transaction; it cannot open one. */
 export interface ArbitrationScope {
   /**
+   * Record a refusal so that it survives the rollback the refusal causes.
+   *
+   * ── The problem this solves, stated plainly ─────────────────────────────
+   *
+   * §1.6 requires **every decision, allowed and refused alike**, and a
+   * refusal is thrown — which rolls the transaction back and takes an
+   * ordinary `append` with it. So a guard that recorded its denial with
+   * `append` alone would write a row that is never committed, and the ledger
+   * would contain grants only. That is precisely the half-a-ledger failure
+   * §1.6 opens by naming: *"a record containing only refusals cannot answer
+   * was this rule ever actually reached"* — and its mirror is worse, because
+   * a ledger of grants alone can never show a guard firing at all.
+   *
+   * **A row handed here is written after the rollback, on its own.** It is
+   * therefore committed even though the decision it describes undid
+   * everything else, which is the correct outcome: the refusal *happened*,
+   * and it is the one thing about the call that was not undone.
+   *
+   * ── What this costs, said rather than hidden ────────────────────────────
+   *
+   * The row is written outside the transaction that decided it, so its
+   * ledger identifier does not fall between the identifiers of the rows that
+   * call would have written — there are none, because they rolled back. What
+   * it is not is a second decision: nothing re-runs, and the guard that
+   * refused has already refused by the time this is called.
+   */
+  readonly recordRefusal: (event: AppendEvent) => void;
+
+  /**
+   * Schedule a tab to be closed **after the commit**, through the same seam
+   * the sweep's own orphans go through.
+   *
+   * ── Why this is on the scope rather than left to the handler ────────────
+   *
+   * An operation that ends a lease has a tab to close (§3.4), and the sweep
+   * is not the only thing that produces one. Without this a handler would
+   * have to build its own after-commit closure over a driver it had reached
+   * for itself — which is the exact shape §2.4b exists to prevent, and the
+   * most natural way to invent it is by doing the work inside the callback.
+   *
+   * **It carries no driver and cannot be made to do browser work now.** It
+   * records a tab against the call; the runner turns the record into an
+   * after-commit action using the closer its caller supplied, and calls it
+   * outside every transaction. A handler holding this has no way to make a
+   * browser call happen inside the transaction, which is what keeps
+   * `arbitration.no_browser_io` true through this path as well.
+   */
+  readonly closeAfterCommit: (tab: OrphanedTab) => void;
+  /**
    * The driver handle, inside the open transaction.
    *
    * Only the service layer reaches the store client (`db.import_isolated`,
@@ -154,12 +219,47 @@ export type ArbitrationHandler<Input, Output> = (
  * by a flag somebody could set. A field here would be the first thing a
  * well-intentioned optimisation reached for.
  */
-export interface ArbitrationOperation<Input = unknown, Output = unknown> {
+export interface ArbitrationOperation<Input = never, Output = unknown> {
   /** The ledger kind this operation records against (§1.6). */
   readonly kind: EventKind;
   /** One line, for a person reading the registry. */
   readonly summary: string;
   readonly handler: ArbitrationHandler<Input, Output>;
+}
+
+/**
+ * The settings an operation decides against, carried on the input rather than
+ * read by the handler.
+ *
+ * **A handler reaching for the environment itself is the shape this avoids.**
+ * §6.3 puts one snapshot per process, read on the way in, so that every rule
+ * inside one operation sees one configuration; a handler that read its own
+ * would be a second snapshot, taken at a different instant, inside a
+ * transaction other callers are waiting behind.
+ */
+export interface WithSettings {
+  readonly settings: ArbitrationSettings;
+}
+
+function claimHandler(
+  scope: ArbitrationScope,
+  input: ClaimInput & WithSettings,
+): ArbitrationOutcome<ClaimResult> {
+  return decideClaim(scope, input, input.settings);
+}
+
+function statusHandler(
+  scope: ArbitrationScope,
+  input: StatusInput,
+): ArbitrationOutcome<StatusResult> {
+  return decideStatus(scope, input);
+}
+
+function releaseHandler(
+  scope: ArbitrationScope,
+  input: ReleaseInput & WithSettings,
+): ArbitrationOutcome<ReleaseResult> {
+  return decideRelease(scope, input, input.settings);
 }
 
 /**
@@ -173,19 +273,35 @@ export interface ArbitrationOperation<Input = unknown, Output = unknown> {
  * is enumerable statically and at run time, and the two enumerations can be
  * asserted equal.
  *
- * **It is empty in this row, and that is a real hole rather than a tidy
- * placeholder.** `MILESTONES.md` #50 asks for "a registry test asserting the
- * set of arbitration operations is not empty — an assertion over an empty set
- * passes forever and silently", and the operations themselves belong to #12
- * onward. So the emptiness is handled by making it **loud**: the checked-in
- * check refuses an empty registry outright (see `scripts/check-arbitration.mjs`,
- * which carries the one declared exemption and the row that retires it). What
- * is not done is pretending otherwise by registering a fake operation to make
- * a count go up.
+ * **The three operations here are the whole arbitration surface this build
+ * has**, and every one of them writes. `claim` inserts a row; `release`
+ * updates one; `status` renews, which is row #14's point — a keyed call
+ * extends the lease it names, so the operation that looks read-only is a
+ * writer twice over, once for its own renewal and once for the sweep the
+ * runner ran before it.
+ *
+ * **The empty-registry exemption in `scripts/check-arbitration.mjs` is
+ * retired by this row**, which is what it named as the condition for its own
+ * removal. Every rule that check enforces is now an assertion over a
+ * non-empty set.
  */
-export const ARBITRATION_OPERATIONS = {} as const satisfies Readonly<
-  Record<string, ArbitrationOperation>
->;
+export const ARBITRATION_OPERATIONS = {
+  claim: {
+    kind: 'claim_requested',
+    summary: 'Ask for a lease over one tab: granted if capacity allows, queued at the back if not.',
+    handler: claimHandler,
+  },
+  status: {
+    kind: 'claim_renewed',
+    summary: 'Where this lease stands, and — like every keyed call — an extension of it.',
+    handler: statusHandler,
+  },
+  release: {
+    kind: 'claim_released',
+    summary: 'Give back whatever this lease holds: a tab, or a place in the queue.',
+    handler: releaseHandler,
+  },
+} as const satisfies Readonly<Record<string, ArbitrationOperation>>;
 
 /** The name of an operation this build registers. Anything else is a type error. */
 export type ArbitrationName = keyof typeof ARBITRATION_OPERATIONS;
@@ -360,9 +476,16 @@ export interface RunArbitrationOptions<Input> {
 export async function runArbitration<Input, Output>(
   options: RunArbitrationOptions<Input>,
 ): Promise<Output> {
-  const operation = (ARBITRATION_OPERATIONS as Readonly<Record<string, ArbitrationOperation>>)[
-    options.name
-  ];
+  // Read as an untyped record so an unregistered name is a lookup returning
+  // nothing rather than a type error at this site: the refusal below is what
+  // handles it, and it has to be reachable at run time for a caller on a
+  // different build. The per-operation input types are preserved on the
+  // registry itself, which is what makes an internal call site type-safe.
+  const operation = (
+    ARBITRATION_OPERATIONS as unknown as Readonly<
+      Record<string, ArbitrationOperation<unknown, unknown>>
+    >
+  )[options.name];
 
   if (operation === undefined) {
     // Refused before the transaction opens, deliberately. An unregistered
@@ -376,33 +499,98 @@ export async function runArbitration<Input, Output>(
     );
   }
 
-  return options.store.immediate(async ({ db }) => {
-    // Step 1, always, before anything the operation does. Unconditional is
-    // the point: this is what makes the transaction a writer even when the
-    // operation only asks a question (section 1.0a).
-    const swept = sweep(db);
-    const scope: ArbitrationScope = { db, swept, adapter: options.adapter };
-    recordSweep(scope, swept);
+  // Refusals collected inside the transaction and written after it rolls
+  // back. A refusal is a decision (§1.6) and it is the one thing about a
+  // refused call that was not undone, so it must outlive the rollback its own
+  // throw causes.
+  const refusals: AppendEvent[] = [];
 
-    // Step 2: the operation answers from the reconciled state.
-    const outcome = (await operation.handler(scope, options.input)) as ArbitrationOutcome<Output>;
+  try {
+    return await options.store.immediate(async ({ db }) => {
+      // Step 1, always, before anything the operation does. Unconditional is
+      // the point: this is what makes the transaction a writer even when the
+      // operation only asks a question (section 1.0a).
+      const swept = sweep(db);
 
-    // Step 3 is handed to the transaction helper, which runs it after the
-    // commit and outside every transaction. The sweep's own orphaned tabs are
-    // scheduled here rather than by the operation, because an operation that
-    // had to remember to close them is an operation that can forget — and the
-    // sweep is not its work in the first place.
+      // What the operation asks to have closed, collected inside and acted on
+      // outside. A list rather than a call: nothing here can reach a browser,
+      // so a handler cannot turn a schedule into a round trip.
+      const scheduled: OrphanedTab[] = [];
+      const scope: ArbitrationScope = {
+        db,
+        swept,
+        adapter: options.adapter,
+        closeAfterCommit: (tab) => {
+          scheduled.push(tab);
+        },
+        recordRefusal: (event) => {
+          refusals.push(event);
+        },
+      };
+      recordSweep(scope, swept);
+
+      // Step 2: the operation answers from the reconciled state.
+      const outcome = (await operation.handler(scope, options.input)) as ArbitrationOutcome<Output>;
+
+      // Step 3 is handed to the transaction helper, which runs it after the
+      // commit and outside every transaction. The sweep's own orphaned tabs
+      // are scheduled here rather than by the operation, because an operation
+      // that had to remember to close them is an operation that can forget —
+      // and the sweep is not its work in the first place.
+      //
+      // The sweep's closes go first: they are reclamation of capacity that
+      // has already come back, and an operation's own after-commit work may
+      // well be opening the tab that capacity is for.
+      const closeTab = options.closeTab;
+      const closes: (() => void | Promise<void>)[] =
+        closeTab === undefined
+          ? []
+          : [...swept.orphanedTabs, ...scheduled].map((tab) => () => closeTab(tab));
+
+      return {
+        value: outcome.value,
+        afterCommit: [...closes, ...(outcome.afterCommit ?? [])],
+      };
+    });
+  } finally {
+    // **After the transaction, whichever way it went.** On the ordinary path
+    // this list is empty and the block does nothing. On a refusal the
+    // transaction has rolled back, so these rows are written on their own —
+    // which is what makes a refused decision recorded rather than erased by
+    // the very refusal it describes (§1.6).
     //
-    // The sweep's closes go first: they are reclamation of capacity that has
-    // already come back, and an operation's own after-commit work may well be
-    // opening the tab that capacity is for.
-    const closeTab = options.closeTab;
-    const closes: (() => void | Promise<void>)[] =
-      closeTab === undefined ? [] : swept.orphanedTabs.map((tab) => () => closeTab(tab));
+    // `finally` rather than a catch, because a guard is free to record a
+    // refusal and then let the call succeed anyway — the nudge is exactly
+    // that shape — and a catch would drop the row on the path that did not
+    // throw.
+    writeRefusals(options.store, refusals);
+  }
+}
 
-    return {
-      value: outcome.value,
-      afterCommit: [...closes, ...(outcome.afterCommit ?? [])],
-    };
-  });
+/**
+ * Write the collected refusal rows, outside the transaction that produced
+ * them.
+ *
+ * **Failure here is swallowed, deliberately, and this is a real trade rather
+ * than an oversight.** The caller is already receiving a refusal that names
+ * the rule and says what to do next; turning a failure to *record* that
+ * refusal into a second, different error would replace an actionable answer
+ * with an unactionable one, and the caller would be left unable to tell which
+ * of the two actually decided its call.
+ *
+ * **What that costs is a refusal missing from the ledger** under conditions
+ * that also lose ordinary writes. The alternative costs the caller its
+ * answer, which is worse.
+ */
+function writeRefusals(store: StoreHandle, refusals: readonly AppendEvent[]): void {
+  if (refusals.length === 0) {
+    return;
+  }
+  try {
+    for (const refusal of refusals) {
+      append(store.db, refusal);
+    }
+  } catch {
+    // See above: the caller's refusal is the more useful of the two answers.
+  }
 }

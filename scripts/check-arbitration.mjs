@@ -126,26 +126,6 @@ export const FORBIDDEN_DRIVER_TRANSACTIONS = [
   '\\.exclusive\\s*\\(',
 ];
 
-/**
- * The registry may be empty until this row lands.
- *
- * `MILESTONES.md` #50 asks for "a registry test asserting the set of
- * arbitration operations is not empty — an assertion over an empty set passes
- * forever and silently", and #50 lands with the helper it polices rather than
- * after the paths that use it. So at the moment this check ships there is
- * genuinely nothing registered, and the two ways to handle that are both bad:
- * assert non-empty and fail the build on the row that introduces the check,
- * or drop the assertion and reintroduce exactly the silent-forever hole the
- * milestone names.
- *
- * **The third way is this constant.** The check refuses an empty registry,
- * *and* carries one declared exemption naming the row that removes it. That
- * makes the hole visible in the source, visible in every run's output, and
- * removable by deleting one line — rather than invisible in an assertion
- * nobody reads. Set it to `null` when #12 registers the first operation.
- */
-export const EMPTY_REGISTRY_EXEMPTION = '#12, which registers the first arbitration operation';
-
 /** Strip line and block comments, so prose about a keyword is not a match. */
 export function stripComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
@@ -352,17 +332,21 @@ export function checkNoReadOnlyPath(sources, registeredNames) {
     }
   }
 
-  // Scan C.
+  // Scan C, and it is unconditional.
+  //
+  // The registry has operations in it, so an empty one is a regression rather
+  // than a state this build has to tolerate, and nothing excuses it. There is
+  // deliberately no exemption constant to reach for: a declared exemption
+  // earns its keep only while the hole it names is real, and one left lying
+  // around is an invitation to widen it.
   if (registeredNames.length === 0) {
-    if (EMPTY_REGISTRY_EXEMPTION === null) {
-      failures.push({
-        rule: 'arbitration.no_read_only_path',
-        scan: 'C',
-        line: 0,
-        detail:
-          'The arbitration registry is empty, so every rule above is an assertion over an empty set — which passes forever and silently.',
-      });
-    }
+    failures.push({
+      rule: 'arbitration.no_read_only_path',
+      scan: 'C',
+      line: 0,
+      detail:
+        'The arbitration registry is empty, so every rule above is an assertion over an empty set — which passes forever and silently.',
+    });
   }
 
   // Scan D. No field lets an operation opt out of writing.
@@ -415,9 +399,40 @@ export function registeredNamesIn(source) {
     };
   }
 
+  // Top-level keys only, tracked by brace depth.
+  //
+  // **A flat key scan was wrong here and passed anyway**, which is the exact
+  // failure mode this file is written against. Each operation is an object
+  // with its own `kind`, `summary` and `handler` keys, so a scan ignoring
+  // nesting reported twelve operations for three — and, worse, would have
+  // satisfied scan C's non-empty assertion out of the *inner* keys of a
+  // registry whose outer level was empty. A count inflatable by the shape of
+  // a value is not a count of operations.
   const names = [];
-  for (const key of body.matchAll(/(?:^|[{,])\s*(?:(['"])([^'"]+)\1|([A-Za-z_$][\w$]*))\s*:/g)) {
-    names.push(key[2] ?? key[3]);
+  let depth = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character === '{' || character === '[' || character === '(') {
+      depth += 1;
+      continue;
+    }
+    if (character === '}' || character === ']' || character === ')') {
+      depth -= 1;
+      continue;
+    }
+    if (depth !== 0) continue;
+
+    const key = /^(?:(['"])([^'"]+)\1|([A-Za-z_$][\w$]*))\s*:/.exec(body.slice(index));
+    if (key === null) continue;
+
+    // Only at the start of an entry: the beginning of the body, or just past
+    // a comma at this depth. Without that, a colon inside a type annotation
+    // would read as a key.
+    const before = body.slice(0, index).trimEnd();
+    if (before === '' || before.endsWith(',')) {
+      names.push(key[2] ?? key[3]);
+      index += key[0].length - 1;
+    }
   }
 
   if (names.length === 0) {
@@ -507,10 +522,9 @@ export function main() {
     return 1;
   }
 
-  const registryNote =
-    registry.names.length === 0
-      ? ` The registry is EMPTY, exempted until ${EMPTY_REGISTRY_EXEMPTION}; until then every rule here is an assertion over an empty set.`
-      : ` ${registry.names.length} operation${registry.names.length === 1 ? '' : 's'} registered: ${registry.names.join(', ')}.`;
+  // An empty registry fails scan C above, so this branch only ever describes
+  // a registry with something in it.
+  const registryNote = ` ${registry.names.length} operation${registry.names.length === 1 ? '' : 's'} registered: ${registry.names.join(', ')}.`;
 
   console.log(
     `arbitration.immediate_transaction and arbitration.no_read_only_path hold on ${treeDescription()}.${registryNote}\n` +

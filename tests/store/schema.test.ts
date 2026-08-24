@@ -95,14 +95,18 @@ test('every table this design has is created, and nothing else', async () => {
       .all()
       .map((row) => (row as { name: string }).name);
 
-    // Pinned, so a table added by a step nobody reviewed fails here. The
-    // eighth is the tab-budget agreement row (§1.10): a check with no
-    // caller-reachable write path, not the settings table §1.10 deletes —
-    // which is why the test below asserts a `settings` table specifically is
-    // still absent.
+    // Pinned, so a table added by a step nobody reviewed fails here. Two are
+    // not in §1's list and both are counters rather than state: the
+    // tab-budget agreement row (§1.10), which is a check with no
+    // caller-reachable write path rather than the settings table §1.10
+    // deletes, and the queue's arrival counter, which exists because §2.5's
+    // promise that a position only ever improves cannot be kept by a
+    // millisecond clock. The test below asserts a `settings` table
+    // specifically is still absent.
     assert.deepEqual(names, [
       'browsers',
       'captures',
+      'claim_arrival',
       'claims',
       'comparisons',
       'events',
