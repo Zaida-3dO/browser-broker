@@ -1,11 +1,14 @@
 import type { OperationName } from '../adapter/operations.ts';
 import type { BrokerService } from '../adapter/service-seam.ts';
+import fs from 'node:fs';
+
 import { readEnvironment, type Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
 import { openStore, type StoreHandle } from '../store/open.ts';
 import { stepSchema } from '../store/schema/step.ts';
 import { cliAdapter, EXIT, withoutSecrets } from './adapter.ts';
 import { OPERATION_COMMANDS, parseCommand, STANDALONE_COMMANDS } from './commands.ts';
+import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
 
 /**
  * Argument parsing and command dispatch.
@@ -146,14 +149,26 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
     }
 
     if (parsed.kind === 'standalone') {
-      // The command is named and documented here because it exists on this
-      // route (§5.5) — but the row that builds it has not landed, and a
-      // command that pretended to work would be worse than one that says it
-      // does not. Named honestly, with the row that owes it.
-      streams.err(
-        `broker ${parsed.command.words.join(' ')} is not built yet — owed by ${parsed.command.owedBy}.`,
-      );
+      const name = parsed.command.words.join(' ');
+
+      // Two of §5.5's four are built by this row. The other two are still
+      // owed, and they keep the honest refusal below rather than being
+      // quietly absent — a command that pretended to work would be worse
+      // than one that says it does not.
+      if (name === 'snapshot' || name === 'doctor') {
+        return await runOperationsCommand(name, parsed.rest, { streams, json, options });
+      }
+
+      streams.err(`broker ${name} is not built yet — owed by ${parsed.command.owedBy}.`);
       return EXIT.unexpected;
+    }
+
+    // Reading the ledger is on the operations command surface (§5.4) rather
+    // than being one of §5.5's four, so it is not in either table above: it
+    // is neither a mirror of an agent operation nor a command with a written
+    // waiver. It is a read of history, and it decides nothing.
+    if (parsed.kind === 'unknown' && argv[0] === 'events') {
+      return await runOperationsCommand('events', argv.slice(1), { streams, json, options });
     }
   }
 
@@ -288,4 +303,82 @@ function renderForAPerson(value: unknown): string {
         `${key}: ${typeof entry === 'object' && entry !== null ? JSON.stringify(entry) : String(entry)}`,
     )
     .join('\n');
+}
+
+/**
+ * Run one of the three operations commands.
+ *
+ * ── Why `doctor` opens the store differently from the other two ─────────
+ *
+ * `snapshot` and `events` read the store, so they need one. **`doctor` must
+ * answer without one** — a store that does not exist yet is a legitimate
+ * state to ask about, and arguably the state where the answer is most useful,
+ * since it is the one somebody has just installed into.
+ *
+ * It opens the store **only if one is already there, and never steps it**.
+ * Both halves are load-bearing and the first was learned the hard way:
+ * `openStore` creates the directory and the file, so a doctor that opened
+ * unconditionally would *create* an empty store at version zero and then
+ * truthfully report it as being at the wrong version — a failure the command
+ * had itself caused, on an installation that was fine a moment earlier.
+ * Reporting a fault you just produced is worse than reporting nothing. There
+ * is no open-but-do-not-create mode to ask for, so the only way not to create
+ * one is not to open one.
+ *
+ * The other two step on the way in, because `SCHEMA.md` §1.2d puts stepping
+ * on every spawn.
+ */
+async function runOperationsCommand(
+  command: 'snapshot' | 'doctor' | 'events',
+  rest: readonly string[],
+  context: { streams: Streams; json: boolean; options: RunOptions },
+): Promise<number> {
+  const { streams, json } = context;
+  let store: StoreHandle | undefined;
+
+  try {
+    const environment = readEnvironment({ env: context.options.env });
+
+    if (command === 'doctor') {
+      let opened: StoreHandle | undefined;
+      if (fs.existsSync(environment.databasePath)) {
+        try {
+          opened = openStore(environment);
+        } catch (error) {
+          if (!(error instanceof BrokerError)) {
+            throw error;
+          }
+          // The store is there and could not be opened. The checks read the
+          // environment and the filesystem directly, so the report is still
+          // worth producing — and the location check names the same refusal.
+        }
+      }
+      try {
+        return runDoctorCommand({ db: opened?.db, environment, streams, json });
+      } finally {
+        opened?.close();
+      }
+    }
+
+    store = openStore(environment);
+    await stepSchema(store.db);
+
+    if (command === 'snapshot') {
+      return await runSnapshotCommand(rest, {
+        db: store.db,
+        streams,
+        json,
+        version: await readVersion(),
+      });
+    }
+    return runEventsCommand(rest, { db: store.db, streams, json });
+  } catch (error) {
+    if (error instanceof BrokerError) {
+      streams.err(`refused (${error.rule}): ${error.message}`);
+      return EXIT.refused;
+    }
+    throw error;
+  } finally {
+    store?.close();
+  }
 }

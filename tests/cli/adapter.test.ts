@@ -300,7 +300,11 @@ test('every spelling of the key is on the never-printed list, by name', () => {
 // ── The unbuilt commands say so honestly ────────────────────────────────
 
 test('a command with no operation behind it says it is not built rather than pretending', async () => {
-  const result = await drive(['doctor']);
+  // `login` rather than `doctor`: SCHEMA.md 5.5 lists four commands with no
+  // operation behind them, and the two that report on an installation are
+  // built. The example has to be one that genuinely is not, or this
+  // asserts nothing.
+  const result = await drive(['login']);
   assert.notEqual(result.code, EXIT.accepted, 'an unbuilt command reported success');
   assert.match(result.err.join('\n'), /not built yet/u);
 });
