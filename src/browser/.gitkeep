@@ -1,0 +1,7 @@
+The browser module.
+
+Empty on purpose, and a bare directory rather than a placeholder interface. A
+placeholder module is a thing somebody has to delete, and an empty interface
+file invites the driver row to add to it rather than design it. Naming the
+directory is what the import allowlist needs: only this module reaches the
+automation library.
