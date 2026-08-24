@@ -98,24 +98,43 @@ test('bytes reports what was written', () => {
 
 test('a name that would climb out of the root is REFUSED, and nothing is written', () => {
   withStore((store, root) => {
+    // The landing spot is made UNIQUE per run, and asserted absent BEFORE the
+    // call as well as after.
+    //
+    // Both halves are load-bearing and were put here by a real failure. This
+    // test asserts a file does not exist just outside the root — which is a
+    // shared directory — so a stale file of that name from any earlier run
+    // makes the "after" assertion fail for the wrong reason, and, worse, a
+    // *pre-existing* file would make a genuinely-broken guard look caught
+    // when it was the debris being detected. A unique name plus a
+    // before-assertion removes both readings: the file's absence beforehand
+    // is established, so its absence afterwards is a fact about this call.
+    const landing = `escaped-${String(process.pid)}-${String(Date.now())}.png`;
+    const wouldLandAt = path.resolve(root, '..', landing);
+    assert.ok(!fs.existsSync(wouldLandAt), 'the landing spot was not clean before the call');
+
     // Four levels up from `claims/<claim>/images/` clears the root itself.
     // Three would land ON the root and two inside it, and neither is an
     // escape — the guard is about leaving the tree, not about the spelling
     // `..`, and a test that asserted otherwise would be asserting a rule this
     // service does not have.
-    const escape = ['..', '..', '..', '..', 'escaped.png'].join(path.sep);
-    assert.throws(
-      () => store.write('claim1', 'images', escape, new Uint8Array([1])),
-      (error: unknown) => error instanceof BrokerError && error.rule === 'artifact.no_request_path',
-    );
-    // **The physical side-effect, not just the response.** A refusal that
-    // returned after writing the file is worse than no refusal — so this
-    // asserts the file is absent, which is the half a response-only test
-    // misses. Checked against where the traversal would have landed.
-    assert.ok(
-      !fs.existsSync(path.resolve(root, '..', 'escaped.png')),
-      'the refusal came after the write',
-    );
+    const escape = ['..', '..', '..', '..', landing].join(path.sep);
+    try {
+      assert.throws(
+        () => store.write('claim1', 'images', escape, new Uint8Array([1])),
+        (error: unknown) =>
+          error instanceof BrokerError && error.rule === 'artifact.no_request_path',
+      );
+      // **The physical side-effect, not just the response.** A refusal that
+      // returned after writing the file is worse than no refusal — so this
+      // asserts the file is absent, which is the half a response-only test
+      // misses.
+      assert.ok(!fs.existsSync(wouldLandAt), 'the refusal came after the write');
+    } finally {
+      // Leave nothing behind even when the guard is broken, so a failing run
+      // cannot poison the next one.
+      fs.rmSync(wouldLandAt, { force: true });
+    }
   });
 });
 

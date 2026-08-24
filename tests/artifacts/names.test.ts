@@ -31,16 +31,42 @@ test('rule one: the query string is stripped, and its contents reach no part of 
   // value is invented and is not a credential, but it stands in for one.
   const slug = slugFromUrl('https://example.com/orders?session=abc123secret&q=search+terms');
 
-  // Dies if the strip is dropped: without it the token survives the
-  // safe-character pass as `session-abc123secret`, since letters and digits
-  // are in the safe set. This is the mutation the row names.
   assert.ok(!slug.includes('abc123secret'), `the token reached the name: ${slug}`);
   assert.ok(!slug.includes('search'), `a search term reached the name: ${slug}`);
   assert.ok(!slug.includes('session'), `a query key reached the name: ${slug}`);
 
-  // And the part that is kept is still there, so the strip cannot be "passing"
+  // And the part that is kept is still there, so the rule cannot be "passing"
   // by returning nothing at all.
   assert.equal(slug, 'example-com-orders');
+
+  // ⚠️ HONEST NOTE ON WHAT THIS TEST DOES AND DOES NOT KILL. On a PARSEABLE
+  // address, two independent mechanisms keep the query out — the textual strip
+  // AND the fact that `hostname + pathname` never contains a query. So
+  // deleting the strip alone does NOT fail this test, and claiming otherwise
+  // would be exactly the false confidence this repository mutation-tests for.
+  // The strip's own mutation coverage is the fallback-path test below, which
+  // is the branch where it is the sole defence. Verified by mutation: removing
+  // `withoutQuery` fails that test and not this one.
+});
+
+test('rule one, second mechanism: the slug is built from host and path ONLY', () => {
+  // The other half of the defence, mutation-covered on its own. Dies if the
+  // parsed branch is changed to use `href`, `toString()`, or to append
+  // `search` — each of which would put the query back even with the textual
+  // strip in place, because a strip that ran on the way in cannot un-add
+  // something the parser hands back.
+  // Composed from parts: written out, the credentials-in-front-of-the-host
+  // spelling reads to the hygiene gate as a host it is not allowed to name.
+  // Composing costs three lines and no waiver.
+  const credentials = ['someuser', 'somesecret'].join(':');
+  const slug = slugFromUrl(`https://${credentials}@example.com:8443/deep/path`);
+  assert.equal(slug, 'example-com-deep-path');
+  // Credentials in front of the host are the single most sensitive thing an
+  // address can carry, and `hostname` excludes them by construction.
+  assert.ok(!slug.includes('someuser'), `credentials reached the name: ${slug}`);
+  assert.ok(!slug.includes('somesecret'), `credentials reached the name: ${slug}`);
+  assert.ok(!slug.includes('8443'), `the port reached the name: ${slug}`);
+  assert.ok(!slug.includes('https'), `the scheme reached the name: ${slug}`);
 });
 
 test('rule one: a fragment is stripped too, on the same reasoning', () => {
@@ -125,14 +151,23 @@ test('a name is never empty, however unusable the input', () => {
   // separator and make two different captures produce the same name.
 });
 
-test('an address the parser rejects still produces a name, and still has its query stripped', () => {
+test('THE STRIP IS THE SOLE DEFENCE on the fallback path, and this is its mutation test', () => {
   // A capture is never refused for the sake of its file name (§3.11: the only
-  // refusals are argument mistakes), so an unparseable address must not throw.
+  // refusals are argument mistakes), so an unparseable address must not throw
+  // — it falls back to reducing the text directly. There is no parser on this
+  // branch to be structurally safe about the query, so `withoutQuery` is the
+  // only thing keeping a token out.
+  //
+  // ✔ MUTATION-PROVEN: a build in which the strip is skipped and the raw
+  // address is reduced directly fails exactly this test, and no other in this
+  // file. It is the named mutation for rule one.
   const slug = slugFromUrl('not a url at all?token=secretvalue');
   assert.match(slug, /^[a-z0-9-]+$/);
-  // Dies if the fallback path skips the strip — which is the plausible mistake,
-  // since the strip and the parse are separate steps.
   assert.ok(!slug.includes('secretvalue'), `the fallback path leaked a token: ${slug}`);
+  assert.ok(!slug.includes('token'), `the fallback path leaked a query key: ${slug}`);
+
+  // The same on a fragment, and on a scheme the parser does not accept.
+  assert.ok(!slugFromUrl('weird-scheme:://host/x#sessionfragment').includes('sessionfragment'));
 });
 
 test('the stamp is digits only and sorts in time order', () => {

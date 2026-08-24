@@ -148,6 +148,23 @@ function withoutQuery(address: string): string {
  * only refusals are argument mistakes — so an unparseable address falls back to
  * reducing the stripped text directly. It is a worse name and it is still a
  * name.
+ *
+ * ── TWO INDEPENDENT MECHANISMS KEEP THE QUERY OUT, and saying so matters ──
+ *
+ * Worth stating exactly, because a reader who assumes only one is at work will
+ * draw the wrong conclusion from a change to either:
+ *
+ * 1. **On the parseable path, taking `hostname` and `pathname` excludes the
+ *    query by construction.** Neither property contains it, so even handed a
+ *    full address the parser would not put a query in the name.
+ * 2. **{@link withoutQuery} strips it textually first**, which is what covers
+ *    the **fallback path** — where there is no parser to be structural about
+ *    it, and where the whole address would otherwise be reduced verbatim.
+ *
+ * So the strip is not redundant: it is the *only* mechanism on the branch that
+ * handles an address this cannot parse, and that is exactly the branch where an
+ * odd address ends up. Removing it leaks a token from any unparseable address.
+ * Belt and braces on one path, sole defence on the other.
  */
 export function slugFromUrl(address: string | undefined): string {
   if (address === undefined || address.trim() === '') return EMPTY_PART;
