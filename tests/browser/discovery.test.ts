@@ -174,18 +174,64 @@ test('an endpoint answering with an error status is unreachable rather than veri
 // verification step that inherits that hang stalls every caller rather than
 // concluding the browser is not usable.
 test('an endpoint that accepts and never answers is refused rather than waited on forever', async () => {
+  // Stands in for a port that accepts a connection and never replies: it
+  // settles ONLY when an abort fires, so the request cannot finish by any
+  // route other than the bound under test.
+  //
+  // ── Why a missing signal is recorded rather than rejected ─────────────
+  //
+  // The obvious way to keep this promise from hanging forever is to reject
+  // when there is no signal. That quietly makes the test hollow: removing the
+  // timeout from the source then produces the same `endpoint_unreachable` the
+  // test asserts, for entirely the wrong reason, and the mutation survives.
+  //
+  // So an unbounded request is **recorded and left pending**, and the
+  // assertion below is that it never happened. The pending promise is
+  // harmless because the test does not await it — `Promise.race` is what
+  // bounds the test itself, so a hang fails as an assertion rather than as a
+  // stalled event loop.
+  let requestWasBounded: boolean | undefined;
+
   const hangs = ((_url: string, init?: { signal?: AbortSignal }) => {
+    const signal = init?.signal;
+    requestWasBounded = signal !== undefined;
+
     return new Promise((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => {
+      if (signal === undefined) {
+        return;
+      }
+      if (signal.aborted) {
+        reject(new Error('aborted'));
+        return;
+      }
+      signal.addEventListener('abort', () => {
         reject(new Error('aborted'));
       });
     });
   }) as unknown as typeof fetch;
 
-  const outcome = await verifyDiscoveryRecord({ endpoint: 'http://127.0.0.1:1' }, 'expected', {
-    fetchImpl: hangs,
-    timeoutMs: 50,
-  });
+  // Bounded here too, so an unbounded request under test fails this test by
+  // assertion instead of hanging the runner and cancelling everything after.
+  const verdict = await Promise.race([
+    verifyDiscoveryRecord({ endpoint: 'http://127.0.0.1:1' }, 'expected', {
+      fetchImpl: hangs,
+      timeoutMs: 50,
+    }),
+    new Promise<'the request was never bounded'>((resolve) =>
+      setTimeout(() => {
+        resolve('the request was never bounded');
+      }, 3000),
+    ),
+  ]);
+
+  assert.equal(
+    requestWasBounded,
+    true,
+    'the request must carry an abort signal, or nothing can stop it hanging',
+  );
+  assert.notEqual(verdict, 'the request was never bounded');
+
+  const outcome = verdict as Exclude<typeof verdict, string>;
   assert.equal(outcome.ok, false);
   assert.equal(outcome.ok === false && outcome.failure, 'endpoint_unreachable');
 });
