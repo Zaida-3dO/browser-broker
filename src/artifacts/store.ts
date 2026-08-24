@@ -121,6 +121,54 @@ function safeSegment(value: string, what: string): string {
   return reduced;
 }
 
+/**
+ * Is this path absolute in **either** namespace?
+ *
+ * ── Why the platform's own answer is the wrong one ──────────────────────
+ *
+ * `path.isAbsolute` asks the namespace the host process happens to be running
+ * in, and the two namespaces disagree about what an absolute path even is. On
+ * a platform whose separator is the forward slash, `C:` followed by a
+ * backslash is not a root — it is a perfectly legal **relative filename that
+ * contains backslashes**, so the refusal never fires and the path is joined
+ * onto the root as one long oddly-named file. The same string refuses on the
+ * other platform. Identical input, opposite outcome, from the same code.
+ *
+ * That is not a hypothetical, and this codebase already answers it in one
+ * place: `store/network-path.ts` reads its share root with
+ * {@link path.win32.parse} **unconditionally**, on every platform, for
+ * exactly this reason. This follows that approach rather than inventing a
+ * second one, so both guards recognise both spellings the same way.
+ *
+ * ── Both checks, and honesty about what the second one adds ─────────────
+ *
+ * **The two are not independently load-bearing, and pretending otherwise
+ * would mislead the next reader.** The drive-letter parser also reports a
+ * root for a leading forward slash, so deleting the first check changes no
+ * outcome any test observes — deleting the *second* is what turns the guard
+ * off for a drive-qualified name and a share.
+ *
+ * The first check stays because this rule is "absolute in either namespace"
+ * and one line per namespace is how that reads as code. Leaning on one
+ * parser's incidental coverage of the other's case would make the rule
+ * correct by coincidence rather than by statement.
+ *
+ * A guard that only fires on the platform it was written on is worse than no
+ * guard, because it reports a protection that does not exist.
+ */
+function isAbsoluteInEitherNamespace(target: string): boolean {
+  // POSIX: a leading forward slash. Named for its own sake — see above.
+  if (path.posix.isAbsolute(target)) {
+    return true;
+  }
+  // The other namespace: a drive letter followed by a colon and a separator,
+  // in either separator spelling; a two-separator share prefix naming a host
+  // and a share; and a bare leading backslash. Reading the parsed root covers
+  // every one of those spellings without this file having to enumerate them
+  // as patterns of its own.
+  return path.win32.parse(target).root !== '';
+}
+
 export class ArtifactStore {
   readonly #root: string;
 
@@ -161,10 +209,13 @@ export class ArtifactStore {
    * Write one file into a lease's tree, and report where it went **relative to
    * the root**.
    *
-   * The refusal below is the second of this file's two rules. It compares the
-   * resolved destination against the resolved root using the platform's own
-   * relative-path computation, so a result that has to climb out of the root is
-   * caught whatever spelling produced it.
+   * The refusal below is the second of this file's two rules, and it asks two
+   * questions rather than one. It compares the resolved destination against
+   * the resolved root, which catches a name that climbs out through `..`; and
+   * it asks {@link isAbsoluteInEitherNamespace} whether the supplied name was
+   * absolute in **either** namespace, which is what catches the spellings the
+   * host platform does not read as roots. Both are needed — see that
+   * function for why one platform's answer is not the answer.
    */
   write(
     claimId: string,
@@ -178,7 +229,18 @@ export class ArtifactStore {
     // `..` at the front means the destination climbed out of the root; an
     // absolute answer means it was never under it at all. Either is a bug in
     // whatever composed the name, and neither may be written.
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    //
+    // **The supplied name is tested as well as the computed result**, and that
+    // is not belt and braces — it is the only check that catches a name
+    // absolute in the *other* namespace. Such a name is a legal relative
+    // filename to `path.resolve` here, so it resolves quietly under the root
+    // and the computed answer is relative and clean. Nothing downstream can
+    // notice; the name itself has to be asked.
+    if (
+      relative.startsWith('..') ||
+      isAbsoluteInEitherNamespace(relative) ||
+      isAbsoluteInEitherNamespace(fileName)
+    ) {
       throw new BrokerError(
         'artifact.no_request_path',
         `A capture would have been written outside the artifact root. Refusing: ${JSON.stringify(fileName)} does not resolve under it.`,
@@ -211,7 +273,11 @@ export class ArtifactStore {
   resolve(relativePath: string): string {
     const absolutePath = path.resolve(this.#root, relativePath);
     const relative = path.relative(this.#root, absolutePath);
-    if (relative.startsWith('..') || path.isAbsolute(relative) || path.isAbsolute(relativePath)) {
+    if (
+      relative.startsWith('..') ||
+      isAbsoluteInEitherNamespace(relative) ||
+      isAbsoluteInEitherNamespace(relativePath)
+    ) {
       throw new BrokerError(
         'artifact.no_request_path',
         `A recorded path does not resolve under the artifact root. Refusing to serve ${JSON.stringify(relativePath)}.`,
