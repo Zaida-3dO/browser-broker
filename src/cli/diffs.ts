@@ -23,6 +23,20 @@ import { type ComparisonQuery, listComparisons } from '../service/comparison-sto
  * So this command is not a convenience on top of the feature. It is the half of
  * the feature that makes the other half worth storing.
  *
+ * ── NOT YET REACHABLE FROM THE COMMAND LINE, AND THAT IS DELIBERATE ────
+ *
+ * `runDiffs` below is complete and tested, but **nothing dispatches the word
+ * `diffs` to it yet.** The command table (`src/cli/commands.ts`) separates
+ * commands that have a service operation behind them from the fixed set of
+ * standalone ones, and registering a fifth standalone command whose dispatch
+ * path only reports "not built yet" would either misdescribe this one or
+ * require reworking that dispatch — both of which belong to the row that owns
+ * the command surface rather than to this one.
+ *
+ * So the noun is left unregistered rather than half-registered. Wiring it is
+ * one entry in that table plus one branch, and it is named in this milestone's
+ * handoff instead of being left for somebody to discover.
+ *
  * ── What it shows, and why those columns ────────────────────────────────
  *
  * The three settings, on every row, because they are the whole point: the
