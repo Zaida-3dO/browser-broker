@@ -1,3 +1,4 @@
+import { solidPng } from '../capture/image.ts';
 import { BROWSER_IDS, type ActionRequest } from './driver.ts';
 import type {
   ArtifactResult,
@@ -436,6 +437,46 @@ export class FakeBrowserDriver implements BrowserDriver {
         const failure = this.#enter({ name: 'evaluate', browser, tab, detail: { expression } });
         if (failure) return Promise.reject(failure);
         return Promise.resolve({ value: null, bytes: 0 });
+      },
+
+      settlePage: (tab: TabHandle): Promise<void> => {
+        const failure = this.#enter({ name: 'settlePage', browser, tab });
+        if (failure) return Promise.reject(failure);
+        // Nothing to settle — the fake has no timing at all (see this file's
+        // header). What the entry in the log proves is that the pipeline
+        // asked, and *when* it asked relative to the shutter, which is the
+        // whole of what `SCHEMA.md` §3.11's "every capture settles the page
+        // first" is checkable as from outside a real browser.
+        return Promise.resolve();
+      },
+
+      capture: (tab: TabHandle, request: CaptureRequest): Promise<RawCapture> => {
+        const canned = this.#options.capture;
+        const failure = this.#enter({
+          name: 'capture',
+          browser,
+          tab,
+          // The mask is recorded as a count and as the rectangles themselves:
+          // "a mask was passed to the driver" and "it was *this* mask" are
+          // different assertions, and §3.11's masking-before-the-shutter
+          // property needs the second.
+          detail: {
+            fullPage: request.fullPage,
+            selector: request.selector,
+            mask: request.mask ? [...request.mask] : undefined,
+          },
+        });
+        if (failure) return Promise.reject(failure);
+        const width = canned?.width ?? 1280;
+        const height = canned?.height ?? 720;
+        return Promise.resolve({
+          // A real, decodable picture by default — see `FakeCaptureOptions`.
+          image: canned?.image ?? solidPng(width, height),
+          width,
+          height,
+          viewportWidth: canned?.viewportWidth ?? width,
+          url: canned?.url ?? 'https://example.com/',
+        });
       },
 
       detach: () => {
