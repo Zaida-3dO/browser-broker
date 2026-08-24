@@ -293,6 +293,11 @@ test('the action list is the fixed set §3.8 names, with no way to move the fore
       'resize',
       'emulate',
       'dialog',
+      // Row #64's two, and their measurements are opposite: batch fill at 78
+      // calls across 35 sessions, drag and drop at zero across 2,007
+      // transcripts.
+      'fill_form',
+      'drag',
     ],
   );
   // `foreground.never_moved` (`SCHEMA.md` §7.3) is a build rule and not this
