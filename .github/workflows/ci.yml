@@ -69,6 +69,23 @@ jobs:
           node-version: '22.18'
       - run: npm run check:capture-isolation
 
+  # The build rule that keeps the bytes surface from accepting a caller's path
+  # (SCHEMA.md 7.3, artifact.no_request_path).
+  #
+  # Its own job, for the same reason the three gates above have theirs: a
+  # failure should name the rule rather than name a job that runs five things.
+  # Like them it needs no dependencies — it reads source text — so there is no
+  # install step and a tree with nothing installed can still be checked.
+  artifact-path:
+    name: artifact-path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      - run: npm run check:artifact-path
+
   typecheck:
     name: typecheck
     runs-on: ubuntu-latest
