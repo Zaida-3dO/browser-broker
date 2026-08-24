@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { Environment } from '../../src/config/environment.ts';
+import { prepareStore, type StoreHandle } from '../../src/store/open.ts';
 
 /**
  * A store in a temporary directory, and the means to tear it down.
@@ -32,4 +33,26 @@ export function makeTempStore(): TempStore {
       fs.rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * A store opened, stepped and torn down around one piece of work.
+ *
+ * Every test that needs the schema needs the same six lines of setup, and six
+ * lines repeated is six lines somebody eventually gets subtly wrong.
+ */
+export async function withSteppedStore(
+  fn: (store: StoreHandle) => Promise<void> | void,
+): Promise<void> {
+  const temp = makeTempStore();
+  try {
+    const store = await prepareStore(temp.environment);
+    try {
+      await fn(store);
+    } finally {
+      store.close();
+    }
+  } finally {
+    temp.remove();
+  }
 }

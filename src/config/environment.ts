@@ -76,12 +76,21 @@ export interface Environment {
   readonly databasePath: string;
   /**
    * `BROKER_DB` as it was configured, before this platform's path rules were
-   * applied to it. The network-location refusal needs it: resolving a path
-   * applies the host platform's own idea of what a root is, and that is
-   * exactly the information a share-shaped value loses on a platform that
-   * does not recognise the spelling.
+   * applied to it — and **undefined when it was not configured at all**.
+   *
+   * The network-location refusal needs the raw form: resolving a path applies
+   * the host platform's own idea of what a root is, and that is exactly the
+   * information a share-shaped value loses on a platform that does not
+   * recognise the spelling.
+   *
+   * **Undefined rather than a copy of the resolved value**, because those are
+   * different situations and a caller that cannot tell them apart cannot say
+   * so. A value equal to the default may have been chosen deliberately or may
+   * be the default; anything reporting what an installation is configured for
+   * would have to guess, and it would guess wrong for whichever caller wrote
+   * the default out by hand.
    */
-  readonly configuredDatabasePath: string;
+  readonly configuredDatabasePath: string | undefined;
   readonly artifactsRoot: string;
   readonly profileRoot: string;
 }
@@ -157,7 +166,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
 
   return {
     databasePath: get('BROKER_DB'),
-    configuredDatabasePath: env['BROKER_DB'] ?? get('BROKER_DB'),
+    configuredDatabasePath: env['BROKER_DB'],
     artifactsRoot: get('BROKER_ARTIFACTS_ROOT'),
     profileRoot: get('BROKER_PROFILE_ROOT'),
   };
