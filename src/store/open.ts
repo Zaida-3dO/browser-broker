@@ -13,6 +13,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import type { Environment } from '../config/environment.ts';
+import { agreeOnTabBudget } from './budget.ts';
 import { resolveStoreLocation } from './location.ts';
 import type { NetworkPathChecks } from './network-path.ts';
 import { stepSchema } from './schema/step.ts';
@@ -142,6 +143,11 @@ export async function prepareStore(
   const store = openStore(environment, options);
   try {
     await stepSchema(store.db);
+    // `budget.agrees_with_store` (§7.2), and it runs **after** stepping
+    // because the row it compares against is part of the schema. A process
+    // whose environment disagrees with the store refuses here rather than
+    // arbitrating against a bound the other processes are not using.
+    agreeOnTabBudget(store.db, environment.tabBudget);
   } catch (error) {
     store.close();
     throw error;

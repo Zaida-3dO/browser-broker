@@ -95,6 +95,11 @@ test('every table this design has is created, and nothing else', async () => {
       .all()
       .map((row) => (row as { name: string }).name);
 
+    // Pinned, so a table added by a step nobody reviewed fails here. The
+    // eighth is the tab-budget agreement row (§1.10): a check with no
+    // caller-reachable write path, not the settings table §1.10 deletes —
+    // which is why the test below asserts a `settings` table specifically is
+    // still absent.
     assert.deepEqual(names, [
       'browsers',
       'captures',
@@ -102,6 +107,7 @@ test('every table this design has is created, and nothing else', async () => {
       'comparisons',
       'events',
       'feedback',
+      'tab_budget',
       'tabs',
     ]);
   });

@@ -17,12 +17,19 @@ import { StartupRefusal } from '../errors.ts';
  * three this row's own code reads.
  */
 
-/** A variable's declared type. §6.1: "Values are plain strings and enums." */
-type Kind = 'path';
+/**
+ * A variable's declared type. §6.1: "Values are plain strings and enums."
+ *
+ * Written as a union with a declaration shape per member rather than one
+ * shape carrying a kind field, so a path's default (a function of the home
+ * directory and the platform) and a number's default (a literal) cannot be
+ * confused for one another at the point either is read.
+ */
+type Kind = 'path' | 'positive-integer';
 
-interface Declaration {
+interface PathDeclaration {
   readonly key: string;
-  readonly kind: Kind;
+  readonly kind: Extract<Kind, 'path'>;
   /**
    * Computed, never written down. `SCHEMA.md` §1.0: "Nothing about that path
    * is written down here, because writing one down would name one machine."
@@ -31,6 +38,23 @@ interface Declaration {
    */
   readonly fallback: (home: string, platform: NodeJS.Platform) => string;
 }
+
+/**
+ * A whole number greater than zero, with a fixed default.
+ *
+ * The default is a literal rather than a computation, because unlike a path
+ * it names nothing about the machine it runs on. §6.2 carries the numbers and
+ * the reasoning for each.
+ */
+interface IntegerDeclaration {
+  readonly key: string;
+  readonly kind: Extract<Kind, 'positive-integer'>;
+  readonly fallback: number;
+  /** What the number means, for the refusal's sentence. */
+  readonly unit: string;
+}
+
+type Declaration = PathDeclaration | IntegerDeclaration;
 
 /**
  * The per-user application-data location the platform defines, assembled from
@@ -67,6 +91,60 @@ const DECLARATIONS = [
     kind: 'path',
     fallback: (home, platform) => path.join(ownDirectory(home, platform), 'profiles'),
   },
+  {
+    /**
+     * The total tab budget across **both** browsers (§6.2), and — since a
+     * lease is a tab (§2.3) — the same number as the maximum count of live
+     * leases. No per-browser cap: the scarce thing is page processes and one
+     * costs the same in either browser.
+     *
+     * **This is the one value also written to the store** (§1.10), because
+     * several processes arbitrate against it at the same moment and two of
+     * them believing different numbers means the ceiling silently stops being
+     * one. `src/store/budget.ts` is the agreement check; this is only where
+     * the value is read.
+     */
+    key: 'BROKER_TAB_BUDGET',
+    kind: 'positive-integer',
+    fallback: 15,
+    unit: 'a count of tabs',
+  },
+  {
+    /**
+     * How long an active lease lives without a call (§6.2).
+     *
+     * **Deliberately not given the agreement check the budget gets** (§1.10).
+     * Two processes disagreeing here expires something early or late, which
+     * is degraded behaviour rather than a broken invariant — no bound is
+     * violated and no capacity is over-allocated. That distinction is the
+     * rule: a value several processes must *agree* on gets the row; a value
+     * they merely each *use* does not.
+     */
+    key: 'BROKER_LEASE_SECONDS',
+    kind: 'positive-integer',
+    fallback: 600,
+    unit: 'a duration in seconds',
+  },
+  {
+    /**
+     * How long a place in the queue lives without a call (§6.2).
+     *
+     * **Equal to the lease lifetime, deliberately** (§2.5). Both arguments
+     * for making them differ pointed the other way: polling *is* renewing, so
+     * a queued caller holds exactly the instrument an active holder does; and
+     * under strict ordering a queue place held longer blocks everyone behind
+     * it, so a generous queued lifetime is the harsher setting rather than
+     * the kinder one.
+     *
+     * It is a separate variable rather than a reuse of the one above because
+     * they are two decisions that presently agree, and collapsing them would
+     * make changing one impossible without changing both.
+     */
+    key: 'BROKER_QUEUE_SECONDS',
+    kind: 'positive-integer',
+    fallback: 600,
+    unit: 'a duration in seconds',
+  },
 ] as const satisfies readonly Declaration[];
 
 /** Every variable this build declares. Row #9's walk test reads this. */
@@ -93,6 +171,18 @@ export interface Environment {
   readonly configuredDatabasePath: string | undefined;
   readonly artifactsRoot: string;
   readonly profileRoot: string;
+  /**
+   * The total tab budget across both browsers (§2.3, §6.2).
+   *
+   * **This process's belief**, which is not yet known to agree with the
+   * store's. `src/store/budget.ts` is what compares them, and it refuses the
+   * spawn on a disagreement rather than adopting either number.
+   */
+  readonly tabBudget: number;
+  /** How long an active lease lives without a call, in seconds (§6.2). */
+  readonly leaseSeconds: number;
+  /** How long a queue place lives without a call, in seconds (§2.5, §6.2). */
+  readonly queueSeconds: number;
 }
 
 export interface ReadEnvironmentOptions {
@@ -109,7 +199,7 @@ export interface ReadEnvironmentOptions {
  * refuses, naming the variable**. Falling back to the default silently would
  * run a configuration nobody chose with nothing to notice it by.
  */
-function readPath(declaration: Declaration, raw: string | undefined, fallback: string): string {
+function readPath(declaration: PathDeclaration, raw: string | undefined, fallback: string): string {
   if (raw === undefined) {
     return fallback;
   }
@@ -134,6 +224,65 @@ function readPath(declaration: Declaration, raw: string | undefined, fallback: s
 }
 
 /**
+ * Read a value as a whole number greater than zero, applying §6.3's table.
+ *
+ * **The rejections are the specification here.** Every one of these is a
+ * value somebody wrote deliberately, and the alternative to refusing is
+ * running a configuration nobody chose:
+ *
+ * - **A blank value.** Somebody set the variable and meant something by it,
+ *   and no number is the one thing it cannot mean.
+ * - **Anything that is not entirely digits**, including a decimal point, a
+ *   sign, a trailing unit and leading text. Reading `10s` as ten would be a
+ *   guess, and reading `1e3` as a thousand would let a typo of a thousand
+ *   pass as a small number somewhere else.
+ * - **Zero.** A budget of zero admits nobody and a lifetime of zero expires
+ *   every lease before its first call, so both are configurations in which
+ *   the service cannot work at all. Refusing at the loudest moment is
+ *   better than every call refusing for a reason nothing names.
+ * - **Anything above the safe-integer boundary**, because past it arithmetic
+ *   stops being exact and a comparison against a budget stops being one.
+ */
+function readPositiveInteger(declaration: IntegerDeclaration, raw: string | undefined): number {
+  if (raw === undefined) {
+    return declaration.fallback;
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed === '') {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set but empty. Expected ${declaration.unit} as a whole number above zero; unset it to use the default of ${String(declaration.fallback)}.`,
+    );
+  }
+
+  // Digits only. A permissive parse would read a decimal, a sign or a
+  // trailing unit as a number the caller did not write, and every one of
+  // those is a value somebody typed on purpose and got wrong.
+  if (!/^\d+$/.test(trimmed)) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set to ${JSON.stringify(raw)}, which is not a whole number. Expected ${declaration.unit} written in digits alone, above zero.`,
+    );
+  }
+
+  const value = Number(trimmed);
+  if (value === 0) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set to zero. Expected ${declaration.unit} above zero; a value of zero is a configuration in which the service cannot serve anybody.`,
+    );
+  }
+  if (!Number.isSafeInteger(value)) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set to ${JSON.stringify(raw)}, which is larger than this runtime counts exactly. Expected ${declaration.unit} below ${String(Number.MAX_SAFE_INTEGER)}.`,
+    );
+  }
+  return value;
+}
+
+/**
  * Take the snapshot. Called once, at the start of a spawn.
  *
  * Unrecognised variables are ignored, per §6.3: a process cannot tell an
@@ -146,11 +295,18 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
   const homedir = options.homedir ?? os.homedir;
   const home = homedir();
 
-  const resolved = new Map<string, string>();
+  // One loop over the declarations rather than a call per variable, so a
+  // declared variable that nothing reads is impossible: every key in the
+  // table is resolved here, and the accessors below fail loudly on a key
+  // that is not.
+  const resolved = new Map<string, string | number>();
   for (const declaration of DECLARATIONS) {
+    const raw = env[declaration.key];
     resolved.set(
       declaration.key,
-      readPath(declaration, env[declaration.key], declaration.fallback(home, platform)),
+      declaration.kind === 'path'
+        ? readPath(declaration, raw, declaration.fallback(home, platform))
+        : readPositiveInteger(declaration, raw),
     );
   }
 
@@ -158,8 +314,16 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
   // non-null assertions would be the wrong tool; a throw names the bug.
   const get = (key: string): string => {
     const value = resolved.get(key);
-    if (value === undefined) {
-      throw new Error(`${key} was declared but not resolved`);
+    if (typeof value !== 'string') {
+      throw new Error(`${key} was declared as a path but not resolved as one`);
+    }
+    return value;
+  };
+
+  const getNumber = (key: string): number => {
+    const value = resolved.get(key);
+    if (typeof value !== 'number') {
+      throw new Error(`${key} was declared as a number but not resolved as one`);
     }
     return value;
   };
@@ -169,5 +333,8 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     configuredDatabasePath: env['BROKER_DB'],
     artifactsRoot: get('BROKER_ARTIFACTS_ROOT'),
     profileRoot: get('BROKER_PROFILE_ROOT'),
+    tabBudget: getNumber('BROKER_TAB_BUDGET'),
+    leaseSeconds: getNumber('BROKER_LEASE_SECONDS'),
+    queueSeconds: getNumber('BROKER_QUEUE_SECONDS'),
   };
 }
