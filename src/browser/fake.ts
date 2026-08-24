@@ -1,6 +1,8 @@
+import { solidPng } from '../capture/image.ts';
 import { BROWSER_IDS, type ActionRequest } from './driver.ts';
 import type {
   ArtifactResult,
+  CaptureRequest,
   BrowserDescription,
   CookieSummary,
   BrowserDriver,
@@ -11,6 +13,7 @@ import type {
   DiscoveryRecord,
   EvaluationResult,
   NavigationResult,
+  RawCapture,
   ReadArtifact,
   TabHandle,
 } from './driver.ts';
@@ -73,6 +76,8 @@ export type DriverCallName =
   | 'read'
   | 'cookies'
   | 'evaluate'
+  | 'settlePage'
+  | 'capture'
   | 'detach';
 
 /**
@@ -115,10 +120,36 @@ export interface FakeBrowserOptions {
   readonly pid?: number;
 }
 
+/**
+ * What the fake's shutter produces, when a test needs a particular picture.
+ *
+ * **This is canned geometry, never a rendering.** The fake does not simulate a
+ * browser (see this file's header), so a test that sets `width` here is
+ * stating what it wants the pipeline to have been handed — which is exactly
+ * the input a downscale test needs and exactly the wrong thing to read as
+ * evidence that a browser would have produced it.
+ */
+export interface FakeCaptureOptions {
+  readonly width?: number;
+  readonly height?: number;
+  readonly viewportWidth?: number;
+  readonly url?: string;
+  /**
+   * The encoded bytes handed back.
+   *
+   * Defaults to a real, decodable one-pixel image rather than arbitrary
+   * bytes, because a pipeline that decodes what it was given must be given
+   * something decodable — and a fake that handed back nonsense would make
+   * every downscale test a test of the decoder's error path.
+   */
+  readonly image?: Uint8Array;
+}
+
 /** Where the fake's canned answers come from, when a test needs a particular one. */
 export interface FakeDriverOptions {
   readonly regular?: FakeBrowserOptions;
   readonly private?: FakeBrowserOptions;
+  readonly capture?: FakeCaptureOptions;
 }
 
 const DEFAULT_MODE: Readonly<Record<BrowserId, BrowserMode>> = {
@@ -485,6 +516,46 @@ export class FakeBrowserDriver implements BrowserDriver {
         const failure = this.#enter({ name: 'evaluate', browser, tab, detail: { expression } });
         if (failure) return Promise.reject(failure);
         return Promise.resolve({ value: null, bytes: 0 });
+      },
+
+      settlePage: (tab: TabHandle): Promise<void> => {
+        const failure = this.#enter({ name: 'settlePage', browser, tab });
+        if (failure) return Promise.reject(failure);
+        // Nothing to settle — the fake has no timing at all (see this file's
+        // header). What the entry in the log proves is that the pipeline
+        // asked, and *when* it asked relative to the shutter, which is the
+        // whole of what `SCHEMA.md` §3.11's "every capture settles the page
+        // first" is checkable as from outside a real browser.
+        return Promise.resolve();
+      },
+
+      capture: (tab: TabHandle, request: CaptureRequest): Promise<RawCapture> => {
+        const canned = this.#options.capture;
+        const failure = this.#enter({
+          name: 'capture',
+          browser,
+          tab,
+          // The mask is recorded as a count and as the rectangles themselves:
+          // "a mask was passed to the driver" and "it was *this* mask" are
+          // different assertions, and §3.11's masking-before-the-shutter
+          // property needs the second.
+          detail: {
+            fullPage: request.fullPage,
+            selector: request.selector,
+            mask: request.mask ? [...request.mask] : undefined,
+          },
+        });
+        if (failure) return Promise.reject(failure);
+        const width = canned?.width ?? 1280;
+        const height = canned?.height ?? 720;
+        return Promise.resolve({
+          // A real, decodable picture by default — see `FakeCaptureOptions`.
+          image: canned?.image ?? solidPng(width, height),
+          width,
+          height,
+          viewportWidth: canned?.viewportWidth ?? width,
+          url: canned?.url ?? 'https://example.com/',
+        });
       },
 
       detach: () => {
