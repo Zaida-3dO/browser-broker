@@ -5,6 +5,9 @@ import test from 'node:test';
 import type { BrowserSession, TabHandle } from '../../src/browser/driver.ts';
 import { type RasterImage, encodePng } from '../../src/diff/image.ts';
 import { DEFAULT_DIFF_SETTINGS } from '../../src/diff/settings.ts';
+import type { BrokerService } from '../../src/adapter/service-seam.ts';
+import { serviceFor } from '../../src/service/bridge.ts';
+import { createBroker } from '../../src/service/broker.ts';
 import { claimInput, withBroker, type BrokerFixture } from '../helpers/broker.ts';
 import {
   FAINT_GREY,
@@ -592,5 +595,122 @@ test('the diff settings are one snapshot, and they land on the row that used the
       DEFAULT_DIFF_SETTINGS.colourTolerance,
       'with nothing set in the environment, the shipped default is what ran',
     );
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE BRIDGE, WHICH IS WHERE THE ARGUMENT WAS ACTUALLY BEING DROPPED
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Every test above calls `broker.capture` with the service's own vocabulary,
+ * and **that is not where the defect was.** The broker method always had a
+ * parameter object; what no code did was *put* `compare_to` into it. The
+ * translation from a route's snake-cased arguments to the service's input
+ * lives in `serviceFor`, and a suite that only ever calls the broker directly
+ * leaves that translation entirely unexercised.
+ *
+ * Measured rather than assumed: deleting the bridge's `compare_to` read —
+ * reinstating the original defect exactly — left every test above passing.
+ * These two close that hole, and they are the only tests here that would fail
+ * if the argument were dropped at the boundary again.
+ */
+
+/**
+ * The service as a route sees it: one method over an opaque argument record.
+ *
+ * **Built on a broker that has a browser and an artifact store bound to it**,
+ * which the shared fixture's broker deliberately does not: it exposes those
+ * two separately so each test says whether a capture had somewhere to go. A
+ * route cannot supply them — which browser a tab lives in is a fact about the
+ * tab's row, not an argument a caller passes — so a test driving the route has
+ * to bind them the way the runtime does, when the service is constructed.
+ */
+function routeService(fixture: BrokerFixture, session: BrowserSession): BrokerService {
+  const broker = createBroker({
+    store: fixture.store,
+    environment: fixture.environment,
+    adapter: 'tool-stdio',
+    session: () => session,
+    artifacts: fixture.artifacts,
+  });
+  return serviceFor({ broker, db: fixture.store.db });
+}
+
+async function throughTheBridge(
+  service: BrokerService,
+  args: Readonly<Record<string, unknown>>,
+): Promise<Readonly<Record<string, unknown>>> {
+  const outcome = await service.perform({
+    operation: 'capture',
+    adapter: 'tool-stdio',
+    arguments: args,
+  });
+  assert.equal(outcome.outcome, 'accepted', 'the capture must not have been refused');
+  if (outcome.outcome !== 'accepted') throw new Error('unreachable');
+  return outcome.value;
+}
+
+test('compare_to survives the route boundary, in the spelling each surface uses', async () => {
+  const pair = changedPairs().find((entry) => entry.name === 'a block repainting');
+  assert.ok(pair !== undefined);
+
+  // Both spellings, because both are real: a tool call carries `compare_to`,
+  // and the command line's `--compare-to` is normalised to the same key by
+  // `parseArguments`. Driving only one would leave the other's path untested.
+  for (const spelling of ['compare_to', 'compareTo'] as const) {
+    await withBroker(async (fixture) => {
+      const lease = await grantedLease(fixture);
+      const driver = imageServingSession([pair.earlier, pair.current]);
+      const service = routeService(fixture, driver.session);
+
+      // **Both captures through the route**, so the whole path a real caller
+      // takes is the path under test.
+      const first = await throughTheBridge(service, { lease_key: lease.key });
+      const firstCapture = first['capture'] as { captureId: string } | undefined;
+      assert.ok(firstCapture !== undefined, 'the first capture must have been written');
+
+      const value = await throughTheBridge(service, {
+        lease_key: lease.key,
+        [spelling]: firstCapture.captureId,
+      });
+
+      // **The assertion that fails if the bridge drops the argument.**
+      // Without the read, `comparison` is absent and this line fails while
+      // every broker-level test in this file still passes.
+      const comparison = value['comparison'];
+      assert.ok(
+        comparison !== undefined,
+        `${spelling} must reach the service: a surface that declares an argument and drops it tells the caller a diff was run when none was`,
+      );
+      assert.equal(
+        (comparison as { diffed: boolean }).diffed,
+        true,
+        'and the comparison it names must actually have run',
+      );
+    });
+  }
+});
+
+test('a capture through the route with no compare_to runs no comparison', async () => {
+  // The control for the test above. Without it, a bridge that passed some
+  // constant identifier on every call would satisfy "compare_to arrives"
+  // while making the argument meaningless.
+  const clean = cleanPair();
+
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = imageServingSession([clean.earlier]);
+    const service = routeService(fixture, driver.session);
+    const first = await throughTheBridge(service, { lease_key: lease.key });
+    assert.ok(first['capture'] !== undefined, 'the capture itself must have succeeded');
+
+    const value = await throughTheBridge(service, { lease_key: lease.key });
+    assert.equal(
+      value['comparison'],
+      undefined,
+      'no compare_to means no comparison, not a comparison against something guessed',
+    );
+    assert.equal(committedComparisons(fixture).length, 0, 'and no row is written');
   });
 });
