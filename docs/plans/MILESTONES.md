@@ -64,7 +64,7 @@ unchecked.*
 |---|---|---|---|
 | **1** | The four planning documents and the directives file, **plus the public-repo hygiene gate and its self-test**, committed straight to `main` | — | `done` |
 | **2** | Publish the repository and protect `main` — linear history, no force-push, no deletions, pull request required. **Ships the `LICENSE` file** (MIT, `DECISIONS.md` §13e) | 1 | |
-| **3** | **The boilerplate (fan-out point).** Application skeleton, the store driver wired up, the executable entry point, CI workflow, test harness, lint and format | 2 | |
+| **3** | **The boilerplate (fan-out point).** Application skeleton, the store driver wired up, the executable entry point, CI workflow, test harness, lint and format | 2 | `done` |
 | **4** | Required status checks pointed at the jobs from #3 | 3 | `done` |
 | **5** | Public-repo hygiene gate wired into CI on every pull request | 3 | `done` |
 | **6** | **Install and run from a clean checkout** — a documented install, then a real spawn against a temporary store that steps the schema, answers one command and exits | 3 | `done` |
@@ -126,12 +126,12 @@ command, and nothing reaches `main` without passing checks.
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **7** | **The schema stepper, and step one: the whole schema.** Browsers, claims, tabs, events, captures, diffs and feedback, as raw SQL — **plus the two partial indexes** (`SCHEMA.md` §1.11). The store records its version; the stepper applies the steps between that and the version the build expects. Mechanics and the raw SQL are in "Implementation notes" below | 3 | |
-| **8** | **Store access: open the file, resolve its location, and refuse a network one.** The location comes from the environment and from nothing else; the refusal is the two-check detection (`SCHEMA.md` §1.0). Every spawn opens, steps and is ready — there is no boot to be separate from | 7 | |
-| **9** | **The environment-variable registry and `.env.example`.** Every value the service reads is a variable with a working default, resolved **once per process** on the way in; a variable that is set and unreadable as its type **refuses to start, naming it** (`SCHEMA.md` §6.1, §6.3). `.env.example` ships every variable with its options and its default, and a build check asserts no variable is credential-shaped | 8 | |
-| **10** | Service-layer skeleton: **the immediate-transaction helper every arbitration path takes**, typed errors, and the rejection taxonomy every guard draws from | 8 | |
-| **11** | Events: append a row on every decision — **allow and deny alike** | 10 | |
-| **50** | **The two build checks that keep the transaction rule true**: `arbitration.immediate_transaction` and `arbitration.no_read_only_path` (`SCHEMA.md` §7.3), each with a seeded violation proving it fires | 10 | |
+| **7** | **The schema stepper, and step one: the whole schema.** Browsers, claims, tabs, events, captures, diffs and feedback, as raw SQL — **plus the two partial indexes** (`SCHEMA.md` §1.11). The store records its version; the stepper applies the steps between that and the version the build expects. Mechanics and the raw SQL are in "Implementation notes" below | 3 | `done` |
+| **8** | **Store access: open the file, resolve its location, and refuse a network one.** The location comes from the environment and from nothing else; the refusal is the two-check detection (`SCHEMA.md` §1.0). Every spawn opens, steps and is ready — there is no boot to be separate from | 7 | `done` |
+| **9** | **The environment-variable registry and `.env.example`.** Every value the service reads is a variable with a working default, resolved **once per process** on the way in; a variable that is set and unreadable as its type **refuses to start, naming it** (`SCHEMA.md` §6.1, §6.3). `.env.example` ships every variable with its options and its default, and a build check asserts no variable is credential-shaped | 8 | `done` |
+| **10** | Service-layer skeleton: **the immediate-transaction helper every arbitration path takes**, typed errors, and the rejection taxonomy every guard draws from | 8 | `done` |
+| **11** | Events: append a row on every decision — **allow and deny alike** | 10 | `done` |
+| **50** | **The two build checks that keep the transaction rule true**: `arbitration.immediate_transaction` and `arbitration.no_read_only_path` (`SCHEMA.md` §7.3), each with a seeded violation proving it fires | 10 | `done` |
 
 > **#7 is one step, and every change after it is another step.** The rule that steps are additive is
 > not style: a step that has run somewhere is history, and editing one means two installations
@@ -193,16 +193,16 @@ the build fails on an arbitration path that does not declare its intent to write
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **12** | **Capacity: one integer**, and **the one row that keeps it one integer across processes.** One total tab budget across both browsers, and the admission predicate over it — `count of live claims + 1 <= budget`. No request size, no allowance, no reservation (`SCHEMA.md` §2.3). **The first process to open the store writes its budget in; a later process whose environment disagrees refuses to start and names both numbers** (`SCHEMA.md` §1.10, §7.2) | 10, 9 | |
-| **13** | Claim: **atomic grant-or-queue for exactly one tab**, secret key issue. One claim, one tab, one row | 12 | |
-| **14** | **Every keyed call extends the lease** — there is no renew operation, because a dedicated verb would be a second name for an effect every call already has (`SCHEMA.md` §3.1) | 13 | |
-| **15** | Release on an active lease: terminal, **closes exactly that lease's one tab** — singular on every surface — and frees its capacity. **Forgiving**: releasing twice succeeds and says the lease had already ended | 13 | |
-| **16** | **The lazy global sweep.** Every arbitration call first expires every lapsed claim and every lapsed queue entry across the whole store, in the same transaction, then answers from reconciled state. **Tab cleanup happens after commit, best effort** | 14, 15 | |
-| **17** | Queue: **strict first in, first out**, position and estimate, queued-entry expiry by the same sweep, re-queue at the back with a new key. **The queued response carries the obligation, the number, and the mechanism** — check back at just under the lifetime, around nine minutes against ten | 13, 16 | |
-| **72** | **Release also gives back a queue place** — one verb, both live states (`SCHEMA.md` §2.5, §3.4). A queued release is complete at commit, because there is nothing to close, and everyone behind moves up immediately | 15, 17 | |
-| **51** | **The you-are-your-own-obstacle nudge.** When a claim is refused or queued **and the asking session already holds live leases**, the response names them (identifier, state, purpose, browser and expiry — **not** keys, which are unrecoverable by construction, §1.3/§2.2), advises starting with what it holds, and offers release-and-retry. **Logged as a decision** — the nudge is advice, the ledger row is the evidence (`SCHEMA.md` §2.3a) | 12, 13, 11 | |
-| **52** | **The two lifetimes, equal at ten minutes**, and the defaults that carry them: lease lifetime and queue-place lifetime as environment variables, both quoted in the queued response | 17, 9 | |
-| **18** | Ownership guards: every tab-addressed operation refuses a tab not owned by the key | 13 | |
+| **12** | **Capacity: one integer**, and **the one row that keeps it one integer across processes.** One total tab budget across both browsers, and the admission predicate over it — `count of live claims + 1 <= budget`. No request size, no allowance, no reservation (`SCHEMA.md` §2.3). **The first process to open the store writes its budget in; a later process whose environment disagrees refuses to start and names both numbers** (`SCHEMA.md` §1.10, §7.2) | 10, 9 | `done` |
+| **13** | Claim: **atomic grant-or-queue for exactly one tab**, secret key issue. One claim, one tab, one row | 12 | `done` |
+| **14** | **Every keyed call extends the lease** — there is no renew operation, because a dedicated verb would be a second name for an effect every call already has (`SCHEMA.md` §3.1) | 13 | `done` |
+| **15** | Release on an active lease: terminal, **closes exactly that lease's one tab** — singular on every surface — and frees its capacity. **Forgiving**: releasing twice succeeds and says the lease had already ended | 13 | `done` |
+| **16** | **The lazy global sweep.** Every arbitration call first expires every lapsed claim and every lapsed queue entry across the whole store, in the same transaction, then answers from reconciled state. **Tab cleanup happens after commit, best effort** | 14, 15 | `done` |
+| **17** | Queue: **strict first in, first out**, position and estimate, queued-entry expiry by the same sweep, re-queue at the back with a new key. **The queued response carries the obligation, the number, and the mechanism** — check back at just under the lifetime, around nine minutes against ten | 13, 16 | `done` |
+| **72** | **Release also gives back a queue place** — one verb, both live states (`SCHEMA.md` §2.5, §3.4). A queued release is complete at commit, because there is nothing to close, and everyone behind moves up immediately | 15, 17 | `done` |
+| **51** | **The you-are-your-own-obstacle nudge.** When a claim is refused or queued **and the asking session already holds live leases**, the response names them (identifier, state, purpose, browser and expiry — **not** keys, which are unrecoverable by construction, §1.3/§2.2), advises starting with what it holds, and offers release-and-retry. **Logged as a decision** — the nudge is advice, the ledger row is the evidence (`SCHEMA.md` §2.3a) | 12, 13, 11 | `done` |
+| **52** | **The two lifetimes, equal at ten minutes**, and the defaults that carry them: lease lifetime and queue-place lifetime as environment variables, both quoted in the queued response | 17, 9 | `done` |
+| **18** | Ownership guards: every tab-addressed operation refuses a tab not owned by the key | 13 | `done` |
 
 > **#12 is one comparison, and the arithmetic a reader expects is absent rather than hidden.** A
 > grant *is* a tab, so capacity, grants and tabs are the same integer (`SCHEMA.md` §2.3). There is no
@@ -326,13 +326,13 @@ concurrency tests below are green.
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **19** | Driver interface **+ a fake driver with a call log** — what makes a rejection test able to assert that nothing happened | 10 | |
-| **20** | Real driver: **attach to a browser that is already running against one of the two profile directories**, and cold-start one **detached** when none is. Ships `launch.explicit_profile_dir`, `launch.detached`, `launch.default_args_intact` and `launch.capture_surface`, and the inward-isolation test — **starts cleanly while an unrelated browser already holds the default profile** | 19 | |
-| **53** | **Discovery: the endpoint record, verified rather than trusted.** Ask the browser for an ephemeral port and read back what it recorded in its own profile directory; before attaching, **check the endpoint answers and that the browser identifier matches** (`SCHEMA.md` §1.2c) | 20 | |
-| **54** | **The launch race, arbitrated by the same transaction as claims** — one row, one winner; the loser waits and attaches rather than starting a second browser (`SCHEMA.md` §1.2a) | 20, 12 | |
+| **19** | Driver interface **+ a fake driver with a call log** — what makes a rejection test able to assert that nothing happened | 10 | `done` |
+| **20** | Real driver: **attach to a browser that is already running against one of the two profile directories**, and cold-start one **detached** when none is. Ships `launch.explicit_profile_dir`, `launch.detached`, `launch.default_args_intact` and `launch.capture_surface`, and the inward-isolation test — **starts cleanly while an unrelated browser already holds the default profile** | 19 | `done` |
+| **53** | **Discovery: the endpoint record, verified rather than trusted.** Ask the browser for an ephemeral port and read back what it recorded in its own profile directory; before attaching, **check the endpoint answers and that the browser identifier matches** (`SCHEMA.md` §1.2c) | 20 | `done` |
+| **54** | **The launch race, arbitrated by the same transaction as claims** — one row, one winner; the loser waits and attaches rather than starting a second browser (`SCHEMA.md` §1.2a) | 20, 12 | `done` |
 | **55** | **Decide what a caller that lost the launch race waits for, and for how long** (`SCHEMA.md` §1.2b, §9.3). Winning the race and having an endpoint that accepts connections are **different moments**, and the gap has no specified signal and no bound. Delivers the readiness signal, the poll, the timeout default and the declare-failed behaviour | 54 | `open` |
-| **56** | **The keeper tab.** One blank, never-leased, never-addressable tab per browser, **never counted against the budget**, present before any lease is granted against that browser (`SCHEMA.md` §3.15, §7.2) | 20 | |
-| **21** | Tab lifecycle: open and close by opaque identifier, the identifier mapping, and **reconciliation against the browser** — a browser that fails either discovery check is gone and every tab row in it is closed | 20, 18, 53 | |
+| **56** | **The keeper tab.** One blank, never-leased, never-addressable tab per browser, **never counted against the budget**, present before any lease is granted against that browser (`SCHEMA.md` §3.15, §7.2) | 20 | `done` |
+| **21** | Tab lifecycle: open and close by opaque identifier, the identifier mapping, and **reconciliation against the browser** — a browser that fails either discovery check is gone and every tab row in it is closed | 20, 18, 53 | `done` |
 | **22** | Navigate and act, tab-addressed, snapshot-to-path on every mutation. **The ordinary page verbs** — click, type, fill, press, select, hover, check, scroll — and the refusal that **lists every action by name** | 21 | |
 | **61** | **`resize` as an action on `browser_act`** — set the tab's viewport, return a fresh snapshot. **Measured: 578 calls across 140 sessions — 58% of every session that used browser automation, and the sixth most-used verb** (`SCHEMA.md` §3.8). **High priority**: responsive review is inexpressible without it | 22 | |
 | **62** | **`emulate` as an action on `browser_act`** — colour scheme, reduced motion and forced colours, returning a fresh snapshot because changing them changes what renders. **Measured: 19 calls across 9 sessions, with no page-side path** (`SCHEMA.md` §3.8) | 22 | |
@@ -341,9 +341,9 @@ concurrency tests below are green.
 | **23** | Read: snapshot by default; console, network and cookie summary on request — all path-returning; **cookie values never returned** | 21 | |
 | **24** | Evaluate, with an inline byte cap and spill-to-path | 21 | |
 | **65** | **`storage_seed` on `browser_claim`** — optional storage entries **written by the service through the automation layer's own storage interface**, before the tab's first navigation. **Never caller code executed as code.** Ships all five refusals: the count and size bounds, a non-string value, a non-web origin, cookies, and any entry on a lease that is not the caller's (`SCHEMA.md` §3.2) | 13, 21 | |
-| **66** | **Browser-choice guidance, in the tool description text** — authenticated surface goes to the signed-in browser, genuinely-fresh-visitor work to the private one, **with the shared-cookie-jar caveat stated in the same breath**. Lands in the description and in the claim refusal, **because the description is the only place a calling agent reliably reads** (`SCHEMA.md` §1.2, §3.2) | 13 | |
+| **66** | **Browser-choice guidance, in the tool description text** — authenticated surface goes to the signed-in browser, genuinely-fresh-visitor work to the private one, **with the shared-cookie-jar caveat stated in the same breath**. Lands in the description and in the claim refusal, **because the description is the only place a calling agent reliably reads** (`SCHEMA.md` §1.2, §3.2) | 13 | `done` |
 | **44** | **The setup handshake, run on every spawn.** `broker init` runs it explicitly and every process that opens the store runs it before doing anything else: step the schema, confirm the two browser rows, **create a profile that is absent and use one that is present — never recreate**, and report which profiles it created against which it found. Idempotent. Refuses with a named reason when the profile root is unwritable or another process holds a profile's lock (`SCHEMA.md` §1.2d) | 20 | |
-| **45** | **The artifact store.** One directory per lease with subfolders by kind, **and nothing outside it**, rooted at an environment variable defaulting under the platform's per-user application-data location. **Every stored path is relative to that root**, labels are sanitised and never treated as paths, and **a capture's file name derives its page slug from the page address** with the query string stripped first (`SCHEMA.md` §1.7a) | 20, 9 | |
+| **45** | **The artifact store.** One directory per lease with subfolders by kind, **and nothing outside it**, rooted at an environment variable defaulting under the platform's per-user application-data location. **Every stored path is relative to that root**, labels are sanitised and never treated as paths, and **a capture's file name derives its page slug from the page address** with the query string stripped first (`SCHEMA.md` §1.7a) | 20, 9 | `done` |
 
 > **#19 lands as early as it possibly can, and that is the point of splitting it out.** It needs
 > nothing but a service layer, and every rejection test written before it exists can only assert a
@@ -439,6 +439,15 @@ concurrency tests below are green.
 > covers anything a person can log into by hand, and does not cover a service whose authentication is
 > a token obtained from an interface rather than typed into a form.
 >
+> **#65 is deliberately left open although its argument, its refusals and its driver method are
+> built.** The validation, all five refusals, the redaction and `seedStorage` on both drivers are
+> landed and tested; **what is missing is the caller.** The claim path creates a tab row in
+> `opening` and nothing on that layer holds a browser session to open it with, so the write this row
+> describes — *"before the tab's first navigation"* — does not yet happen. The ledger records the
+> seed as **requested** rather than applied, so nothing asserts a write that did not occur, and the
+> row stays open until the tab lifecycle is wired to it. **Marking it done would retire exactly the
+> suspicion that finds this gap.**
+>
 > **#65's refusals are the row, and its structural property is what makes them credible.** Nothing in
 > the argument is ever passed to an evaluator — the values go through a storage-writing interface
 > taking a key and a string, so there is **no position in which a caller's bytes could be read as a
@@ -496,8 +505,8 @@ manages.
 | **27** | **Tool surface over stdio — the primary route.** The service is spawned by its caller, serves that session and exits with it | 25 | |
 | **29** | Command-line adapter (`broker claim` / `status` / `release` / the operations commands) — **in process, because there is nothing else for a command to talk to** — and the parity proof. Ships `broker claim --wait`, which polls at just under the lease lifetime | 25 | |
 | **30** | Parity suite green across every route: identical operations, identical refusals, **identical side-effects** | 27, 29 | |
-| **67** | **`browser_feedback`, the tenth tool** — one row, no lease required, written to the installation's own store. Anchored 1–5 help-versus-hinder scale, five disjoint categories including a positive one, and **three auto-captured columns: the lease, the caller's last operation from the ledger, and the refusal it hit.** Local only, no outbound path. **Ships with its exit condition written down** (`SCHEMA.md` §3.16) | 27, 11, 7 | |
-| **68** | **`broker feedback` reads the rows back**, most recent first, with filters for rating and category — **the one command whose reading half has no tool behind it**, because a caller writes feedback and a person reads it | 67, 29 | |
+| **67** | **`browser_feedback`, the tenth tool** — one row, no lease required, written to the installation's own store. Anchored 1–5 help-versus-hinder scale, five disjoint categories including a positive one, and **three auto-captured columns: the lease, the caller's last operation from the ledger, and the refusal it hit.** Local only, no outbound path. **Ships with its exit condition written down** (`SCHEMA.md` §3.16) | 27, 11, 7 | `done` |
+| **68** | **`broker feedback` reads the rows back**, most recent first, with filters for rating and category — **the one command whose reading half has no tool behind it**, because a caller writes feedback and a person reads it | 67, 29 | `done` |
 
 > **#27 is the primary route and it is one process per session, not one shared process.** The client
 > spawns it, it serves that session, it exits (`DECISIONS.md` §13e). There is no resident server for
@@ -570,11 +579,11 @@ registering it fails.
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **31** | Capture pipeline: take, downscale to the tier, write, return `{path, width, height, bytes}`. **Three tiers, cheapest by default with no parameter**; the highest additionally requires a **free-text** `reason`; full-page off by default. **Settles the page before every shutter** and supports a capture-time mask. **Consults nothing belonging to the diff feature** | 22, 45 | |
-| **32** | Per-capture telemetry: dimensions, bytes, downscaled-from, the tier, the escalation `reason`, estimated token cost | 31, 11 | |
-| **33** | Capture accounting per claim: **a loud warning, never a refusal**, naming the cheaper alternative, fired on **every** capture past the threshold | 31, 12 | |
+| **31** | Capture pipeline: take, downscale to the tier, write, return `{path, width, height, bytes}`. **Three tiers, cheapest by default with no parameter**; the highest additionally requires a **free-text** `reason`; full-page off by default. **Settles the page before every shutter** and supports a capture-time mask. **Consults nothing belonging to the diff feature** | 22, 45 | `done` |
+| **32** | Per-capture telemetry: dimensions, bytes, downscaled-from, the tier, the escalation `reason`, estimated token cost | 31, 11 | `done` |
+| **33** | Capture accounting per claim: **a loud warning, never a refusal**, naming the cheaper alternative, fired on **every** capture past the threshold | 31, 12 | `done` |
 | **34** | Resolution-ladder harness and the one-off study; publish the chosen tiers **with their evidence**, superseding the provisional numbers | 32 | |
-| **69** | **The `capture.no_diff_dependency` build check** — no capture path reads anything belonging to the diff feature, with a seeded violation proving it fires (`SCHEMA.md` §7.3) | 31 | |
+| **69** | **The `capture.no_diff_dependency` build check** — no capture path reads anything belonging to the diff feature, with a seeded violation proving it fires (`SCHEMA.md` §7.3) | 31 | `done` |
 
 > **#31 carries the lever, not #33.** The low default is what does nearly all the work, because most
 > callers never pass an optional parameter — so getting "cheapest tier when nothing is asked for"
@@ -633,13 +642,13 @@ escalation is recorded with its reason, and no capture is ever refused.
 
 | PR | Delivers | Needs | Status |
 |---|---|---|---|
-| **35** | **The operations snapshot: one command, one self-contained HTML file** with its styling and behaviour inlined, written to a path, and the process exits. Both browsers with state and restart count, budget and use, live leases grouped by session, the queue with positions and waits, leaked tabs, recent ledger entries, and what callers reported. **Read-only — no controls, no sign-in, no forms.** **Labelled with the moment it was taken, and it does not refresh.** **Renders derived state, never stored state** | 29, 11 | |
-| **70** | **Tab addresses read live from the browsers at generation time**, with a **mandatory per-tab timeout**, and **a browser that does not answer renders as `unreachable`** — an explicit word, never blank, omitted or a placeholder (`SCHEMA.md` §4.2a) | 35, 21 | |
-| **47** | **A view of the ledger** — sliced by kind, outcome and rule, with the cursor the counter primary key already provides. Read by `broker events` from the first version, and the most recent entries appear in the generated snapshot (#35); the shape in `SCHEMA.md` §1.6 is what keeps it one query | 29, 11 | |
-| **71** | **`broker doctor`** — every precondition reported separately, **exiting with a distinct code on any failure**: the store's location, that it is not on a network filesystem, its version · the automation tool and its version · artifact and profile roots writable · each browser's discovery record checked for **liveness and identity** · the capture-surface check · the keeper tab · **and whether the stored tab budget agrees with this process's environment** (`SCHEMA.md` §5.5) | 29, 44, 53, 56, 12 | |
+| **35** | **The operations snapshot: one command, one self-contained HTML file** with its styling and behaviour inlined, written to a path, and the process exits. Both browsers with state and restart count, budget and use, live leases grouped by session, the queue with positions and waits, leaked tabs, recent ledger entries, and what callers reported. **Read-only — no controls, no sign-in, no forms.** **Labelled with the moment it was taken, and it does not refresh.** **Renders derived state, never stored state** | 29, 11 | `done` |
+| **70** | **Tab addresses read live from the browsers at generation time**, with a **mandatory per-tab timeout**, and **a browser that does not answer renders as `unreachable`** — an explicit word, never blank, omitted or a placeholder (`SCHEMA.md` §4.2a) | 35, 21 | `done` |
+| **47** | **A view of the ledger** — sliced by kind, outcome and rule, with the cursor the counter primary key already provides. Read by `broker events` from the first version, and the most recent entries appear in the generated snapshot (#35); the shape in `SCHEMA.md` §1.6 is what keeps it one query | 29, 11 | `done` |
+| **71** | **`broker doctor`** — every precondition reported separately, **exiting with a distinct code on any failure**: the store's location, that it is not on a network filesystem, its version · the automation tool and its version · artifact and profile roots writable · each browser's discovery record checked for **liveness and identity** · the capture-surface check · the keeper tab · **and whether the stored tab budget agrees with this process's environment** (`SCHEMA.md` §5.5) | 29, 44, 53, 56, 12 | `done` |
 | **37** | Measurement harness: matched-pair comparison over real review work, and the capture telemetry rollups the study reads | 27 | |
 | **38** | Rollout runbook: phased enablement from a zero tab budget to sole route, in the order that never leaves traffic unarbitrated. **Includes the one-time sign-in, by hand, into the window already open — nothing stopped, nothing relaunched** | 37, 44 | |
-| **60** | **The empirical foreground check owed before the browser layer is trusted** (`SCHEMA.md` §9.4): drive a **background** tab through a navigation, an action and a capture, and assert the foreground did not move. A test on the real thing, not a code read | 22, 31 | |
+| **60** | **The empirical foreground check owed before the browser layer is trusted** (`SCHEMA.md` §9.4): drive a **background** tab through a navigation, an action and a capture, and assert the foreground did not move. A test on the real thing, not a code read | 22, 31 | `done` |
 
 > **There is no deployment row, and its absence is the design.** There is no image to pull onto a
 > host, no configuration to place beside a running service and no health check on a process, because

@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
-import { BROWSER_IDS, type BrowserId } from '../../browser/driver.ts';
+import { BROWSER_CHOICE_GUIDANCE, BROWSER_IDS, type BrowserId } from '../../browser/driver.ts';
 import { admits, countActiveClaims } from '../capacity.ts';
 import { append } from '../events.ts';
 import { hashKey, mintKey } from '../keys.ts';
 import { nudgeIfOwnObstacle, type OwnObstacleNudge } from '../nudge.ts';
 import { queuePosition, waitEstimateSeconds } from '../queue.ts';
 import { CallRefusal } from '../refusals.ts';
+import {
+  StorageSeedRefusal,
+  seedRecord,
+  validateStorageSeed,
+  type StorageSeedEntry,
+} from '../storage-seed.ts';
 import type { ArbitrationOutcome, ArbitrationScope } from '../arbitration.ts';
 
 /**
@@ -43,6 +49,16 @@ export interface ClaimInput {
   readonly browser: string;
   /** What this lease is for, in human words. What an operator reads when revoking. */
   readonly purpose: string;
+  /**
+   * Optional storage entries written into their origins **before the tab's
+   * first navigation** (§3.2, row #65).
+   *
+   * `unknown` rather than the validated type, deliberately: it arrives from a
+   * caller across a surface, and declaring it already-validated here would
+   * make {@link validateStorageSeed} something a surface could skip by
+   * constructing the object itself.
+   */
+  readonly storageSeed?: unknown;
 }
 
 /** The grant: a live lease holding one tab. */
@@ -55,6 +71,16 @@ export interface ClaimGranted {
   readonly tabId: string;
   readonly expiresAt: string;
   readonly leaseSeconds: number;
+  /**
+   * What the service must write into the tab **before its first navigation**,
+   * and the reason this is returned rather than done here: writing storage is
+   * browser work, and browser work never happens inside the arbitration
+   * transaction (§2.4b). The entries are validated, so what is handed back is
+   * the shape the driver seam declares.
+   *
+   * Empty on a lease that seeded nothing, which is the ordinary case.
+   */
+  readonly storageSeed: readonly StorageSeedEntry[];
   readonly nudge?: OwnObstacleNudge;
 }
 
@@ -142,11 +168,53 @@ export function decideClaim(
       sessionId: input.sessionId,
       detail: { requested: input.browser, known: BROWSER_IDS },
     });
+    // **The refusal carries the choice guidance** (§3.2, row #66): a caller
+    // re-reading a refusal is a caller re-making this decision, and telling
+    // it only which two names exist leaves it to guess which one it wanted.
     throw new CallRefusal(
       'unknown_browser',
-      `There is no browser named ${JSON.stringify(input.browser)}. This service has exactly two: ${BROWSER_IDS.join(' and ')}.`,
+      `There is no browser named ${JSON.stringify(input.browser)}. This service has exactly two: ${BROWSER_IDS.join(' and ')}. ${BROWSER_CHOICE_GUIDANCE}`,
       { detail: { requested: input.browser, known: BROWSER_IDS } },
     );
+  }
+
+  // Validated **before the first insert**, so a refused seed leaves no lease
+  // behind: the caller is not charged capacity for it, holds no key, and has
+  // nothing to release. This is the position the unknown-browser refusal
+  // occupies, and it is here for the same reason (§2.2) — nothing about
+  // waiting makes a malformed argument valid.
+  //
+  // The fifth refusal §3.2 lists — **any entry on a lease that is not the
+  // caller's** — needs no check here and could not be written as one: the
+  // seed is an argument on the claim, so it applies once, to the tab that
+  // claim grants. There is no parameter naming another lease, so there is no
+  // path to seeding somebody else's. That is structural, and it is stated
+  // rather than implemented because implementing it would mean inventing the
+  // parameter first.
+  //
+  // **The refusal is recorded through `recordRefusal`, not `append`**, for
+  // the reason that scope explains at length: a refusal throws, the throw
+  // rolls the transaction back, and an ordinary append goes with it — leaving
+  // a ledger of grants that can never show a guard firing. §1.6 requires
+  // every decision, allowed and refused alike.
+  let storageSeed: readonly StorageSeedEntry[];
+  try {
+    storageSeed = validateStorageSeed(input.storageSeed);
+  } catch (error) {
+    if (error instanceof StorageSeedRefusal) {
+      scope.recordRefusal({
+        kind: 'claim_requested',
+        outcome: 'deny',
+        guard: error.rule,
+        adapter,
+        sessionId: input.sessionId,
+        // The refusal's own detail, which carries counts, byte sizes, the
+        // scheme and the area — **and never a value**, because nothing in
+        // this module ever puts one in a refusal's detail.
+        detail: { ...error.detail },
+      });
+    }
+    throw error;
   }
 
   const browserId = input.browser;
@@ -209,8 +277,13 @@ export function decideClaim(
   });
 
   return granted
-    ? grant({ scope, input, settings, claimId, key, browserId, now })
-    : queue({ scope, input, settings, claimId, key, browserId, now });
+    ? grant({ scope, input, settings, claimId, key, browserId, now, storageSeed })
+    : // A queued lease has no tab, so there is nothing to seed into and the
+      // entries are deliberately dropped rather than held. §2.5 is why: a
+      // place that is promoted is promoted by a **fresh** call carrying the
+      // key, and holding a caller's credential across an unbounded wait to
+      // replay it later is a longer custody than this service should have.
+      queue({ scope, input, settings, claimId, key, browserId, now });
 }
 
 /** Is this one of the two? Narrowing, so the browser identifier is typed downstream. */
@@ -227,6 +300,7 @@ interface Branch {
   readonly key: string;
   readonly browserId: BrowserId;
   readonly now: string;
+  readonly storageSeed?: readonly StorageSeedEntry[];
 }
 
 /**
@@ -245,6 +319,7 @@ interface Branch {
  */
 function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
   const { scope, input, settings, claimId, key, browserId, now } = branch;
+  const storageSeed = branch.storageSeed ?? [];
   const tabId = randomUUID();
 
   scope.db
@@ -277,6 +352,40 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
     browserId,
   });
 
+  if (storageSeed.length > 0) {
+    // **Origins and keys, never values** (§3.2). The redaction is
+    // `seedRecord`'s and it is structural — the type it returns has no field
+    // a value could live in — so this call site cannot leak one by being
+    // written carelessly, and a later edit here cannot either.
+    //
+    // ── What this row asserts, and what it deliberately does not ──────────
+    //
+    // **It records that a seed was ACCEPTED, not that storage was written.**
+    // The distinction is load-bearing while the tab lifecycle is unwired:
+    // `seedStorage` is implemented on both drivers and **has no caller**,
+    // because the claim path creates a tab row in `opening` and nothing on
+    // this layer holds a browser session to open it with (§2.4b keeps browser
+    // work outside the transaction, and the row that wires it is not this
+    // one).
+    //
+    // So a row saying the lease *started life holding a credential* would
+    // assert something the system did not do — a ledger that overstates is
+    // worse than one that is silent, because the question §3.2 wants answered
+    // is a security question and a false negative in it is read as an
+    // all-clear. `requested` is the true fact available at this point, and it
+    // is what a later row can turn into `applied` when the write exists.
+    append(scope.db, {
+      kind: 'storage_seeded',
+      outcome: 'allow',
+      adapter: scope.adapter,
+      claimId,
+      tabId,
+      sessionId: input.sessionId,
+      browserId,
+      detail: { entries: seedRecord(storageSeed), seed: 'requested' },
+    });
+  }
+
   // A granted caller may still be its own obstacle — it has just taken the
   // last unit and the rest of its work is now queued behind other callers.
   // §2.3a scopes the nudge to a refusal or a queue placement, so nothing is
@@ -290,6 +399,7 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
       tabId,
       expiresAt,
       leaseSeconds: settings.leaseSeconds,
+      storageSeed,
     },
   };
 }

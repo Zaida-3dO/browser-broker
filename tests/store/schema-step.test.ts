@@ -162,3 +162,146 @@ test(
     assert.equal(table, undefined);
   }),
 );
+
+/**
+ * ── Stepping a store that has REAL data in it ────────────────────────────
+ *
+ * The tests above step empty stores, which is the state a fixture reaches and
+ * **not** the state an installation reaches. That gap shipped a defect: step
+ * five rebuilds `events` to widen a check constraint, and rebuilding means
+ * dropping — which violates `feedback.last_event_id`'s reference to
+ * `events (id)` on any store where a caller has left feedback naming an event.
+ *
+ * Every existing feedback fixture omits `last_event_id`, so nothing reached
+ * the state that breaks. **The fixtures were cleaner than production**, which
+ * is the mirror image of seeding a state the product cannot reach and is just
+ * as capable of turning a whole suite green over a broken migration.
+ *
+ * The consequence was total for the affected installation: the stepper runs on
+ * every spawn, `prepareStore` rethrows, and there is no long-lived process to
+ * still be serving — so the store simply stops opening, and it stops opening
+ * for exactly the installations that have been used enough to collect
+ * feedback.
+ */
+
+/** Step a store to an intermediate version, the way a real store arrives at one. */
+async function stepTo(store: StoreHandle, version: number): Promise<void> {
+  await stepSchema(
+    store.db,
+    STEPS.filter((step) => step.version <= version),
+    version,
+  );
+}
+
+test(
+  'A STORE WITH FEEDBACK NAMING AN EVENT STEPS TO THE CURRENT VERSION',
+  withStore(async (store) => {
+    // The production shape the fixtures were missing: feedback that points at
+    // a ledger row, which is what `feedback.last_event_id` exists to hold.
+    await stepTo(store, 4);
+
+    store.db
+      .prepare(
+        `INSERT INTO events (kind, outcome, adapter) VALUES ('claim_requested', 'allow', 'cli')`,
+      )
+      .run();
+    const event = store.db.prepare('SELECT id FROM events').get() as { id: number };
+    store.db
+      .prepare(
+        `INSERT INTO feedback (session_id, last_event_id, rating, category, note)
+         VALUES ('session-1', ?, 3, 'no-path', 'a note comfortably over the length floor')`,
+      )
+      .run(event.id);
+
+    // References are enforced on this handle, exactly as `openStore` leaves
+    // them — so this is the real path and not a relaxed one.
+    assert.equal(store.pragma('foreign_keys'), 1);
+
+    await stepSchema(store.db);
+
+    assert.equal(readStoreVersion(store.db), EXPECTED_VERSION);
+
+    // The row survived the rebuild and still names the event it named.
+    const feedback = store.db
+      .prepare('SELECT last_event_id AS lastEventId FROM feedback')
+      .get() as { lastEventId: number };
+    assert.equal(
+      feedback.lastEventId,
+      event.id,
+      'the reference must survive the rebuild, not merely be permitted to break',
+    );
+
+    // And the reference actually resolves, rather than pointing at nothing.
+    assert.deepEqual(
+      store.db.pragma('foreign_key_check'),
+      [],
+      'no row may name something that does not exist after stepping',
+    );
+  }),
+);
+
+test(
+  'stepping LEAVES REFERENCES ENFORCED, so a later write is still checked',
+  withStore(async (store) => {
+    // The pragma is suspended for the rebuild. If it were left off, the
+    // handle the caller goes on to use would silently stop enforcing every
+    // reference in the schema — a far quieter defect than the one being
+    // fixed, and one no other test would notice.
+    await stepSchema(store.db);
+
+    assert.equal(store.pragma('foreign_keys'), 1, 'references are enforced again after stepping');
+
+    assert.throws(
+      () => {
+        store.db
+          .prepare(
+            `INSERT INTO feedback (session_id, last_event_id, rating, category, note)
+             VALUES ('session-1', 999999, 3, 'no-path', 'a note comfortably over the length floor')`,
+          )
+          .run();
+      },
+      /FOREIGN KEY constraint failed/,
+      'a feedback row naming an event that does not exist must still be refused',
+    );
+  }),
+);
+
+test(
+  'a step that BREAKS a reference is refused rather than committed',
+  withStore(async (store) => {
+    // Suspending enforcement for the rebuild is only safe because something
+    // checks the result before it commits. This proves that check is real: a
+    // deliberately bad step deletes a referenced row, and the integrity check
+    // inside the transaction must catch what the pragma was not enforcing.
+    await stepTo(store, 4);
+    store.db
+      .prepare(
+        `INSERT INTO events (kind, outcome, adapter) VALUES ('claim_requested', 'allow', 'cli')`,
+      )
+      .run();
+    const event = store.db.prepare('SELECT id FROM events').get() as { id: number };
+    store.db
+      .prepare(
+        `INSERT INTO feedback (session_id, last_event_id, rating, category, note)
+         VALUES ('session-1', ?, 3, 'no-path', 'a note comfortably over the length floor')`,
+      )
+      .run(event.id);
+
+    const orphaning: Step = {
+      version: 5,
+      summary: 'A step that leaves feedback naming an event which is absent.',
+      apply: (db) => {
+        db.exec('DELETE FROM events');
+      },
+    };
+
+    await assert.rejects(
+      stepSchema(store.db, [...STEPS.filter((step) => step.version <= 4), orphaning], 5),
+      StartupRefusal,
+    );
+
+    // Rolled back: the version did not move and the data is untouched.
+    assert.equal(readStoreVersion(store.db), 4);
+    assert.equal(store.db.prepare('SELECT id FROM events').all().length, 1);
+  }),
+);
