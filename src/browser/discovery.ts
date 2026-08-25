@@ -201,10 +201,40 @@ export async function verifyDiscoveryRecord(
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? ENDPOINT_TIMEOUT_MS;
 
+  // ── Why the bound is a ref'd timer and NOT `AbortSignal.timeout` ───────
+  //
+  // `AbortSignal.timeout` is the obvious way to bound a request, it reads as
+  // correct, and it **is** correct whenever something else is keeping the
+  // process alive — which is every test run. Its timer is **unref'd**, so it
+  // cannot on its own keep the event loop running.
+  //
+  // That is fatal here specifically. This service is a **short-lived spawn**
+  // (§1.0a): started by a caller, serves that session, exits with it. On the
+  // adopt path the whole design rests on, a caller that is only verifying a
+  // record has **no other outstanding ref'd work** — and against a port that
+  // accepts a connection and never replies, the only thing that could settle
+  // the request is a timer incapable of holding the loop open. The process
+  // therefore **exits without concluding**, silently and with a success code,
+  // rather than reporting `endpoint_unreachable`.
+  //
+  // Measured on the runtime the pipeline uses: with nothing else outstanding
+  // the abort never fires and the process exits; adding one unrelated ref'd
+  // timer to the byte-identical call makes it conclude correctly. That
+  // contrast is the mechanism — the bound was being enforced by luck.
+  //
+  // So the timer is **ref'd** (an ordinary `setTimeout`, which keeps the loop
+  // alive until it fires) and is **cleared in a `finally`**. Both halves are
+  // required: ref'd without clearing would trade a silent early exit for a
+  // guaranteed delay on every call that answered promptly.
+  const controller = new AbortController();
+  const bound = setTimeout(() => {
+    controller.abort(new Error(`the endpoint did not answer within ${String(timeoutMs)}ms`));
+  }, timeoutMs);
+
   let payload: VersionResponse;
   try {
     const response = await fetchImpl(`${record.endpoint}/json/version`, {
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: controller.signal,
     });
     if (!response.ok) {
       return {
@@ -220,6 +250,11 @@ export async function verifyDiscoveryRecord(
       failure: 'endpoint_unreachable',
       detail: `The endpoint did not answer: ${error instanceof Error ? error.message : String(error)}. The record is a claim, not a proof — it survives the browser it describes.`,
     };
+  } finally {
+    // Cleared on every path out of the request, including the early returns
+    // above: a bound that outlived the thing it bounds would hold the process
+    // open for the rest of its window on every successful call.
+    clearTimeout(bound);
   }
 
   const url = payload.webSocketDebuggerUrl;
