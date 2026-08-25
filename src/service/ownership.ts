@@ -30,14 +30,27 @@ import type { ResolvedLease } from './leases.ts';
  */
 
 /**
- * Resolve a tab the caller named, refusing anything the lease does not own.
+ * Resolve a tab the caller named, **refusing** anything the lease does not own.
  *
  * **Both refusals produce the same sentence and the same code**, and the
  * sentence deliberately says nothing about whether the tab exists. A message
  * distinguishing *"no such tab"* from *"not yours"* is an oracle: a caller
  * could walk identifiers and learn which ones are real.
+ *
+ * ── The name says which of the two tab resolvers this is ────────────────
+ *
+ * `tabs.ts` has a sibling, {@link findOpenOwnedTab}, and the two are **not**
+ * interchangeable: this one throws a {@link CallRefusal} and writes a ledger
+ * row, and it resolves a tab in **any** state; that one returns `undefined`
+ * and requires the tab to be `open`.
+ *
+ * Both were called `resolveOwnedTab`. Under lazy opening the difference is not
+ * cosmetic — a caller reaching for the wrong one would get `undefined` on every
+ * first call, because the tab is not open yet, and no tab could ever be driven.
+ * The names now say which is which rather than leaving the next reader to
+ * compare signatures.
  */
-export function resolveOwnedTab(
+export function resolveOwnedTabOrRefuse(
   db: Database,
   lease: ResolvedLease,
   tabId: string,

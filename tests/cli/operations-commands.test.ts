@@ -350,3 +350,62 @@ describe('the usage text', () => {
     assert.match(text, /every precondition/i);
   });
 });
+
+describe('help asked of a command', () => {
+  /**
+   * A global flag match answers every per-command request with the top-level
+   * table, so the caller who asked what one command does is handed the list of
+   * all of them — the one answer they already had. These pin the flag to the
+   * command it was typed after.
+   */
+
+  it('describes that command rather than printing the whole table', async () => {
+    const { streams, captured } = capture();
+    const code = await run(['doctor', '--help'], { streams });
+    const text = captured.out.join('\n');
+
+    assert.equal(code, 0);
+    assert.match(
+      text,
+      /^broker doctor —/m,
+      'Asking a command for help must describe that command, naming it on the first line.',
+    );
+
+    // The discriminating assertion. The top-level table lists every command,
+    // so a per-command help that still contained them all would be the global
+    // usage wearing a different first line — which is the defect.
+    assert.doesNotMatch(
+      text,
+      /broker snapshot/,
+      'Per-command help must not list the other commands: printing the full table is exactly the behaviour of a global flag match, which is what this asserts against.',
+    );
+  });
+
+  it('resolves a two-word command rather than stopping at the first word', async () => {
+    // `tab replace` is the only multi-word command, so it is the one that
+    // catches help matched against a single leading word.
+    const { streams, captured } = capture();
+    await run(['tab', 'replace', '--help'], { streams });
+
+    assert.match(captured.out.join('\n'), /^broker tab replace —/m);
+  });
+
+  it('still prints the whole table when no command is named', async () => {
+    // The global behaviour is the point of the flag when it stands alone, and
+    // narrowing it to commands must not cost that.
+    const { streams, captured } = capture();
+    const code = await run(['--help'], { streams });
+
+    assert.equal(code, 0);
+    assert.match(captured.out.join('\n'), /broker snapshot/);
+  });
+
+  it('falls back to the whole table when the command is not one this build has', async () => {
+    // An unrecognised word is not a command whose help could be printed, so
+    // the list of real commands is the useful answer.
+    const { streams, captured } = capture();
+    await run(['nosuchcommand', '--help'], { streams });
+
+    assert.match(captured.out.join('\n'), /broker snapshot/);
+  });
+});

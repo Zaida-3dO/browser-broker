@@ -8,7 +8,7 @@ import type {
 } from '../../browser/driver.ts';
 import { append, type EventKind } from '../events.ts';
 import { extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
-import { resolveOwnedTab } from '../ownership.ts';
+import { resolveOwnedTabOrRefuse } from '../ownership.ts';
 import {
   disposeEvaluationResult,
   resolveReadArtifacts,
@@ -203,7 +203,7 @@ function admit(
     recordRefusal: scope.recordRefusal,
   });
   const expiresAt = extendLease(db, lease, { adapter, now: swept.sweptAt });
-  const tab = resolveOwnedTab(db, lease, input.tabId, {
+  const tab = resolveOwnedTabOrRefuse(db, lease, input.tabId, {
     adapter,
     kind,
     recordRefusal: scope.recordRefusal,

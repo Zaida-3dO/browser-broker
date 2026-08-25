@@ -2881,6 +2881,35 @@ build.
 | `artifact.write_scanned` | **Everything written to disk passes a shape-matcher first** — captures, snapshots, logs, crops (§3.10) | **Not a refusal of the operation.** It is the single place the credential-exposure question is answered, chosen because a snapshot can capture a rendered credential with nobody having asked for one. Matched as shapes, never as a list of real values |
 | `evaluate.browser_recorded` | **Which browser an evaluation ran against is recorded** (§1.6) | **Not a refusal — a record.** Evaluation is permitted on both browsers, so this is what makes the question *"what has run against the signed-in profile"* answerable |
 | `reader.derives_expiry` | **Any reader touching the store applies the expiry derivation before reporting** (§2.4) | **Not a refusal — an invariant.** A reader that trusts `state` alone reports leases that do not exist, and it does so most on a busy installation |
+| `act.verb_known` | **The action named is one this build performs.** The check that the closed union of actions is closed at the boundary as well as in the type system (§3.8) | unknown action, listing every action the service performs. **See the naming note below** — the real service raises this as `act.action_known` |
+| `act.action_known` | **An action is an object naming what to do and what to do it to**, and the verb is one of the known set (§3.8) | unknown action, listing every action the service performs |
+| `act.ref_required` | An action that addresses an element carries a reference **taken from that tab's most recent snapshot** (§3.8) | reference required, naming the action and the field. The reference is a handle the snapshot minted, never a selector the caller composed |
+| `act.value_required` | An action that applies a value carries one | value required, naming the action |
+| `act.viewport_bounded` | A viewport side is **a whole number of pixels greater than zero** | invalid viewport, naming the side and the value |
+| `act.emulate_preference_named` | An emulate names **at least one** media preference from the known set | preference required, listing the preferences |
+| `act.dialog_answer_named` | Answering a dialog says **whether to accept or dismiss it** | answer required. A dialog left unanswered blocks the page, so there is no default to fall back on |
+| `act.form_fields_bounded` | A batch fill carries **at least one field and no more than the maximum**, each with a reference and a value | invalid fields, naming the maximum |
+| `act.drag_ends_differ` | A drag's two references **are not the same element** | invalid drag. A drag onto itself is a caller mistake rather than a no-op, and silently succeeding would hide it |
+| `read.artifact_known` | A read names **which artefacts it wants**, from the known set (§3.9) | unknown artefact, listing the artefacts |
+| `evaluate.result_serialisable` | An evaluation's result **has a plain representation** — no cycles, nothing the service cannot return (§3.9) | unserialisable result, saying to evaluate to plain data. **The refusal carries the reason and never the value**, for the same reason a cookie read returns no values |
+| `feedback.rating_in_scale` | A rating is **a whole number within the scale**, on a help-versus-hinder axis rather than a satisfaction one (§3.12) | rating out of range, naming the bounds and the anchors |
+| `feedback.category_known` | The category is one of the five | unknown category, listing all five with their descriptions |
+| `feedback.note_bounded` | The note is **within its length bounds** | note out of bounds. The message says what to write, and says that the lease, the operation and the refusing rule are captured automatically rather than supplied |
+| `service.not_built` | **A command that needs the service layer has one.** A build without it refuses the command rather than failing partway through it | service unavailable, naming the operation. **Not a caller mistake** — it is a statement about how this build was assembled |
+
+**A naming divergence, recorded rather than quietly reconciled.** `act.verb_known` and
+`act.action_known` are the same check under two names: the conformance double raises the first and
+the real service raises the second. Both are listed above because **both are cited in the source**,
+and §3.14 requires a refusal to cite a rule that exists here — so listing only one would leave the
+other a dangling citation. Reconciling them is a change to the conformance suite and to the service
+double, which is a code change rather than a documentation one, and it is left to the row that owns
+that seam.
+
+**`arbitration.registered` is deliberately absent.** It is cited in `refusals.ts`, but that file
+states outright that it is *"not a §7.1 row"* — the arbitration runner raises it for an operation
+named on a surface this build does not register, which is a version mismatch between a caller and
+this service rather than a per-call rule. It is recorded here so that a later reader running the same
+diff does not conclude it was missed.
 
 ### 7.2 Checked on every spawn — the service refuses to run
 

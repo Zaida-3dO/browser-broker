@@ -16,7 +16,7 @@ import {
   recordTabClosed,
   recordTabOpened,
   reserveTab,
-  resolveOwnedTab,
+  findOpenOwnedTab,
   type LiveTabRow,
 } from '../../src/service/tabs.ts';
 import { readClaimState, readTab, seedClaim } from '../helpers/leases.ts';
@@ -113,15 +113,15 @@ test("another lease's tab is indistinguishable from one that does not exist", as
     // §7.1: an unowned tab gets "the same refusal as an unknown tab, so
     // probing cannot discover another lease's tabs". Both answers are
     // `undefined` — not two different negatives a caller could tell apart.
-    const unowned = resolveOwnedTab(store.db, theirTab, mine.claimId);
-    const unknown = resolveOwnedTab(store.db, 'a-tab-that-was-never-minted', mine.claimId);
+    const unowned = findOpenOwnedTab(store.db, theirTab, mine.claimId);
+    const unknown = findOpenOwnedTab(store.db, 'a-tab-that-was-never-minted', mine.claimId);
 
     assert.equal(unowned, undefined);
     assert.equal(unknown, undefined);
 
     // And the owner still resolves, so the check is refusing the right thing
     // rather than refusing everything.
-    assert.notEqual(resolveOwnedTab(store.db, theirTab, theirs.claimId), undefined);
+    assert.notEqual(findOpenOwnedTab(store.db, theirTab, theirs.claimId), undefined);
   });
 });
 
@@ -131,10 +131,10 @@ test('a tab that is not open does not resolve, however owned it is', async () =>
     const tabId = reserveTab(store.db, claim.claimId, 'regular');
     recordTabOpened(store.db, tabId, 'driver-page-1');
 
-    assert.notEqual(resolveOwnedTab(store.db, tabId, claim.claimId), undefined);
+    assert.notEqual(findOpenOwnedTab(store.db, tabId, claim.claimId), undefined);
 
     recordTabClosed(store.db, tabId);
-    assert.equal(resolveOwnedTab(store.db, tabId, claim.claimId), undefined);
+    assert.equal(findOpenOwnedTab(store.db, tabId, claim.claimId), undefined);
   });
 });
 
@@ -144,7 +144,7 @@ test('resolving returns the browser the tab is actually in', async () => {
     const tabId = reserveTab(store.db, claim.claimId, 'private');
     recordTabOpened(store.db, tabId, 'driver-page-private');
 
-    const handle = resolveOwnedTab(store.db, tabId, claim.claimId);
+    const handle = findOpenOwnedTab(store.db, tabId, claim.claimId);
     // Capacity is one total across both browsers, so an operation landing on
     // the wrong one is a failure no count would show.
     assert.deepEqual(handle, { browser: 'private', driverTabId: 'driver-page-private' });
@@ -575,7 +575,7 @@ test('nothing this module returns to a surface carries the driver name', async (
     // And the only function here that produces a driver name is the one that
     // exists to feed the driver — its result is a `TabHandle`, which is the
     // type `driver.ts` keeps below the service layer.
-    const resolved = resolveOwnedTab(store.db, tabId, claim.claimId) as TabHandle;
+    const resolved = findOpenOwnedTab(store.db, tabId, claim.claimId) as TabHandle;
     assert.equal(resolved.driverTabId, handle.driverTabId);
   });
 });

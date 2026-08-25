@@ -103,6 +103,36 @@ function usage(): string {
 }
 
 /**
+ * What `broker <command> --help` prints.
+ *
+ * ── Why asking a command for help must not print the whole table ────────
+ *
+ * A global `--help` branch that matches the flag **anywhere in the argument
+ * vector** answers every per-command request with the top-level table. The
+ * caller asked what `doctor` does and is handed the list of every command,
+ * which is the one answer they already had — and worse, it reads as though
+ * `doctor` has no help rather than as though the flag was swallowed.
+ *
+ * The summary is taken from the command table rather than written out again
+ * here, for the reason that table's own header gives: two lists that have to
+ * agree is one list somebody eventually forgets, and the forgetting is silent.
+ */
+function commandUsage(words: readonly string[], summary: string): string {
+  return [
+    `broker ${words.join(' ')} — ${summary}`,
+    '',
+    'Usage:',
+    `  broker ${words.join(' ')} [options]`,
+    '',
+    'Options:',
+    '  --json                one document on the output stream, human text on the error stream',
+    '  --help                print this message',
+    '',
+    'Run `broker --help` for every command.',
+  ].join('\n');
+}
+
+/**
  * The setup handshake every spawn runs (`SCHEMA.md` §1.2d).
  *
  * "Every spawn runs it, not just the first one" — which is not belt and
@@ -141,7 +171,18 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
   const streams = options.streams ?? defaultStreams;
   const json = argv.includes('--json');
 
-  if (argv.includes('--help') || argv.includes('-h')) {
+  const wantsHelp = argv.includes('--help') || argv.includes('-h');
+
+  // **Asked of a command, answered by that command.** The flag is dispatched
+  // through the command table first, so `broker doctor --help` describes
+  // `doctor`. Only a request that names no command falls through to the table
+  // of everything — which is what `broker --help` means and all it means.
+  if (wantsHelp) {
+    const parsed = parseCommand(argv);
+    if (parsed.kind === 'operation' || parsed.kind === 'standalone') {
+      streams.out(commandUsage(parsed.command.words, parsed.command.summary));
+      return EXIT.accepted;
+    }
     streams.out(usage());
     return EXIT.accepted;
   }

@@ -71,6 +71,93 @@ export interface OpenStoreOptions {
   readonly checks?: NetworkPathChecks;
 }
 
+/**
+ * How many times the conversion to write-ahead-log mode is retried, and how
+ * long each attempt waits before the next.
+ *
+ * Deliberately small. The conversion the retry is waiting on is one pragma on
+ * a file with no rows in it yet, so the only thing being waited for is another
+ * process finishing something that takes single-digit milliseconds. A budget
+ * this size turns the collision into a pause nobody notices; a larger one
+ * would turn a genuinely stuck file into a long hang.
+ */
+const WAL_CONVERSION_ATTEMPTS = 10;
+const WAL_CONVERSION_PAUSE_MS = 20;
+
+/**
+ * Put the store into write-ahead-log mode, retrying while another process is
+ * doing the same thing.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * WHY A RETRY AND NOT A LONGER BUSY TIMEOUT — MEASURED, NOT ASSUMED
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Switching a database into write-ahead-log mode **takes an exclusive lock on
+ * the file**. On a store already in that mode the pragma is a cheap no-op, so
+ * this never shows once an installation is warm. On a **fresh file the first
+ * spawn converts it**, and because the service is spawned per session and
+ * exits with it, a second spawn arriving during that conversion is the
+ * ordinary case on a machine that has never run this.
+ *
+ * The obvious repair — set `busy_timeout` first and let the second process
+ * wait the conversion out — **is not sufficient, and that was measured rather
+ * than reasoned about.** The timeout *is* honoured: with the file held by
+ * another connection, the conversion waits and then throws `SQLITE_BUSY`
+ * anyway, and it waits longer the larger the timeout is (measured at 0, 50,
+ * 200 and 1000ms: it threw after 21, 321, 664 and 1787ms respectively, and at
+ * five seconds after 7.4). So the timeout buys time and does not buy success —
+ * raising it only makes the eventual failure slower.
+ *
+ * Retrying works because the thing being contended for is transient by
+ * construction: the other process is converting the same file to the same
+ * mode, and once it has, this call finds the mode already set and returns it
+ * without needing any lock at all.
+ *
+ * **How load-bearing this is, measured:** with the budget cut to a single
+ * attempt, two barrier-aligned spawns against an empty directory fail in
+ * **9 runs of 10**. It is not a defensive flourish; without it a fresh install
+ * where two agents reach for a browser at once usually fails outright.
+ *
+ * ── One thing this comment will not overclaim ───────────────────────────
+ *
+ * The `busy_timeout` ordering above is correct and is kept, but **no test
+ * fails if it is moved back** — the retry covers that case on its own. It is
+ * ordered this way because a timeout configured after the first thing that can
+ * block is a timeout that was not configured when it was needed. That reason
+ * stands on its own; no assertion rests on it.
+ *
+ * **A busy error is the only one retried.** Anything else — a directory that
+ * cannot be written, a file that is not a database — is returned to the caller
+ * immediately, because retrying a permanent failure ten times only delays the
+ * message that says what is actually wrong.
+ */
+function convertToWriteAheadLog(db: Database.Database, location: string): unknown {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < WAL_CONVERSION_ATTEMPTS; attempt += 1) {
+    try {
+      return db.pragma('journal_mode = WAL', { simple: true });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'SQLITE_BUSY') {
+        throw error;
+      }
+      lastError = error;
+
+      // A synchronous pause, because everything on this path is synchronous
+      // and making the open asynchronous to accommodate a rare retry would
+      // change the signature of every caller that wants a handle.
+      const until = Date.now() + WAL_CONVERSION_PAUSE_MS;
+      while (Date.now() < until) {
+        /* waiting for the other process to finish converting */
+      }
+    }
+  }
+
+  throw new Error(
+    `The store at ${location} could not be put into write-ahead-log mode after ${String(WAL_CONVERSION_ATTEMPTS)} attempts: another process held the file locked throughout. That mode is what lets several processes share this file. The underlying error was: ${String((lastError as { message?: string }).message ?? lastError)}`,
+  );
+}
+
 export function openStore(environment: Environment, options: OpenStoreOptions = {}): StoreHandle {
   const location = resolveStoreLocation(environment, options.checks);
 
@@ -81,22 +168,29 @@ export function openStore(environment: Environment, options: OpenStoreOptions = 
 
   const db = new Database(location);
 
-  // The mode that lets several processes read while one writes, which is the
-  // whole basis of the concurrency model (§1.0a). Asserted rather than
-  // assumed: the pragma returns the mode it actually set.
-  const journalMode = db.pragma('journal_mode = WAL', { simple: true });
-  if (journalMode !== 'wal') {
-    throw new Error(
-      `The store could not be opened in write-ahead-log mode; the journal mode is ${String(journalMode)}. That mode is what lets several processes share this file.`,
-    );
-  }
-
+  // ── The busy timeout is set BEFORE the journal mode, and that ordering is
+  //    necessary but on its own not sufficient ─────────────────────────────
+  //
   // Ordinary lock contention: a blocked writer waits rather than failing at
   // once. What this does **not** do is worth knowing before somebody reads
   // the line and concludes retries are handled — the busy-snapshot error a
   // deferred transaction raises is not retryable by this setting at all
   // (§1.0a). The transaction mode is what addresses that, not this number.
+  //
+  // It precedes the conversion below because the conversion is the first
+  // thing on this path that can block, and a timeout set after it is a
+  // timeout that was not configured at the moment it was needed.
   db.pragma(`busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
+
+  // The mode that lets several processes read while one writes, which is the
+  // whole basis of the concurrency model (§1.0a). Asserted rather than
+  // assumed: the pragma returns the mode it actually set.
+  const journalMode = convertToWriteAheadLog(db, location);
+  if (journalMode !== 'wal') {
+    throw new Error(
+      `The store could not be opened in write-ahead-log mode; the journal mode is ${String(journalMode)}. That mode is what lets several processes share this file.`,
+    );
+  }
 
   // Set explicitly, and the reason is not that the engine defaults it off.
   // The driver in use is compiled with foreign keys defaulted on, so this
