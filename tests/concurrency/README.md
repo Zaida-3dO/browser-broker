@@ -70,6 +70,12 @@ prevent:
   belongs with the row that owns the driver.
 - **Nothing about a lease being renewed by its holder over time.** Every child here is a single-shot
   caller.
+- **Nothing about promotion.** Every child claims once and exits, so no lease is ever promoted off
+  the queue by a tab coming free. The one-tab-per-active-claim assertion in `arbitration.test.ts`
+  therefore covers grants only. It happens to hold for promotions too — promotion creates the tab row
+  alongside the state change, and a shortfall there would be invisible to a capacity count because
+  capacity counts claims rather than tabs — but **this suite does not exercise that path**, and the
+  assertion must not be read as evidence for it.
 - **Nothing about release under contention.** Only `claim` is driven concurrently.
 - **That every path in the tree uses the immediate mode.** That is a source fact and the build check
   is what checks it.
@@ -77,9 +83,18 @@ prevent:
   specification asks for this, and this suite does **not** assert it: with capacity taken by the
   claim row rather than by a reserved tab, two processes racing for the last unit are serialised by
   the transaction and the loser is *queued* rather than refused by a constraint. The engine-level
-  refusal would need a path where two callers write the same unique value, and the arbitration
-  design does not produce one. The properties above are asserted instead, and this gap is named
-  rather than papered over.
+  refusal would need a path where two callers write the same unique value, and **the arbitration
+  design does not produce one** — re-checked against the current schema, which is where the claim
+  could most easily have gone stale:
+
+  `one_row_per_physical_tab` is unique over `(browser_id, driver_tab_id)` for the live states, so it
+  is the constraint such a refusal would come from. **Every tab row an arbitration path writes has a
+  null driver name**: a grant and a promotion both create the row `opening`, and `reserveTab` inserts
+  `driver_tab_id` as `NULL` explicitly. The one write that sets a real name is `recordTabOpened`,
+  which runs **after the commit** on the back of actual browser work — which no child here performs.
+  Distinct nulls therefore never collide, and the loser of a race is queued rather than refused.
+
+  The properties above are asserted instead, and this gap is named rather than papered over.
 
 ## Mutation results
 
