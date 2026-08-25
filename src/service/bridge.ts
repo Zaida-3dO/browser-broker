@@ -89,7 +89,7 @@ function keyFrom(args: Readonly<Record<string, unknown>>): string {
  * by tab, so somebody has to turn the one into the other. That is this
  * function, and it is a **read taken to shape an input**, not a decision:
  *
- * - It authorises nothing. `resolveOwnedTab` re-resolves the tab inside the
+ * - It authorises nothing. `resolveOwnedTabOrRefuse` re-resolves the tab inside the
  *   arbitration transaction and refuses with `tab.owned` if it does not
  *   belong to the lease the key names. A wrong answer here is caught there.
  * - It is not the read the reader rule (§2.4, §5.2) forbids. That rule exists

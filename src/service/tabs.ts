@@ -19,7 +19,7 @@ import type { BrowserId, BrowserSession, TabHandle } from '../browser/driver.ts'
  *
  * So this module is the **only** place the two namespaces meet, and the
  * direction of every function here is one-way by construction:
- * {@link resolveOwnedTab} takes an opaque identifier and a lease and returns
+ * {@link findOpenOwnedTab} takes an opaque identifier and a lease and returns
  * a {@link TabHandle}, which `driver.ts` keeps deliberately un-exported from
  * anything above the service layer. **Nothing here returns a driver name**,
  * and {@link TabRecord} — the shape a surface is given — has no field for
@@ -171,8 +171,18 @@ export function recordTabOpened(db: Database, tabId: string, driverTabId: string
  * caller raises the single refusal; this function deliberately does not
  * report which of the three it was, because a return value distinguishing
  * them is the enumeration hazard rebuilt one layer up.
+ *
+ * ── Why the name says `findOpen` rather than `resolve` ──────────────────
+ *
+ * `ownership.ts` has a sibling, `resolveOwnedTabOrRefuse`, and both were once
+ * called `resolveOwnedTab` despite differing in signature and in behaviour.
+ * This one **requires `state = 'open'`** and answers with `undefined`; that one
+ * resolves a tab in any state and **throws**. Under lazy opening the difference
+ * decides whether anything works at all: a caller that reached for this one to
+ * authorise an operation would get `undefined` on every first call, because the
+ * tab has not been opened yet.
  */
-export function resolveOwnedTab(
+export function findOpenOwnedTab(
   db: Database,
   tabId: string,
   claimId: string,
