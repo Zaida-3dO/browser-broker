@@ -18,6 +18,7 @@ import {
   validateNavigationTarget,
 } from '../pages.ts';
 import { recordTabOpened, reserveTab } from '../tabs.ts';
+import { BrokerError } from '../../errors.ts';
 import type { ArtifactStore } from '../../artifacts/store.ts';
 import { takeCapture } from '../../capture/pipeline.ts';
 import { capturesTakenBy, recordCapture } from '../capture-store.ts';
@@ -648,9 +649,21 @@ export function decideCapture(
   const work = afterCommitWork(scope, input, tab, async (session, page) => {
     if (artifacts === undefined) {
       // A browser but nowhere to put the picture. Taking one and dropping it
-      // is precisely the behaviour this handler is being fixed to stop, so
-      // the shutter is not pressed at all.
-      return;
+      // is precisely the behaviour this handler exists to stop, so the shutter
+      // is not pressed at all.
+      //
+      // **Thrown rather than returned**, and the difference is the honesty of
+      // the answer. Returning would leave the closure to run to completion and
+      // report `pageDriven: true` — for a call that reached no page, wrote no
+      // file and left `captures` empty, which is the precise combination this
+      // field exists to make impossible. Throwing takes the same path a
+      // browser failure takes: swallowed by the runner (§2.4b), the decision
+      // and its ledger row still committed, and the caller told plainly that
+      // nothing was driven.
+      throw new BrokerError(
+        'capture.arguments_consistent',
+        'A capture needs somewhere to write the image, and this call supplied a browser without one. No picture was taken.',
+      );
     }
 
     // **The pipeline, not `session.capture` directly.** Reaching the seam here

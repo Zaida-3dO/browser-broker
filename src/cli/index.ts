@@ -420,11 +420,24 @@ async function runOperation(
  *
  * It is derived from the same field rather than from a second source, so
  * there is no way for the sentence and the boolean to disagree.
+ *
+ * ── What it must not say, and why the wording is careful ────────────────
+ *
+ * It cannot name a cause, because `pageDriven: false` has several. A browser
+ * is reached whenever one can be, so the field means one could not be
+ * **started or reached for this call** — which covers a machine with none
+ * installed, a launch that failed, a race this caller lost, and a browser that
+ * died partway through. Naming any one of those would send a person to
+ * investigate the wrong thing on three occasions out of four.
+ *
+ * So it reports the consequence, which is the same in every case and is the
+ * part that matters: the decision is real and the page did not move.
  */
 const NO_BROWSER_NOTE =
-  'note: no browser is attached in this build, so the page was not driven. ' +
+  'note: no browser was reached for this call, so the page was not driven. ' +
   'The lease, its tab and this decision are real and recorded; nothing was ' +
-  'navigated, read or captured.';
+  'navigated, read or captured. A browser that is not installed, one that ' +
+  'failed to start, and one that stopped answering all read this way.';
 
 /** Human-readable by default (§5.6): one `key: value` line per field. */
 function renderForAPerson(value: unknown): string {
