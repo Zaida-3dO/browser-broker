@@ -312,6 +312,45 @@ export async function coldStartDetached(
     // to this process's streams.
     stdio: 'ignore',
   });
+
+  // ── A spawn that fails does so ASYNCHRONOUSLY, and unhandled it is fatal ──
+  //
+  // **Measured, on a machine with no browser installed:** spawning a path that
+  // does not exist **still returns a child and still assigns a process
+  // identifier**, and reports the failure moments later by emitting `error` on
+  // the child. With nothing listening, that is an unhandled error event, which
+  // does not reject this promise — it **ends the process**, escaping every
+  // `catch` between here and the caller.
+  //
+  // That is the worst available shape for this particular failure. A browser
+  // that is not installed is an ordinary state (§2.4b's after-commit work is
+  // best effort precisely so it can be), and the caller's own handling turns
+  // it into an honest `pageDriven: false`. An unhandled event instead takes
+  // the whole process down, so a page verb against a machine with no browser
+  // would kill the service rather than answer.
+  //
+  // A listener is therefore attached **before the first await**, and it turns
+  // the event into a rejection this function's caller can handle like any
+  // other refusal. `pid` being assigned is why the check below is not
+  // sufficient on its own.
+  let spawnFailure: Error | undefined;
+  const failed = new Promise<never>((_resolve, reject) => {
+    child.once('error', (error: Error) => {
+      spawnFailure = error;
+      reject(
+        new StartupRefusal(
+          LAUNCH_RULES.detached,
+          `The browser could not be started: ${error.message}. Nothing was launched, so there is nothing to attach to. This is the ordinary state of a machine with no browser installed.`,
+          { cause: error },
+        ),
+      );
+    });
+  });
+  // Nothing waits on this promise unless it rejects, and an unobserved
+  // rejection is itself a process-level warning — so it is given a handler
+  // that does nothing, and the rejection is observed by the races below.
+  failed.catch(() => undefined);
+
   // Let this process exit without waiting for the browser it started.
   child.unref();
 
@@ -359,7 +398,19 @@ export async function coldStartDetached(
       lastDetail = outcome.detail;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    // Raced against the spawn failure, so a browser that could not start is
+    // reported the moment it says so rather than after the readiness timeout
+    // has elapsed. Waiting out the full timeout would turn *no browser
+    // installed* — an instant, knowable answer — into the slowest path here.
+    await Promise.race([new Promise((resolve) => setTimeout(resolve, pollMs)), failed]);
+  }
+
+  if (spawnFailure !== undefined) {
+    throw new StartupRefusal(
+      LAUNCH_RULES.detached,
+      `The browser could not be started: ${spawnFailure.message}. Nothing was launched, so there is nothing to attach to.`,
+      { cause: spawnFailure },
+    );
   }
 
   throw new StartupRefusal(

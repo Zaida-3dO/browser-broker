@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
   assertDefaultArgsIntact,
   assertExplicitProfileDirectory,
   CAPTURE_SURFACE_ARGUMENTS,
+  coldStartDetached,
   launchArguments,
   LAUNCH_RULES,
   READINESS_TIMEOUT_MS,
@@ -136,4 +140,65 @@ test('a cold start has a bound on waiting for its own endpoint', () => {
 
 test('the assembled command line ends on a blank page for the keeper tab to be established against', () => {
   assert.equal(launchArguments(REQUEST).at(-1), 'about:blank');
+});
+
+test('a browser that is not installed refuses, rather than ending the process', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-missing-browser-'));
+
+  try {
+    // ── Why this test exists, stated as the mechanism ──────────────────────
+    //
+    // Spawning a path that does not exist **reports the failure
+    // asynchronously**, by emitting `error` on the child — and on at least one
+    // platform it assigns a process identifier first, so a check for a missing
+    // identifier does not see it. An unhandled `error` event is not a rejected
+    // promise: it **ends the process**, escaping every `catch` between the
+    // launch and its caller.
+    //
+    // That shape matters here more than almost anywhere. A machine with no
+    // browser installed is an ordinary state, and after-commit work is best
+    // effort precisely so that state can be reported as `pageDriven: false`.
+    // Taking the process down instead means a page verb on such a machine
+    // kills the service rather than answering it.
+    //
+    // **The assertion is therefore two things at once**: that it refuses, and
+    // that the test process is still alive afterwards to make the assertion.
+    // A test that only checked the rejection would pass identically against a
+    // build that crashed a *different* process.
+    await assert.rejects(
+      async () =>
+        await coldStartDetached(
+          {
+            profileDirectory: path.join(root, 'regular'),
+            mode: 'headless',
+            executablePath: path.join(root, 'a-browser-that-is-not-installed'),
+          },
+          // Short, because nothing here waits for a browser: the refusal comes
+          // from the spawn failing rather than from the readiness timeout.
+          { readinessTimeoutMs: 3_000, pollIntervalMs: 50 },
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof StartupRefusal, 'it refuses by name');
+        // **Either wording, deliberately.** A failed spawn reports itself
+        // differently by platform — one assigns no process identifier and is
+        // caught synchronously, another assigns one and emits `error` a moment
+        // later — and both paths refuse. Pinning one wording would make this
+        // test pass on the machine it was written on and fail on the other,
+        // while the behaviour it cares about is identical on both: a refusal
+        // that says nothing is running.
+        assert.match(
+          error.message,
+          /Nothing was (launched|started)/u,
+          'it says nothing is running, rather than reporting a browser that might be there',
+        );
+        assert.equal(error.rule, LAUNCH_RULES.detached, 'and names the launch rule');
+        return true;
+      },
+    );
+
+    // Reached only if the process survived, which is half the claim.
+    assert.ok(true, 'the process is still running after the failed launch');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
