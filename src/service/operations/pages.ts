@@ -1,4 +1,4 @@
-import type { ArbitrationOutcome, ArbitrationScope } from '../arbitration.ts';
+import { updateSweptTabs, type ArbitrationOutcome, type ArbitrationScope } from '../arbitration.ts';
 import type {
   ActionRequest,
   BrowserSession,
@@ -16,7 +16,7 @@ import {
   validateExpression,
   validateNavigationTarget,
 } from '../pages.ts';
-import { markTabClosing, recordTabOpened, reserveTab } from '../tabs.ts';
+import { recordTabOpened, reserveTab } from '../tabs.ts';
 
 /**
  * The six tab-addressed operations, joined to the arbitration transaction.
@@ -157,41 +157,75 @@ function admit(
   return { lease, tab, expiresAt };
 }
 
-/**
- * The handle a driver is addressed by, assembled from the row.
- *
- * Returns `undefined` for a tab that has no driver name yet, which is a tab
- * still `opening` — there is no page to drive, so there is no browser work to
- * schedule. The operation still succeeded in every sense the store records.
- */
-function driverHandle(tab: {
+/** The row a tab operation resolved, as `admit` hands it back. */
+interface ResolvedTab {
+  readonly tabId: string;
   readonly browserId: string;
   readonly driverTabId: string | null;
-}): TabHandle | undefined {
-  if (tab.driverTabId === null) return undefined;
-  return { browser: tab.browserId as TabHandle['browser'], driverTabId: tab.driverTabId };
 }
 
 /**
- * Schedule one piece of browser work, if there is a browser and a page.
+ * Get the page this tab names, opening it if it has never been opened.
+ *
+ * ── Why the page is opened here rather than when the lease was granted ──
+ *
+ * Granting a lease reserves a tab **row** — `opening`, with no driver name,
+ * because §1.4 requires a tab to carry a driver name only once a page
+ * genuinely exists. Nothing about granting capacity requires a page to exist
+ * yet, and it would be the wrong moment to make one: the grant happens inside
+ * the arbitration transaction, and opening a page there is precisely the
+ * browser I/O §2.4b forbids.
+ *
+ * So the page is opened the first time somebody actually addresses the tab,
+ * after that call's commit, by the caller that has the browser connection.
+ * That is also the only moment at which a session is guaranteed to be
+ * available: capacity can be granted to a caller that has not connected to
+ * anything, and refusing to grant it until one had would make the queue
+ * depend on the caller's own connection state.
+ *
+ * **The driver name is written on its own statement, outside the arbitration
+ * transaction that has already committed.** It is a single-row update against
+ * a row nobody else can address — the tab belongs to one lease, and this runs
+ * only for the caller holding that lease's key.
+ */
+async function pageFor(
+  scope: ArbitrationScope,
+  session: BrowserSession,
+  tab: ResolvedTab,
+): Promise<TabHandle> {
+  if (tab.driverTabId !== null) {
+    return { browser: tab.browserId as TabHandle['browser'], driverTabId: tab.driverTabId };
+  }
+
+  const opened = await session.openTab();
+  recordTabOpened(scope.db, tab.tabId, opened.driverTabId);
+  return opened;
+}
+
+/**
+ * Schedule one piece of browser work, if the caller brought a browser.
  *
  * **Every failure is swallowed**, matching what the runner already does with
  * the sweep's closes and what §2.4b requires of after-commit work generally:
  * the transaction has committed, the decision stands, and a driver that will
- * not answer cannot be allowed to unmake it.
+ * not answer cannot be allowed to unmake it. What that costs is visible in
+ * the store rather than hidden — a tab whose page could not be opened keeps
+ * its `opening` row and no driver name, which is the same thing it said
+ * before the attempt.
  */
 function afterCommitWork(
+  scope: ArbitrationScope,
   input: TabOperationInput,
-  handle: TabHandle | undefined,
-  work: (session: BrowserSession, tab: TabHandle) => Promise<unknown>,
+  tab: ResolvedTab,
+  work: (session: BrowserSession, page: TabHandle) => Promise<unknown>,
 ): readonly (() => Promise<void>)[] {
   const source = input.session;
-  if (source === undefined || handle === undefined) return [];
+  if (source === undefined) return [];
 
   return [
     async () => {
       const session = await source();
-      await work(session, handle);
+      await work(session, await pageFor(scope, session, tab));
     },
   ];
 }
@@ -231,9 +265,7 @@ export function decideNavigate(
 
   return {
     value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, url },
-    afterCommit: afterCommitWork(input, driverHandle(tab), (session, handle) =>
-      session.navigate(handle, url),
-    ),
+    afterCommit: afterCommitWork(scope, input, tab, (session, page) => session.navigate(page, url)),
   };
 }
 
@@ -270,9 +302,7 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
 
   return {
     value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, action: request.action },
-    afterCommit: afterCommitWork(input, driverHandle(tab), (session, handle) =>
-      session.act(handle, request),
-    ),
+    afterCommit: afterCommitWork(scope, input, tab, (session, page) => session.act(page, request)),
   };
 }
 
@@ -314,8 +344,8 @@ export function decideRead(
 
   return {
     value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, artifacts },
-    afterCommit: afterCommitWork(input, driverHandle(tab), (session, handle) =>
-      session.read(handle, artifacts),
+    afterCommit: afterCommitWork(scope, input, tab, (session, page) =>
+      session.read(page, artifacts),
     ),
   };
 }
@@ -361,8 +391,8 @@ export function decideEvaluate(
 
   return {
     value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, expressionBytes },
-    afterCommit: afterCommitWork(input, driverHandle(tab), async (session, handle) => {
-      const result = await session.evaluate(handle, expression);
+    afterCommit: afterCommitWork(scope, input, tab, async (session, page) => {
+      const result = await session.evaluate(page, expression);
       // The spill decision is made against the result the page actually
       // produced, which is only knowable here. `disposeEvaluationResult` is
       // what decides it, and it is the same function the seam's own tests
@@ -416,8 +446,8 @@ export function decideCapture(
 
   return {
     value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, fullPage },
-    afterCommit: afterCommitWork(input, driverHandle(tab), (session, handle) =>
-      session.capture(handle, request),
+    afterCommit: afterCommitWork(scope, input, tab, (session, page) =>
+      session.capture(page, request),
     ),
   };
 }
@@ -460,12 +490,27 @@ export function decideTabReplace(
 ): ArbitrationOutcome<TabReplaceResult> {
   const { db, adapter } = scope;
   const { lease, tab, expiresAt } = admit(scope, input, 'tab_closing');
+  const browser = tab.browserId as TabHandle['browser'];
 
   // Out first, in second, both inside the one transaction. The order matters
   // only for the ledger reading sensibly; the count never changes, because
   // the reservation is written before the commit that would have let anyone
-  // else see the release.
-  markTabClosing(db, tab.tabId);
+  // else see the tab go.
+  //
+  // **Which state the tab goes out through is not this operation's rule to
+  // invent**, and writing it here was a real defect the schema caught: a tab
+  // still `opening` has no page, and moving one to `closing` asserts an
+  // outstanding round trip that nobody is coming to answer — which the
+  // `(state = 'opening') = (driver_tab_id IS NULL)` constraint refuses
+  // outright. `updateSweptTabs` is the one place that rule is written, it is
+  // exported precisely so the sweep and release cannot spell it differently,
+  // and this is the third caller that needs exactly it. What comes back is
+  // the subset a browser still owes an answer about.
+  const pendingCloses = updateSweptTabs(
+    db,
+    [{ tabId: tab.tabId, claimId: lease.claimId, browserId: browser }],
+    scope.swept.sweptAt,
+  );
   append(db, {
     kind: 'tab_closing',
     outcome: 'allow',
@@ -474,10 +519,10 @@ export function decideTabReplace(
     tabId: tab.tabId,
     sessionId: lease.sessionId,
     browserId: tab.browserId,
-    detail: { replaced: true },
+    detail: { givenUpFor: 'a fresh tab', pageToClose: pendingCloses.length === 1 },
   });
 
-  const replacementId = reserveTab(db, lease.claimId, tab.browserId as TabHandle['browser']);
+  const replacementId = reserveTab(db, lease.claimId, browser);
   append(db, {
     kind: 'tab_opening',
     outcome: 'allow',
@@ -489,7 +534,6 @@ export function decideTabReplace(
     detail: { takenOverFrom: tab.tabId },
   });
 
-  const closing = driverHandle(tab);
   const source = input.session;
 
   return {
@@ -505,13 +549,17 @@ export function decideTabReplace(
         : [
             async () => {
               const session = await source();
-              // The tab being given up is closed first. If it will not
-              // close it is a leaked tab; the fresh one is owed either way,
-              // and making it wait on a page that is refusing to die is how
-              // one stuck close turns into a lease with no tab at all.
-              if (closing !== undefined) {
+              // The tab being given up is closed first, and only if a page
+              // was ever opened for it. If it will not close it is a leaked
+              // tab; the fresh one is owed either way, and making it wait on
+              // a page that is refusing to die is how one stuck close turns
+              // into a lease with no tab at all.
+              // At most one, and empty when no page was ever opened for this
+              // tab — in which case there is nothing to ask a browser about
+              // and the row is already `closed`.
+              if (pendingCloses.length > 0 && tab.driverTabId !== null) {
                 try {
-                  await session.closeTab(closing);
+                  await session.closeTab({ browser, driverTabId: tab.driverTabId });
                 } catch {
                   // Best effort (§2.4b). The row stays `closing`, which is
                   // what the administrative clear-a-leaked-tab operation
