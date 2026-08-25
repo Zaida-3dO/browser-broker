@@ -310,6 +310,28 @@ async function runOperation(
   return EXIT.refused;
 }
 
+/**
+ * The sentence a person gets when an operation was accepted but no browser
+ * was reached.
+ *
+ * ── Why the boolean is not enough on this surface ───────────────────────
+ *
+ * `pageDriven` is what a *caller* branches on, and the machine-readable mode
+ * prints it as-is because that mode is for a program. The default mode is for
+ * a person, and §5.6 puts the prose there for exactly that reason. A line
+ * reading `pageDriven: false` among four identifiers is true, but it asks the
+ * reader to already know what the field means — and the whole defect being
+ * fixed here is a truth that was only legible to someone who already knew
+ * where to look. So the person-facing surface says it in words.
+ *
+ * It is derived from the same field rather than from a second source, so
+ * there is no way for the sentence and the boolean to disagree.
+ */
+const NO_BROWSER_NOTE =
+  'note: no browser is attached in this build, so the page was not driven. ' +
+  'The lease, its tab and this decision are real and recorded; nothing was ' +
+  'navigated, read or captured.';
+
 /** Human-readable by default (§5.6): one `key: value` line per field. */
 function renderForAPerson(value: unknown): string {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -319,12 +341,14 @@ function renderForAPerson(value: unknown): string {
   if (entries.length === 0) {
     return 'done';
   }
-  return entries
-    .map(
-      ([key, entry]) =>
-        `${key}: ${typeof entry === 'object' && entry !== null ? JSON.stringify(entry) : String(entry)}`,
-    )
-    .join('\n');
+  const lines = entries.map(
+    ([key, entry]) =>
+      `${key}: ${typeof entry === 'object' && entry !== null ? JSON.stringify(entry) : String(entry)}`,
+  );
+  if ((value as Record<string, unknown>).pageDriven === false) {
+    lines.push(NO_BROWSER_NOTE);
+  }
+  return lines.join('\n');
 }
 
 /**

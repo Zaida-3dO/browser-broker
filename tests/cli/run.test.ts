@@ -127,3 +127,70 @@ test('the executable entry point spawns, creates the store and exits zero', asyn
     temp.remove();
   }
 });
+
+/**
+ * The no-browser note is conditional, and both sides of the condition matter.
+ *
+ * ── Why this test injects a service, when the operations check must not ──
+ *
+ * `scripts/check-operations.mjs` owns the `pageDriven: false` case and owns
+ * it deliberately: it injects nothing, spawns the real binaries and proves
+ * that the build a person installs tells the truth. That is the stronger
+ * claim and it is not duplicated here.
+ *
+ * What it structurally cannot reach is the other branch. This build attaches
+ * no session source anywhere, so **no binary can produce `pageDriven: true`**
+ * — which means a renderer that printed the note unconditionally would look
+ * identical to a correct one through every spawn-based gate. That gap is not
+ * hypothetical: a condition of `pageDriven !== undefined` rather than
+ * `pageDriven === false` is the one planted mutation the operations check
+ * cannot kill, and it is a real defect — it would tell a person no page was
+ * driven on a call where one was.
+ *
+ * So this reaches the unreachable state the only way it can be reached, at
+ * the adapter's declared seam, and asserts the note is **absent**. It is
+ * paired with the negative case below so that a renderer which simply never
+ * prints the note fails too — one assertion without the other is satisfied by
+ * deleting the feature.
+ */
+async function driveWithResult(value: Readonly<Record<string, unknown>>): Promise<Captured> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await run(['capture', '--lease-key', 'a-key', '--tab-id', 'a-tab'], {
+    env: {},
+    streams: { out: (l) => out.push(l), err: (l) => err.push(l) },
+    service: { perform: () => Promise.resolve({ outcome: 'accepted' as const, value }) },
+  });
+  return { code, out, err };
+}
+
+test('a page verb that did drive a browser carries no no-browser note', async () => {
+  const result = await driveWithResult({
+    claimId: 'a-claim',
+    tabId: 'a-tab',
+    expiresAt: '2026-01-01T00:00:00.000Z',
+    fullPage: false,
+    pageDriven: true,
+  });
+
+  assert.equal(result.code, 0);
+  const printed = result.out.join('\n');
+  assert.ok(printed.includes('pageDriven: true'), printed);
+  assert.ok(!printed.includes('no browser is attached'), printed);
+  assert.ok(!printed.includes('was not driven'), printed);
+});
+
+test('a page verb that drove no browser says so in words', async () => {
+  const result = await driveWithResult({
+    claimId: 'a-claim',
+    tabId: 'a-tab',
+    expiresAt: '2026-01-01T00:00:00.000Z',
+    fullPage: false,
+    pageDriven: false,
+  });
+
+  assert.equal(result.code, 0);
+  const printed = result.out.join('\n');
+  assert.ok(printed.includes('no browser is attached'), printed);
+  assert.ok(printed.includes('was not driven'), printed);
+});
