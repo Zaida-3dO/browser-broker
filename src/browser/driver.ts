@@ -82,6 +82,57 @@ export type BrowserId = 'regular' | 'private';
 export const BROWSER_IDS: readonly BrowserId[] = ['regular', 'private'];
 
 /**
+ * **Which browser to claim, in one sentence** (`SCHEMA.md` §1.2, §3.2, row
+ * #66).
+ *
+ * ── Why this string exists, rather than the guidance being written twice ──
+ *
+ * §3.2 requires the same guidance in two places: **the tool's description
+ * text**, which is the only surface a calling agent reliably reads, and **the
+ * claim refusal**, because a caller re-reading a refusal is a caller
+ * re-making this decision. Two hand-written copies drift, and the copy that
+ * goes stale is the one nobody is looking at.
+ *
+ * ── Why the guidance is needed at all ───────────────────────────────────
+ *
+ * **Measured: 25 sessions seeded authentication into an isolated browser
+ * while the signed-in browser sat unused** — doing by hand, unreliably, the
+ * one thing that browser exists to provide. Nothing in this design assigns a
+ * kind of caller to a browser; it is a per-claim choice, and nothing told
+ * callers how to make it. **A capability nobody finds is worth what an absent
+ * capability is worth.**
+ *
+ * ── The caveat travels with it, and that is not optional ────────────────
+ *
+ * **Tabs in the signed-in browser share one cookie jar.** Two callers there
+ * are clean-room relative to the private profile and **relative to nothing
+ * else** — not to each other. That is right for reviewing an authenticated
+ * surface, where every caller wants the same identity and wants it to be the
+ * real one, and **wrong for exercising two identities at once**, which this
+ * design declares unsupported rather than leaving to be discovered from a
+ * test that mysteriously sees the wrong account.
+ *
+ * Stating the caveat in the same breath is the whole point: guidance that
+ * sent callers to the signed-in browser without it would trade one silent
+ * failure for another.
+ *
+ * ── Kept short on purpose ───────────────────────────────────────────────
+ *
+ * §3.1: **surface area is a standing tax.** This text sits in a connected
+ * session's context on every turn, so it is the shortest wording that still
+ * carries the choice and its caveat. It is not an essay and must not become
+ * one.
+ */
+export const BROWSER_CHOICE_GUIDANCE =
+  'Pick by what the work needs: an authenticated surface goes to "regular", ' +
+  'which is signed in already and stays signed in; genuinely-fresh-visitor work ' +
+  '— first-visit behaviour, an undismissed banner, a consent prompt as a stranger ' +
+  'sees it — goes to "private". Note that tabs in "regular" share one cookie jar, ' +
+  'so callers there are isolated from "private" but not from each other: it is the ' +
+  'right choice for reviewing one signed-in surface, and the wrong one for exercising ' +
+  'two identities at once, which is not supported.';
+
+/**
  * Whether a browser draws a window.
  *
  * Carried on the seam rather than left to the implementation because it is
@@ -596,6 +647,37 @@ export interface EvaluationResult {
  * is what lets the rows before those write rejection tests that assert
  * nothing happened.
  */
+/**
+ * One validated storage entry the service hands to the driver (§3.2, #65).
+ *
+ * **Declared on the seam rather than in the service layer**, in the same
+ * direction as every other type here: `pages.ts` and its neighbours import
+ * this file, and nothing in this directory imports theirs. A seam that
+ * reached back into the service for the shape of its own parameter would make
+ * the driver depend on the thing it exists to be independent of — and the
+ * fake, which is a driver, would then be unable to satisfy the interface
+ * without dragging the service in with it.
+ *
+ * The validation that produces one of these lives in `storage-seed.ts`, which
+ * is the right place for it: the refusals are service rules, and this is only
+ * the shape they produce.
+ *
+ * **A string value, and that is the load-bearing field.** See
+ * {@link TabOperations.seedStorage} for what the string buys.
+ */
+export interface StorageSeedEntry {
+  /** The origin it is written into, as a scheme and host. */
+  readonly origin: string;
+  /** `local` or `session`. Both per-origin key-value stores. */
+  readonly area: 'local' | 'session';
+  readonly key: string;
+  /** **A string, never a structure and never an expression.** Stored verbatim. */
+  readonly value: string;
+}
+
+/** The storage areas on offer. Cookies are refused by not being here (§3.2). */
+export type StorageSeedArea = StorageSeedEntry['area'];
+
 export interface TabOperations {
   /**
    * Close this tab. **The only destructive operation on this seam, and it is
@@ -614,6 +696,42 @@ export interface TabOperations {
 
   /** Point a tab at an address, and report where it actually ended up. */
   readonly navigate: (tab: TabHandle, url: string) => Promise<NavigationResult>;
+
+  /**
+   * Write storage entries into their origins **before this tab's first
+   * navigation** (`SCHEMA.md` §3.2, row #65).
+   *
+   * ── Why this is a member of the seam rather than a page expression ──────
+   *
+   * It is the entire safety argument for `storage_seed`, and it is
+   * **structural rather than a promise**. The declared parameter is a list of
+   * {@link StorageSeedEntry} — an origin, an area, a key and a **string** —
+   * so an implementation of this member receives a key and a string and has
+   * nowhere to put an expression. **There is no position in this signature in
+   * which a caller's bytes could be read as a program.**
+   *
+   * Contrast {@link TabOperations.evaluate}, which takes a `string` that *is*
+   * a program by declaration. The difference between the two is the whole of
+   * why the argument that was measured being abused (§9.4 — enumerating other
+   * callers' tabs, reading local credential files, making authenticated
+   * outbound requests) is not the argument being offered here.
+   *
+   * **What this does not claim**, stated because the seam's honesty
+   * convention requires the limit to be named beside the guarantee: it
+   * prevents this argument from becoming a code channel. It does **not** make
+   * a seeded value harmless. A token written into an origin's storage is a
+   * credential in a browser, and on the signed-in browser that browser is
+   * shared with every other caller (§1.2). What bounds *that* is the refusal
+   * list in `storage-seed.ts` and the ledger row, not this interface.
+   *
+   * **Ordering is the caller's, and it is not enforceable here.** "Before the
+   * first navigation" is a property of the sequence the service performs, so
+   * a driver cannot check it — this member could be called at any time and
+   * would do the same thing. It is asserted where sequences are observable,
+   * against the fake's call log, rather than implied to be a guarantee of
+   * this signature.
+   */
+  readonly seedStorage: (tab: TabHandle, entries: readonly StorageSeedEntry[]) => Promise<void>;
 
   /**
    * Perform one page verb. Row #22 returns a **fresh snapshot after every

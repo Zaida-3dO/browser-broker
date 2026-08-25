@@ -1,4 +1,5 @@
 import { OPERATION_NAMES, type OperationName } from '../adapter/operations.ts';
+import { BROWSER_CHOICE_GUIDANCE } from '../browser/driver.ts';
 
 /**
  * The ten tools, their descriptions, and their argument schemas.
@@ -88,9 +89,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         name: 'browser',
         type: 'string',
         required: true,
-        description:
-          '"regular" for an already-signed-in surface, "private" for a genuinely fresh visitor. ' +
-          'No default: neither is a safe guess.',
+        // **Row #66 lands here.** The description is the only place a calling
+        // agent reliably reads, and 25 measured sessions hand-seeded tokens
+        // into an isolated browser while the signed-in one sat unused. The
+        // cookie-jar caveat is carried in the same string rather than left to
+        // a refusal, because a caller that picks correctly never sees one.
+        description: `No default: neither is a safe guess. ${BROWSER_CHOICE_GUIDANCE}`,
       },
       {
         name: 'purpose',

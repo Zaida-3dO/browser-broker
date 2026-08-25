@@ -26,6 +26,7 @@ import type {
   EvaluationResult,
   NavigationResult,
   RawCapture,
+  StorageSeedEntry,
   TabHandle,
 } from './driver.ts';
 import { coldStartDetached, type LaunchOptions } from './launch.ts';
@@ -319,6 +320,96 @@ class RealBrowserSession implements BrowserSession {
       // without a request.
       status: response?.status() ?? null,
     };
+  }
+
+  /**
+   * Write storage entries into their origins, **before the tab's first
+   * navigation** (§3.2, row #65).
+   *
+   * ── How the values reach storage, and why it is not an evaluation ───────
+   *
+   * The obvious implementation is an init script — a program the browser runs
+   * before each load — built by interpolating the caller's key and value into
+   * source text. **That is exactly what is not done here**, because building
+   * a program out of a caller's bytes is the interpreting position this whole
+   * argument exists to avoid, and it would be one string-escaping bug away
+   * from the arbitrary-code verb §9.4 measured being abused.
+   *
+   * Instead the page is brought to the entry's origin — which is the only way
+   * a browser will let anything write that origin's storage, since storage is
+   * partitioned by origin and there is no cross-origin write — and the value
+   * is written by a **fixed function with its arguments passed as data**,
+   * never concatenated into program text.
+   *
+   * **The parameterisation is the whole property and it is worth being
+   * precise about it.** The expression below is a fixed string literal that
+   * this file contains in full; it never varies with the entry. The area, the
+   * key and the value travel as an argument object, which the library
+   * serialises and the browser deserialises as data. A caller's value is
+   * therefore a `string` on both sides of that boundary and is never part of
+   * the program text — so **there is no position in this call in which a
+   * caller's bytes could be read as a program**, which is the claim §3.2
+   * makes structurally rather than as a promise.
+   *
+   * ── The honest limits ───────────────────────────────────────────────────
+   *
+   * - **The navigation to the origin is real.** Seeding an origin means
+   *   visiting it, so the page does load once before the caller's own first
+   *   navigation. That is not hidden: it is a request the site sees, and a
+   *   caller seeding an origin it does not intend to visit should know it
+   *   will be visited.
+   * - **Storage is per-origin, so entries are grouped and applied per
+   *   origin.** Two origins mean two navigations.
+   * - **This does not sandbox the value.** It prevents the argument being a
+   *   code channel; it does not make a credential in a shared browser private.
+   *   See the seam's own note.
+   */
+  async seedStorage(tab: TabHandle, entries: readonly StorageSeedEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    const page = this.#page(tab);
+
+    // Grouped by origin because storage is partitioned by origin: a write has
+    // to happen while the page is *at* that origin, so one navigation per
+    // origin is the minimum and doing it per entry would be the same
+    // navigation repeated.
+    const byOrigin = new Map<string, StorageSeedEntry[]>();
+    for (const entry of entries) {
+      const group = byOrigin.get(entry.origin);
+      if (group === undefined) {
+        byOrigin.set(entry.origin, [entry]);
+      } else {
+        group.push(entry);
+      }
+    }
+
+    for (const [origin, group] of byOrigin) {
+      await page.goto(origin);
+      await page.evaluate(
+        // A fixed program. It closes over nothing and interpolates nothing —
+        // every value it acts on arrives in the argument below, as data.
+        // Changing this to a template literal that embeds an entry would
+        // reintroduce exactly the evaluation this argument exists to avoid.
+        (items: readonly { area: 'local' | 'session'; key: string; value: string }[]) => {
+          // The stores are reached through a typed local rather than through
+          // globals, because this project compiles without the browser type
+          // library — the same convention `settlePage` uses and for the same
+          // reason: this function runs in the page, so the compiler here has
+          // no reason to know those names.
+          const scope = globalThis as unknown as {
+            localStorage: { setItem: (key: string, value: string) => void };
+            sessionStorage: { setItem: (key: string, value: string) => void };
+          };
+          for (const item of items) {
+            const store = item.area === 'local' ? scope.localStorage : scope.sessionStorage;
+            // `setItem` takes a key and a string. This is the interface §3.2
+            // names, and it is the reason a seeded value cannot be a program:
+            // there is no argument here that anything parses.
+            store.setItem(item.key, item.value);
+          }
+        },
+        group.map((entry) => ({ area: entry.area, key: entry.key, value: entry.value })),
+      );
+    }
   }
 
   act(): Promise<ArtifactResult> {

@@ -70,7 +70,8 @@ export type EventKind =
   | 'browser_adopted'
   | 'browser_exited'
   | 'launch_race_lost'
-  | 'sweep';
+  | 'sweep'
+  | 'storage_seeded';
 
 /** The kinds as data, for the test that reconciles them with the store. */
 export const EVENT_KINDS: readonly EventKind[] = [
@@ -96,6 +97,7 @@ export const EVENT_KINDS: readonly EventKind[] = [
   'browser_exited',
   'launch_race_lost',
   'sweep',
+  'storage_seeded',
 ];
 
 /**

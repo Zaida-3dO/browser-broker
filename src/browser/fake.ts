@@ -15,6 +15,7 @@ import type {
   NavigationResult,
   RawCapture,
   ReadArtifact,
+  StorageSeedEntry,
   TabHandle,
 } from './driver.ts';
 
@@ -72,6 +73,7 @@ export type DriverCallName =
   | 'ensureKeeperTab'
   | 'closeTab'
   | 'navigate'
+  | 'seedStorage'
   | 'act'
   | 'read'
   | 'cookies'
@@ -450,6 +452,27 @@ export class FakeBrowserDriver implements BrowserDriver {
         const failure = this.#enter({ name: 'navigate', browser, tab, detail: { url } });
         if (failure) return Promise.reject(failure);
         return Promise.resolve({ url, title: `fake page at ${url}`, status: 200 });
+      },
+
+      seedStorage: (tab: TabHandle, entries: readonly StorageSeedEntry[]): Promise<void> => {
+        // **The whole entries list, values included**, and that is deliberate
+        // in a way the redaction rule does not contradict. The rule §3.2
+        // states is about the *ledger* — what the service persists — and the
+        // test that matters most for it is "a seeded value never reaches the
+        // events table". A fake that redacted here could not tell that test
+        // from a fake that was never given the value in the first place, so
+        // the log carries what the driver was actually handed and the
+        // assertion about redaction is made against the store.
+        //
+        // The log is in-memory, per-test, and never written anywhere.
+        const failure = this.#enter({
+          name: 'seedStorage',
+          browser,
+          tab,
+          detail: { entries: entries.map((entry) => ({ ...entry })) },
+        });
+        if (failure) return Promise.reject(failure);
+        return Promise.resolve();
       },
 
       act: (tab: TabHandle, request: ActionRequest): Promise<ArtifactResult> => {
