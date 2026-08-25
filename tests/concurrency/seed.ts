@@ -119,13 +119,20 @@ export function seedLapsedClaim(databasePath: string, claim: SeededLapsedClaim):
     });
 
     if (claim.tabId !== undefined) {
+      // `driver_tab_id` is mandatory for an open tab and forbidden for one
+      // still opening — the schema states the rule as a check, and a tab that
+      // has opened has a name the automation tool gave it. Seeding an open
+      // tab therefore means seeding that name too.
       db.prepare(
-        `INSERT INTO tabs (id, claim_id, browser_id, state, created_at, updated_at)
-         VALUES (@tabId, @claimId, @browserId, 'open', @now, @now)`,
+        `INSERT INTO tabs
+           (id, claim_id, browser_id, driver_tab_id, state, opened_at, created_at, updated_at)
+         VALUES
+           (@tabId, @claimId, @browserId, @driverTabId, 'open', @now, @now, @now)`,
       ).run({
         tabId: claim.tabId,
         claimId: claim.id,
         browserId: claim.browserId,
+        driverTabId: `driver-${claim.tabId}`,
         now: claim.expiresAt,
       });
     }
@@ -140,7 +147,10 @@ export function seedLapsedClaim(databasePath: string, claim: SeededLapsedClaim):
  * is holding open is a participant in a measurement it is supposed to be
  * setting up.
  */
-function withConnection(databasePath: string, fn: (db: InstanceType<typeof Database>) => void): void {
+function withConnection(
+  databasePath: string,
+  fn: (db: InstanceType<typeof Database>) => void,
+): void {
   const db = new Database(databasePath);
   try {
     // The same guarantees the application opens with, so a seeded row is

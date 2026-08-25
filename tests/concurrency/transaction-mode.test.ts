@@ -146,8 +146,7 @@ test('the deferred control fails, which is what makes the immediate result mean 
     // the one that cannot be retried and is dominant in every measured run;
     // requiring it exclusively would make the test flaky for a reason that
     // is not about the property.
-    const busy =
-      (run.codes['SQLITE_BUSY_SNAPSHOT'] ?? 0) + (run.codes['SQLITE_BUSY'] ?? 0);
+    const busy = (run.codes['SQLITE_BUSY_SNAPSHOT'] ?? 0) + (run.codes['SQLITE_BUSY'] ?? 0);
     assert.equal(
       busy,
       run.failed.length,

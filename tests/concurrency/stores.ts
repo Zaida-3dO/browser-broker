@@ -99,8 +99,16 @@ export interface ArbitrationStoreFixture {
  * how many writers there are.
  */
 export async function withArbitrationStore(
-  fn: (fixture: ArbitrationStoreFixture) => Promise<void>,
-  options: { readonly tabBudget?: number; readonly leaseSeconds?: number; readonly queueSeconds?: number } = {},
+  // Synchronous bodies are allowed as well as asynchronous ones: the
+  // deterministic ordering test spawns nothing and has nothing to await, and
+  // forcing it to be asynchronous would mean writing an `async` the linter
+  // then correctly objects to.
+  fn: (fixture: ArbitrationStoreFixture) => Promise<void> | void,
+  options: {
+    readonly tabBudget?: number;
+    readonly leaseSeconds?: number;
+    readonly queueSeconds?: number;
+  } = {},
 ): Promise<void> {
   await withTempDirectory(async (directory) => {
     const databasePath = path.join(directory, 'broker.db');

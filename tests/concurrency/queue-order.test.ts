@@ -95,7 +95,9 @@ test('positions under contention are a permutation of one through the queue dept
 
 test('a position never gets worse when callers share a created_at, with the tie forced rather than raced', async () => {
   await withArbitrationStore(
-    async (fixture) => {
+    // Nothing is spawned here and nothing is awaited: the tie is constructed,
+    // so the whole test is synchronous by design.
+    (fixture) => {
       // ── The forced tie ───────────────────────────────────────────────
       //
       // One `created_at`, to the millisecond, shared by every row. The
