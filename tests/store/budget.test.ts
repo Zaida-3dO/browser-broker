@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { Environment } from '../../src/config/environment.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 import { agreeOnTabBudget } from '../../src/store/budget.ts';
 import { prepareStore } from '../../src/store/open.ts';
@@ -154,6 +155,62 @@ test('the store refuses a second budget row, so the check cannot become a settin
     } finally {
       store.close();
     }
+  } finally {
+    temp.remove();
+  }
+});
+
+/* ─────────── the rollback must not speak over the real error ─────────── */
+
+test('a failure inside the budget transaction reaches the caller as its own cause, not as a rollback error', async () => {
+  // ── What this test is defending, and why it asserts on the message ────
+  //
+  // `readAndRecord` issues a `COMMIT` on **both** of its success paths, so a
+  // failure at or after that point leaves no transaction to roll back. An
+  // unguarded `db.prepare('ROLLBACK').run()` in the catch therefore throws
+  // `SQLITE_ERROR: cannot rollback - no transaction is active` and that new
+  // error **replaces the original on its way out** — the caller is told the
+  // rollback failed and never told what actually went wrong.
+  //
+  // So this asserts on **which** error arrives rather than that one did.
+  // `assert.rejects(...)` alone would pass against the masking bug, because
+  // the masking bug also rejects; it is precisely the test that cannot fail
+  // for the defect it is named after.
+  //
+  // The trigger: `tabBudget` absent binds as NULL against
+  // `schema/step-002-tab-budget.ts`'s `CHECK (tabs > 0)`. That is a real
+  // startup misconfiguration on a path **every spawn runs**, which is what
+  // made this masking worth a row.
+  const temp = makeTempStore();
+  try {
+    // `tabBudget` deliberately absent. Cast because the type system is what
+    // normally prevents this, and the point is what happens when something
+    // gets past it — a value arriving from outside a typed boundary.
+    const environment = { ...temp.environment, tabBudget: undefined } as unknown as Environment;
+
+    await assert.rejects(
+      () => prepareStore(environment),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+
+        assert.doesNotMatch(
+          message,
+          /cannot rollback/i,
+          'the caller was handed the rollback failure instead of the error that caused it — the catch in readAndRecord is rolling back unconditionally again',
+        );
+
+        // And the real cause is present rather than merely something else:
+        // an assertion that only forbade the rollback text would be satisfied
+        // by any unrelated error, including one that lost the cause a
+        // different way.
+        assert.match(
+          message,
+          /tabs/i,
+          `the surviving error should name what actually refused the budget row. Got: ${message}`,
+        );
+        return true;
+      },
+    );
   } finally {
     temp.remove();
   }
