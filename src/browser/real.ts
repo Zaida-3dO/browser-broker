@@ -19,10 +19,13 @@ import type {
   BrowserId,
   BrowserMode,
   BrowserSession,
+  CaptureRequest,
   ColdStartRequest,
+  CookieSummary,
   DiscoveryRecord,
   EvaluationResult,
   NavigationResult,
+  RawCapture,
   TabHandle,
 } from './driver.ts';
 import { coldStartDetached, type LaunchOptions } from './launch.ts';
@@ -58,6 +61,44 @@ import { coldStartDetached, type LaunchOptions } from './launch.ts';
  * did nothing and reported success is exactly the shape `DECISIONS.md` §5
  * calls worse than no guard.
  */
+
+/**
+ * The pixel dimensions a PNG declares about itself.
+ *
+ * ── Why this reads eight bytes instead of importing a decoder ────────────
+ *
+ * `captures.source_*` is *what the browser produced*, and the only place that
+ * is stated without inference is the image header. A full-page capture is
+ * taller than the viewport by definition, so measuring the page instead would
+ * be wrong in exactly the case those fields exist to describe.
+ *
+ * The repository already has a real decoder, and this deliberately does not
+ * call it: **the capture pipeline owns decoding, and the browser module owns
+ * driving a browser.** Reaching across for two integers would put a second
+ * consumer on that module and make an isolation rule a matter of habit rather
+ * than of imports. Reading a fixed-offset header is smaller than the import
+ * it avoids, and it decodes nothing — the pixels are never touched here.
+ *
+ * Returns `undefined` rather than throwing on anything that is not a PNG: the
+ * caller has a page-measured fallback, and a capture that succeeded should not
+ * be turned into a failure by a header this function did not recognise.
+ */
+function readPngDimensions(image: Uint8Array): { width: number; height: number } | undefined {
+  // Signature, then a 4-byte length, then the type `IHDR`, then width and
+  // height as big-endian 32-bit integers: 24 bytes before either is complete.
+  const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (image.length < 24) {
+    return undefined;
+  }
+  for (let index = 0; index < SIGNATURE.length; index += 1) {
+    if (image[index] !== SIGNATURE[index]) {
+      return undefined;
+    }
+  }
+
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
 
 /** Thrown for a seam operation whose row has not landed. */
 class NotYetImplemented extends Error {
@@ -146,6 +187,23 @@ class RealBrowserSession implements BrowserSession {
     const driverTabId = `${this.#browser}-${String(this.#nextTabOrdinal)}`;
     this.#pages.set(driverTabId, page);
     return { browser: this.#browser, driverTabId };
+  }
+
+  /**
+   * The page a handle names.
+   *
+   * The keeper's handle is deliberately absent from this map, so every
+   * operation that resolves through here is structurally unable to address it
+   * — **a caller cannot drive what it cannot name** (§3.13).
+   */
+  #page(tab: TabHandle): Page {
+    const page = this.#pages.get(tab.driverTabId);
+    if (page === undefined) {
+      throw new Error(
+        `No page is held for tab ${tab.driverTabId}. A handle is only valid in the session that opened it.`,
+      );
+    }
+    return page;
   }
 
   async openTab(): Promise<TabHandle> {
@@ -244,8 +302,23 @@ class RealBrowserSession implements BrowserSession {
     await page.close();
   }
 
-  navigate(): Promise<NavigationResult> {
-    throw new NotYetImplemented('navigate', '#22');
+  /**
+   * Point a tab at an address and report where it actually ended up.
+   *
+   * The address after redirects rather than the one asked for, because those
+   * differ constantly and the caller needs the one it got.
+   */
+  async navigate(tab: TabHandle, url: string): Promise<NavigationResult> {
+    const page = this.#page(tab);
+    const response = await page.goto(url);
+    return {
+      url: page.url(),
+      title: await page.title(),
+      // Null when the navigation produced no response to have a status from —
+      // which is the ordinary case for an address the browser satisfies
+      // without a request.
+      status: response?.status() ?? null,
+    };
   }
 
   act(): Promise<ArtifactResult> {
@@ -256,8 +329,33 @@ class RealBrowserSession implements BrowserSession {
     throw new NotYetImplemented('read', '#23');
   }
 
-  evaluate(): Promise<EvaluationResult> {
-    throw new NotYetImplemented('evaluate', '#24');
+  /**
+   * Evaluate an expression in the page.
+   *
+   * **The inline cap and the spill-to-path decision are row #24 owns**, and
+   * they are deliberately not invented here: this returns the value and the
+   * size it measured, which is what that row needs in order to decide. A byte
+   * count chosen in this file would be a policy nobody agreed, applied before
+   * the row that owns it could argue with it.
+   */
+  async evaluate(tab: TabHandle, expression: string): Promise<EvaluationResult> {
+    const page = this.#page(tab);
+    const value: unknown = await page.evaluate(expression);
+
+    // Measured on the serialised form, because that is what a caller would be
+    // charged for if it were returned, and it is the only size that means
+    // anything for a value that is not a string.
+    let bytes: number;
+    try {
+      bytes = Buffer.byteLength(JSON.stringify(value) ?? 'undefined', 'utf8');
+    } catch {
+      // A value that will not serialise has no size to report; the row that
+      // decides what to do with large values is the one that should decide
+      // what to do with unserialisable ones too.
+      bytes = 0;
+    }
+
+    return { value, bytes };
   }
 
   /**
@@ -277,33 +375,11 @@ class RealBrowserSession implements BrowserSession {
    * version, which is precisely how a value comes back without anybody
    * writing a line that says so.
    *
-   * ── Why the return type is written out rather than imported ─────────────
-   *
-   * The named type for this shape arrives with the row that adds this member
-   * to the seam. Declaring the shape structurally here means this file
-   * satisfies that interface the moment it lands, without importing a name
-   * this build does not yet have — and the compiler is what checks the two
-   * agree, rather than a note asking somebody to remember.
    */
-  async cookies(tab: TabHandle): Promise<
-    readonly {
-      readonly name: string;
-      readonly domain: string;
-      readonly path: string;
-      readonly expires: string | null;
-      readonly httpOnly: boolean;
-      readonly secure: boolean;
-      readonly sameSite: 'Strict' | 'Lax' | 'None' | null;
-    }[]
-  > {
+  async cookies(tab: TabHandle): Promise<readonly CookieSummary[]> {
     // Addressed to the tab, so a lease on one page is not a read of the whole
     // profile's jar — even though the tabs in one browser do share it (§1.2).
-    const page = this.#pages.get(tab.driverTabId);
-    if (page === undefined) {
-      throw new Error(
-        `No page is held for tab ${tab.driverTabId}. A handle is only valid in the session that opened it.`,
-      );
-    }
+    const page = this.#page(tab);
 
     const jar = await this.#context.cookies(page.url());
 
@@ -319,6 +395,184 @@ class RealBrowserSession implements BrowserSession {
       secure: cookie.secure,
       sameSite: cookie.sameSite,
     }));
+  }
+
+  /**
+   * Stop the page moving, so the same page produces the same pixels.
+   *
+   * `SCHEMA.md` §3.11 calls settling the highest-value line in the comparison
+   * feature, and the reason is that **no threshold fixes movement**: a colour
+   * tolerance is a per-pixel comparison and has nothing to say about a banner
+   * mid-fade, a transition in flight, a blinking caret or an image that
+   * arrived one frame later.
+   *
+   * **Kept as its own call rather than folded into {@link capture}** — which
+   * is the seam's decision and the right one. A driver that settled inside its
+   * own capture would make *"every capture settles first"* a property of
+   * whichever driver happens to be installed, provable only by reading it. As
+   * two calls the ordering belongs to the pipeline, and a driver that forgot
+   * to settle cannot hide the omission.
+   *
+   * The style sheet is added rather than toggled on elements one by one so
+   * that it applies to everything the page renders, including nodes that do
+   * not exist yet when this runs.
+   */
+  async settlePage(tab: TabHandle): Promise<void> {
+    const page = this.#page(tab);
+
+    await page.addStyleTag({
+      content: `
+        *, *::before, *::after {
+          animation-duration: 0s !important;
+          animation-delay: 0s !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0s !important;
+          transition-delay: 0s !important;
+          scroll-behavior: auto !important;
+        }
+        /* The caret blinks on its own schedule, so it is a pixel that differs
+           between two runs of an identical page. */
+        * { caret-color: transparent !important; }
+      `,
+    });
+
+    // Web fonts land after first paint, and text rendered in a fallback face
+    // is different pixels from the same text in the intended one.
+    //
+    // The document is reached through a typed local rather than a global,
+    // because this project compiles without the browser type library: the
+    // expression runs in the page, so the compiler here has no reason to know
+    // those names and is right not to.
+    await page.evaluate(() => {
+      const scope = globalThis as unknown as {
+        document?: { fonts?: { ready?: Promise<unknown> } };
+      };
+      return scope.document?.fonts?.ready ?? Promise.resolve();
+    });
+  }
+
+  /**
+   * Take a picture and hand back the pixels.
+   *
+   * **The correct-surface property is owed here**, and the seam says so:
+   * `capture.surface_required` (§7.3) is not a parameter, because a parameter
+   * would be a way to disable it. It is a property of this implementation.
+   *
+   * ── How it is actually satisfied, which is not what the name suggests ───
+   *
+   * Measured while building this row, in both modes, with a *different* tab in
+   * front: the capture returned **the requested tab's own pixels** every time.
+   * The automation library captures per target over the debugging protocol
+   * rather than photographing the window surface, so it cannot return whatever
+   * happens to be in front — and **nothing here brings a tab to the front**,
+   * which `foreground.never_moved` (§7.3) requires and which this method's
+   * complete absence of an activation call is the whole of.
+   *
+   * What the rule genuinely guards against is a background tab that has
+   * **stopped rendering**, and that is prevented at launch: see
+   * `CAPTURE_SURFACE_ARGUMENTS` in `launch.ts`, applied in both modes.
+   *
+   * **Masks are painted before the shutter, never after** — a mask applied
+   * afterwards is a mask that was, for one moment, not applied.
+   */
+  async capture(tab: TabHandle, request: CaptureRequest): Promise<RawCapture> {
+    const page = this.#page(tab);
+
+    // Painted **before** the shutter, never after: a mask applied afterwards
+    // is a mask that was, for one moment, not applied. The request names
+    // rectangles, so they are drawn into the page as elements rather than
+    // handed to an element-masking interface that has no rectangle to point
+    // at.
+    const masks = request.mask ?? [];
+    const maskMarker = 'data-broker-capture-mask';
+
+    if (masks.length > 0) {
+      await page.evaluate(
+        ({ areas, marker }) => {
+          const scope = globalThis as unknown as {
+            document: {
+              createElement: (tag: string) => {
+                setAttribute: (name: string, value: string) => void;
+                style: { cssText: string };
+              };
+              body: { appendChild: (node: unknown) => void };
+            };
+          };
+          for (const area of areas) {
+            const node = scope.document.createElement('div');
+            node.setAttribute(marker, '');
+            node.style.cssText = [
+              'position:fixed',
+              `left:${String(area.x)}px`,
+              `top:${String(area.y)}px`,
+              `width:${String(area.width)}px`,
+              `height:${String(area.height)}px`,
+              'background:#000',
+              'z-index:2147483647',
+              'pointer-events:none',
+            ].join(';');
+            scope.document.body.appendChild(node);
+          }
+        },
+        { areas: masks, marker: maskMarker },
+      );
+    }
+
+    try {
+      // `fullPage` describes a page and means nothing for one element, so it
+      // is passed only where it applies rather than defaulted into a call that
+      // would quietly ignore it.
+      const image =
+        request.selector === undefined
+          ? await page.screenshot({ type: 'png', fullPage: request.fullPage })
+          : await page.locator(request.selector).screenshot({ type: 'png' });
+
+      // Read from the page rather than from whatever a caller last asked to
+      // resize to: those disagree whenever a resize did not take, and the
+      // breakpoint a picture was taken at is the one the page actually had.
+      const measured = await page.evaluate(() => {
+        const scope = globalThis as unknown as {
+          innerWidth: number;
+          document: { documentElement: { scrollWidth: number; scrollHeight: number } };
+        };
+        return {
+          viewportWidth: scope.innerWidth,
+          scrollWidth: scope.document.documentElement.scrollWidth,
+          scrollHeight: scope.document.documentElement.scrollHeight,
+        };
+      });
+
+      // The dimensions are what the browser actually produced
+      // (`captures.source_*`), read out of the image rather than inferred from
+      // the viewport: a full-page capture is taller than the viewport by
+      // definition, so reporting the viewport would be wrong in exactly the
+      // case these fields exist to describe.
+      const produced = readPngDimensions(image);
+
+      return {
+        image,
+        width: produced?.width ?? measured.scrollWidth,
+        height: produced?.height ?? measured.scrollHeight,
+        viewportWidth: measured.viewportWidth,
+        url: page.url(),
+      };
+    } finally {
+      // Removed whether or not the shutter succeeded, so a failed capture does
+      // not leave black rectangles over a page whose lease is still live.
+      if (masks.length > 0) {
+        await page.evaluate((marker) => {
+          const scope = globalThis as unknown as {
+            document: {
+              querySelectorAll: (selector: string) => ArrayLike<{ remove: () => void }>;
+            };
+          };
+          const nodes = scope.document.querySelectorAll(`[${marker}]`);
+          for (let index = 0; index < nodes.length; index += 1) {
+            nodes[index]?.remove();
+          }
+        }, maskMarker);
+      }
+    }
   }
 
   /**
