@@ -168,9 +168,9 @@ test('a failure inside the budget transaction reaches the caller as its own caus
   // `readAndRecord` issues a `COMMIT` on **both** of its success paths, so a
   // failure at or after that point leaves no transaction to roll back. An
   // unguarded `db.prepare('ROLLBACK').run()` in the catch therefore throws
-  // `SQLITE_ERROR: cannot rollback - no transaction is active` and that new
-  // error **replaces the original on its way out** — the caller is told the
-  // rollback failed and never told what actually went wrong.
+  // `SQLITE_ERROR: cannot rollback - no transaction is active`, and **that**
+  // is the error the caller receives: told the rollback failed, and never
+  // told what actually went wrong.
   //
   // So this asserts on **which** error arrives rather than that one did.
   // `assert.rejects(...)` alone would pass against the masking bug, because
@@ -196,7 +196,7 @@ test('a failure inside the budget transaction reaches the caller as its own caus
         assert.doesNotMatch(
           message,
           /cannot rollback/i,
-          'the caller was handed the rollback failure instead of the error that caused it — the catch in readAndRecord is rolling back unconditionally again',
+          'the caller was handed the rollback failure instead of the error that caused it — the catch in readAndRecord must guard its rollback and rethrow the original',
         );
 
         // And the real cause is present rather than merely something else:
