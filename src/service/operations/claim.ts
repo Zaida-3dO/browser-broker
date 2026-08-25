@@ -358,10 +358,22 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
     // a value could live in — so this call site cannot leak one by being
     // written carelessly, and a later edit here cannot either.
     //
-    // Recorded at the grant although the writing happens after the commit,
-    // because the question this row exists to answer is *"which leases
-    // started life already holding a credential"* and that is a fact about
-    // the lease rather than about whether a browser call later succeeded.
+    // ── What this row asserts, and what it deliberately does not ──────────
+    //
+    // **It records that a seed was ACCEPTED, not that storage was written.**
+    // The distinction is load-bearing while the tab lifecycle is unwired:
+    // `seedStorage` is implemented on both drivers and **has no caller**,
+    // because the claim path creates a tab row in `opening` and nothing on
+    // this layer holds a browser session to open it with (§2.4b keeps browser
+    // work outside the transaction, and the row that wires it is not this
+    // one).
+    //
+    // So a row saying the lease *started life holding a credential* would
+    // assert something the system did not do — a ledger that overstates is
+    // worse than one that is silent, because the question §3.2 wants answered
+    // is a security question and a false negative in it is read as an
+    // all-clear. `requested` is the true fact available at this point, and it
+    // is what a later row can turn into `applied` when the write exists.
     append(scope.db, {
       kind: 'storage_seeded',
       outcome: 'allow',
@@ -370,7 +382,7 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
       tabId,
       sessionId: input.sessionId,
       browserId,
-      detail: { entries: seedRecord(storageSeed) },
+      detail: { entries: seedRecord(storageSeed), seed: 'requested' },
     });
   }
 

@@ -261,6 +261,35 @@ test('A SEEDED GRANT records origins and keys in the ledger, and NEVER the value
   });
 });
 
+test('THE LEDGER SAYS THE SEED WAS REQUESTED, NOT THAT STORAGE WAS WRITTEN', async () => {
+  // `seedStorage` is implemented on both drivers and has no caller: the claim
+  // path creates a tab row in `opening` and nothing on this layer holds a
+  // browser session to open it with. So the row must not assert that the
+  // lease started life holding a credential — that would be the ledger
+  // claiming something the system did not do, and §3.2's question is a
+  // security question where a false all-clear is the expensive direction.
+  //
+  // This is the assertion that fails if somebody wires the write and forgets
+  // to change the word, or removes the word while the write is still absent.
+  await withBroker(async ({ broker, readCommitted }) => {
+    await broker.claim(
+      claimInput({
+        storageSeed: [{ origin: 'https://example.com', area: 'local', key: 'auth', value: 'v' }],
+      }),
+    );
+
+    const row = readCommitted<{ detail: string }>(
+      "SELECT detail FROM events WHERE kind = 'storage_seeded'",
+    )[0];
+    const detail = JSON.parse(row?.detail ?? '{}') as { seed?: string };
+    assert.equal(
+      detail.seed,
+      'requested',
+      'the ledger must record what was accepted, not a write that has no caller',
+    );
+  });
+});
+
 test('AN UNSEEDED GRANT writes no storage_seeded row at all', async () => {
   // Without this, an implementation that recorded an empty seed on every
   // grant would pass the test above and would make the ledger's answer to

@@ -340,7 +340,7 @@ concurrency tests below are green.
 | **64** | **Batch fill, and drag-and-drop, as actions on `browser_act`.** Batch fill is measured at **78 calls across 35 sessions**; **drag and drop measured zero calls over a month and are unexercised** — folded in at low priority and recorded as such (`SCHEMA.md` §3.8) | 22 | |
 | **23** | Read: snapshot by default; console, network and cookie summary on request — all path-returning; **cookie values never returned** | 21 | |
 | **24** | Evaluate, with an inline byte cap and spill-to-path | 21 | |
-| **65** | **`storage_seed` on `browser_claim`** — optional storage entries **written by the service through the automation layer's own storage interface**, before the tab's first navigation. **Never caller code executed as code.** Ships all five refusals: the count and size bounds, a non-string value, a non-web origin, cookies, and any entry on a lease that is not the caller's (`SCHEMA.md` §3.2) | 13, 21 | `done` |
+| **65** | **`storage_seed` on `browser_claim`** — optional storage entries **written by the service through the automation layer's own storage interface**, before the tab's first navigation. **Never caller code executed as code.** Ships all five refusals: the count and size bounds, a non-string value, a non-web origin, cookies, and any entry on a lease that is not the caller's (`SCHEMA.md` §3.2) | 13, 21 | |
 | **66** | **Browser-choice guidance, in the tool description text** — authenticated surface goes to the signed-in browser, genuinely-fresh-visitor work to the private one, **with the shared-cookie-jar caveat stated in the same breath**. Lands in the description and in the claim refusal, **because the description is the only place a calling agent reliably reads** (`SCHEMA.md` §1.2, §3.2) | 13 | `done` |
 | **44** | **The setup handshake, run on every spawn.** `broker init` runs it explicitly and every process that opens the store runs it before doing anything else: step the schema, confirm the two browser rows, **create a profile that is absent and use one that is present — never recreate**, and report which profiles it created against which it found. Idempotent. Refuses with a named reason when the profile root is unwritable or another process holds a profile's lock (`SCHEMA.md` §1.2d) | 20 | |
 | **45** | **The artifact store.** One directory per lease with subfolders by kind, **and nothing outside it**, rooted at an environment variable defaulting under the platform's per-user application-data location. **Every stored path is relative to that root**, labels are sanitised and never treated as paths, and **a capture's file name derives its page slug from the page address** with the query string stripped first (`SCHEMA.md` §1.7a) | 20, 9 | `done` |
@@ -438,6 +438,15 @@ concurrency tests below are green.
 > worth saying plainly rather than claiming the guidance covers everything: the signed-in browser
 > covers anything a person can log into by hand, and does not cover a service whose authentication is
 > a token obtained from an interface rather than typed into a form.
+>
+> **#65 is deliberately left open although its argument, its refusals and its driver method are
+> built.** The validation, all five refusals, the redaction and `seedStorage` on both drivers are
+> landed and tested; **what is missing is the caller.** The claim path creates a tab row in
+> `opening` and nothing on that layer holds a browser session to open it with, so the write this row
+> describes — *"before the tab's first navigation"* — does not yet happen. The ledger records the
+> seed as **requested** rather than applied, so nothing asserts a write that did not occur, and the
+> row stays open until the tab lifecycle is wired to it. **Marking it done would retire exactly the
+> suspicion that finds this gap.**
 >
 > **#65's refusals are the row, and its structural property is what makes them credible.** Nothing in
 > the argument is ever passed to an evaluator — the values go through a storage-writing interface
