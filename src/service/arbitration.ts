@@ -17,6 +17,26 @@ import {
 // scan for a reason that has nothing to do with transactions. Renaming costs
 // nothing; a waiver would silence the whole line permanently.
 import { decideRelease, type ReleaseInput, type ReleaseResult } from './operations/give-back.ts';
+import {
+  decideAct,
+  decideCapture,
+  decideEvaluate,
+  decideNavigate,
+  decideRead,
+  decideTabReplace,
+  type ActInput,
+  type ActResult,
+  type CaptureInput,
+  type CaptureResult,
+  type EvaluateInput,
+  type EvaluateResult,
+  type NavigateInput,
+  type NavigateResult,
+  type ReadInput,
+  type ReadResult,
+  type TabReplaceInput,
+  type TabReplaceResult,
+} from './operations/pages.ts';
 import { decideStatus, type StatusInput, type StatusResult } from './operations/status.ts';
 import { CallRefusal } from './refusals.ts';
 
@@ -263,6 +283,51 @@ function releaseHandler(
 }
 
 /**
+ * The six tab-addressed handlers.
+ *
+ * **None of them takes settings**, for the reason `decideStatus` gives about
+ * itself: every duration they report comes off the lease's own row, because
+ * each of these renews the lease it names and a renewal has to extend by the
+ * duration the caller was already told about. A settings argument they did
+ * not use would invite exactly the re-read §6.3 forbids.
+ */
+function navigateHandler(
+  scope: ArbitrationScope,
+  input: NavigateInput,
+): ArbitrationOutcome<NavigateResult> {
+  return decideNavigate(scope, input);
+}
+
+function actHandler(scope: ArbitrationScope, input: ActInput): ArbitrationOutcome<ActResult> {
+  return decideAct(scope, input);
+}
+
+function readHandler(scope: ArbitrationScope, input: ReadInput): ArbitrationOutcome<ReadResult> {
+  return decideRead(scope, input);
+}
+
+function evaluateHandler(
+  scope: ArbitrationScope,
+  input: EvaluateInput,
+): ArbitrationOutcome<EvaluateResult> {
+  return decideEvaluate(scope, input);
+}
+
+function captureHandler(
+  scope: ArbitrationScope,
+  input: CaptureInput,
+): ArbitrationOutcome<CaptureResult> {
+  return decideCapture(scope, input);
+}
+
+function tabReplaceHandler(
+  scope: ArbitrationScope,
+  input: TabReplaceInput,
+): ArbitrationOutcome<TabReplaceResult> {
+  return decideTabReplace(scope, input);
+}
+
+/**
  * Every arbitration operation this build has.
  *
  * **This registry is the set `arbitration.no_read_only_path` walks**, and the
@@ -273,12 +338,21 @@ function releaseHandler(
  * is enumerable statically and at run time, and the two enumerations can be
  * asserted equal.
  *
- * **The three operations here are the whole arbitration surface this build
- * has**, and every one of them writes. `claim` inserts a row; `release`
- * updates one; `status` renews, which is row #14's point — a keyed call
- * extends the lease it names, so the operation that looks read-only is a
- * writer twice over, once for its own renewal and once for the sweep the
- * runner ran before it.
+ * **Every operation here writes, without exception**, which is the property
+ * the registry exists to keep true. `claim` inserts a row; `release` updates
+ * one; `status` renews, which is row #14's point — a keyed call extends the
+ * lease it names, so the operation that looks read-only is a writer twice
+ * over, once for its own renewal and once for the sweep the runner ran
+ * before it.
+ *
+ * **The six tab-addressed operations are writers on the same grounds**, and
+ * it is worth being explicit because they are the ones that look least like
+ * it: `navigate`, `act`, `read`, `evaluate` and `capture` each read a page
+ * and change nothing about it, yet each is keyed, so each renews, and each
+ * records what it did. The browser work they cause is not part of the
+ * transaction at all — it is handed back as `afterCommit` and run once the
+ * commit is done (§2.4b), so what is inside the transaction is only ever the
+ * renewal, the ownership check and the ledger row.
  *
  * **The empty-registry exemption in `scripts/check-arbitration.mjs` is
  * retired by this row**, which is what it named as the condition for its own
@@ -300,6 +374,36 @@ export const ARBITRATION_OPERATIONS = {
     kind: 'claim_released',
     summary: 'Give back whatever this lease holds: a tab, or a place in the queue.',
     handler: releaseHandler,
+  },
+  navigate: {
+    kind: 'navigate',
+    summary: 'Point an owned tab at an address, having checked the scheme is one of the two.',
+    handler: navigateHandler,
+  },
+  act: {
+    kind: 'act',
+    summary: 'One interaction against an owned tab, from the thirteen the seam names.',
+    handler: actHandler,
+  },
+  read: {
+    kind: 'read',
+    summary: 'Collect artifacts from an owned tab; the page state is always among them.',
+    handler: readHandler,
+  },
+  evaluate: {
+    kind: 'evaluate',
+    summary: 'Run a bounded expression in an owned tab and dispose of what it returned.',
+    handler: evaluateHandler,
+  },
+  capture: {
+    kind: 'capture',
+    summary: 'Take an image of an owned tab, of the viewport or of the whole page.',
+    handler: captureHandler,
+  },
+  tab_replace: {
+    kind: 'tab_closing',
+    summary: 'Give up this lease’s tab and take a fresh one, without the count dipping.',
+    handler: tabReplaceHandler,
   },
 } as const satisfies Readonly<Record<string, ArbitrationOperation>>;
 

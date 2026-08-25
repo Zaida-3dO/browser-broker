@@ -84,11 +84,16 @@ test('a command noun this build does not define is refused rather than guessed a
   assert.match(result.err.join('\n'), /Unrecognised command/);
 });
 
-test('a command with no operation behind it is named, and says it is not built', async () => {
-  // The other half of the change above: `init` is refused, but for its own
+test('a command that is still owed is named, and says it is not built', async () => {
+  // The other half of the change above: `login` is refused, but for its own
   // reason rather than as an unknown word. A command that silently did
   // nothing, or that reported success, would be worse than either.
-  const result = await drive(['init'], {});
+  //
+  // **`login` rather than `init`**, because `init` now runs the setup
+  // handshake. This assertion needs a command the build genuinely does not
+  // have; pointing it at one that works would make it pass for the wrong
+  // reason and stop testing anything.
+  const result = await drive(['login'], {});
   assert.notEqual(result.code, 0);
   assert.doesNotMatch(result.err.join('\n'), /Unrecognised command/);
   assert.match(result.err.join('\n'), /not built yet/);

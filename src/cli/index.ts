@@ -16,6 +16,8 @@ import {
 import { isFeedbackCategory } from '../feedback/record.ts';
 import { cliAdapter, EXIT, parseArguments, withoutSecrets } from './adapter.ts';
 import { OPERATION_COMMANDS, parseCommand, STANDALONE_COMMANDS } from './commands.ts';
+import { describeSetupReport, runSetupHandshake } from '../browser/setup.ts';
+import { runDiffs } from './diffs.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
 
 /**
@@ -167,12 +169,16 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
     if (parsed.kind === 'standalone') {
       const name = parsed.command.words.join(' ');
 
-      // Two of §5.5's four are built by this row. The other two are still
-      // owed, and they keep the honest refusal below rather than being
-      // quietly absent — a command that pretended to work would be worse
-      // than one that says it does not.
-      if (name === 'snapshot' || name === 'doctor') {
+      // Built, and reaching their implementations. `login` is the one still
+      // owed, and it keeps the honest refusal below rather than being quietly
+      // absent — a command that pretended to work would be worse than one
+      // that says it does not.
+      if (name === 'snapshot' || name === 'doctor' || name === 'events' || name === 'diffs') {
         return await runOperationsCommand(name, parsed.rest, { streams, json, options });
+      }
+
+      if (name === 'init') {
+        return await runInitCommand({ streams, json, options });
       }
 
       streams.err(`broker ${name} is not built yet — owed by ${parsed.command.owedBy}.`);
@@ -344,8 +350,66 @@ function renderForAPerson(value: unknown): string {
  * The other two step on the way in, because `SCHEMA.md` §1.2d puts stepping
  * on every spawn.
  */
+/**
+ * `broker init` — run the setup handshake explicitly and show what it did.
+ *
+ * ── What the handshake is, and why a command runs it on purpose ─────────
+ *
+ * §1.2d describes this as what every spawn does: step the schema, confirm the
+ * two browser rows are present, and establish a profile directory for each
+ * browser — **creating one that is absent and using one that is present.**
+ *
+ * That last distinction is the whole point of the command existing separately
+ * from the bare spawn. A signed-in profile holds a login **a person
+ * established by hand**, and there is no recovering it if it is thrown away:
+ * recreating the directory would sign them out, silently, at the moment they
+ * were least expecting it. So the handshake never recreates and never clears,
+ * and `broker init` is how somebody confirms that for themselves before
+ * trusting the browsers to a run — the report names each profile as `created`
+ * or `found`, which is exactly the question being asked.
+ *
+ * The store is opened and stepped first, because the handshake reads the
+ * schema version and the browser rows out of it and refuses a store that has
+ * not been stepped.
+ */
+async function runInitCommand(context: {
+  streams: Streams;
+  json: boolean;
+  options: RunOptions;
+}): Promise<number> {
+  const { streams, json } = context;
+  let store: StoreHandle | undefined;
+
+  try {
+    const environment = readEnvironment({ env: context.options.env });
+    store = openStore(environment);
+    await stepSchema(store.db);
+
+    const report = await runSetupHandshake(store, environment.profileRoot);
+
+    if (json) {
+      streams.out(JSON.stringify(report, null, 2));
+    } else {
+      streams.out(`schema: version ${String(report.schemaVersion)}`);
+      streams.out(`browsers: ${report.browserRows.join(', ')}`);
+      for (const line of describeSetupReport(report)) {
+        streams.out(line);
+      }
+    }
+    return EXIT.accepted;
+  } catch (error) {
+    if (error instanceof BrokerError) {
+      streams.err(`refused (${error.rule}): ${error.message}`);
+      return EXIT.refused;
+    }
+    throw error;
+  } finally {
+    store?.close();
+  }
+}
+
 async function runOperationsCommand(
-  command: 'snapshot' | 'doctor' | 'events',
+  command: 'snapshot' | 'doctor' | 'events' | 'diffs',
   rest: readonly string[],
   context: { streams: Streams; json: boolean; options: RunOptions },
 ): Promise<number> {
@@ -386,6 +450,12 @@ async function runOperationsCommand(
         json,
         version: await readVersion(),
       });
+    }
+    if (command === 'diffs') {
+      // Reading the comparison history back. It takes the same stepped store
+      // the other reads do; what it does not take is a lease, because it
+      // decides nothing.
+      return runDiffs(rest, { db: store.db, streams });
     }
     return runEventsCommand(rest, { db: store.db, streams, json });
   } catch (error) {

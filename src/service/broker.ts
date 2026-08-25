@@ -4,6 +4,20 @@ import { runArbitration, type CloseOrphanedTab } from './arbitration.ts';
 import type { EventAdapter } from './events.ts';
 import type { ArbitrationSettings, ClaimInput, ClaimResult } from './operations/claim.ts';
 import type { ReleaseInput, ReleaseResult } from './operations/give-back.ts';
+import type {
+  ActInput,
+  ActResult,
+  CaptureInput,
+  CaptureResult,
+  EvaluateInput,
+  EvaluateResult,
+  NavigateInput,
+  NavigateResult,
+  ReadInput,
+  ReadResult,
+  TabReplaceInput,
+  TabReplaceResult,
+} from './operations/pages.ts';
 import type { StatusInput, StatusResult } from './operations/status.ts';
 
 /**
@@ -27,6 +41,22 @@ export interface Broker {
   status: (input: StatusInput) => Promise<StatusResult>;
   /** **Whatever the lease holds, releasing gives it back** (§2.5, §3.4). */
   release: (input: ReleaseInput) => Promise<ReleaseResult>;
+
+  /**
+   * The six tab-addressed operations (§3.5–§3.11).
+   *
+   * **Each is one `runArbitration` call like the three above**, and carries
+   * no settings for the reason `decideStatus` gives: each renews the lease it
+   * names, and a renewal extends by the duration already promised rather than
+   * by whatever the environment says now.
+   */
+  navigate: (input: NavigateInput) => Promise<NavigateResult>;
+  act: (input: ActInput) => Promise<ActResult>;
+  read: (input: ReadInput) => Promise<ReadResult>;
+  evaluate: (input: EvaluateInput) => Promise<EvaluateResult>;
+  capture: (input: CaptureInput) => Promise<CaptureResult>;
+  /** Give up this lease's tab and take a fresh one, in one transaction. */
+  tab_replace: (input: TabReplaceInput) => Promise<TabReplaceResult>;
 }
 
 export interface BrokerOptions {
@@ -82,5 +112,11 @@ export function createBroker(options: BrokerOptions): Broker {
         ...input,
         settings,
       }),
+    navigate: (input) => run<NavigateInput, NavigateResult>('navigate', input),
+    act: (input) => run<ActInput, ActResult>('act', input),
+    read: (input) => run<ReadInput, ReadResult>('read', input),
+    evaluate: (input) => run<EvaluateInput, EvaluateResult>('evaluate', input),
+    capture: (input) => run<CaptureInput, CaptureResult>('capture', input),
+    tab_replace: (input) => run<TabReplaceInput, TabReplaceResult>('tab_replace', input),
   };
 }
