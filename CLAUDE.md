@@ -135,6 +135,15 @@ A waiver's own line is never scanned, so `external-ref-ok` covers the line it si
 so attach it precisely — on a long wrapped line it can silence more than you meant, and the run
 summary reports how many matches a tree's waivers are silencing so creep stays visible.
 
+**Counting waivers: say which number you mean.** The run summary's phrasing —
+`N waivers active, silencing M matches` — counts **live** waivers: comment markers outside a fenced
+code block. It is deliberately *not* the number of `external-ref-ok` strings a `grep` finds, because
+**a waiver inside a fence is documentation rather than a waiver** (the block just above is the
+example: it teaches the syntax and must not silence anything). Grepping therefore returns a larger
+number than the runner reports, and both are correct about different things. Three agents have read
+the two figures as a contradiction, so when quoting a count, name it as *live waivers* or as *marker
+occurrences* rather than as a bare number.
+
 **The reason is mandatory and must read as a phrase**, not padding — a waiver that says nothing fails
 the check itself, so silencing it always costs an explanation that lands in the diff beside the text
 it excuses. Prefer rewording: most matches are easier to fix than to justify.
