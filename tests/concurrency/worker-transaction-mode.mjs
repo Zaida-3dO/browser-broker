@@ -47,10 +47,40 @@ const db = new Database(databasePath);
  * the deferred failure meaningful: the error the deferred arm raises is not
  * one this setting can wait out. A control that dropped the timeout could be
  * dismissed as having simply not waited long enough.
+ *
+ * Reported to the caller as {@link BUSY_TIMEOUT_MS} so the assertion can
+ * compare it against how long a failure actually took. See the report of
+ * `waitedMs` below.
  */
-db.pragma('busy_timeout = 5000');
+const BUSY_TIMEOUT_MS = 5000;
+db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
 
 waitForBarrier(startAtMs);
+
+// ── The clock starts here, at the barrier, not at the write ──────────────
+//
+// **It has to cover `BEGIN` as well as the upgrade, because the two modes
+// block in different places.** An immediate transaction declares intent to
+// write at the moment it opens, so a child queued behind a held lock waits
+// inside `BEGIN` and never reaches the update at all. A deferred one opens
+// instantly and discovers the problem later, at the upgrade.
+//
+// Measuring only the upgrade would report nothing at all for a
+// genuinely-queued writer, because that child fails before it ever gets
+// there — which is exactly what an earlier draft of this file did, and it
+// left the assertion unable to tell a long wait from no wait. Measured on
+// that draft: children queued behind a held lock reported no wait, while the
+// same children under this clock report the full 5514ms.
+const startedAt = Date.now();
+
+/**
+ * How much of the elapsed time this worker spent holding its own window open.
+ *
+ * Subtracted from the wait it reports, so the number stays a measurement of
+ * how long the *engine* blocked rather than of how wide this test chose to
+ * make its read-then-write window. Zero until the window has been held.
+ */
+let spentWidening = 0;
 
 try {
   // The single word under test. `BEGIN IMMEDIATE` declares intent to write at
@@ -63,10 +93,12 @@ try {
   // The read-then-write window, widened. Everything that makes this test able
   // to distinguish the two modes happens because other processes are inside
   // this same window at this same moment.
-  const until = Date.now() + Number(widenMs);
+  const wideningFrom = Date.now();
+  const until = wideningFrom + Number(widenMs);
   while (Date.now() < until) {
     /* holding the window open */
   }
+  spentWidening = Date.now() - wideningFrom;
 
   db.prepare('UPDATE counter SET n = ? WHERE only_row = 1').run(before.n + 1);
   db.prepare('COMMIT').run();
@@ -82,7 +114,22 @@ try {
     // A transaction the engine already aborted cannot be rolled back, and
     // saying so would replace the useful error with a meaningless one.
   }
-  failed(error, { index: Number(index) });
+  // ── How long the engine actually blocked this child ────────────────────
+  //
+  // Everything since the barrier, **less the window this worker deliberately
+  // held open itself**. Subtracting the spin is what keeps the number a
+  // measurement of the busy timeout rather than of the test's own widening:
+  // without it, raising `widenMs` would inflate every wait and could push a
+  // run past the assertion's ceiling for a reason that is not about the
+  // store at all.
+  //
+  // Clamped at zero because the subtraction is of two independently-read
+  // clocks and a few milliseconds of skew must not produce a negative.
+  failed(error, {
+    index: Number(index),
+    waitedMs: Math.max(0, Date.now() - startedAt - spentWidening),
+    busyTimeoutMs: BUSY_TIMEOUT_MS,
+  });
 } finally {
   db.close();
 }

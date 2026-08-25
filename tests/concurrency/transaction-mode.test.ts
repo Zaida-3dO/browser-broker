@@ -49,6 +49,27 @@ import { withCounterStore } from './stores.ts';
  *
  * Neither is a relaxation. Both make this arm harder to satisfy, which is the
  * only direction a control may ever be moved.
+ *
+ * ── The failure is identified by the wait, not by the error code ────────
+ *
+ * A third thing holds that line, because **demanding a particular error code
+ * is not dependable**: requiring at least one `SQLITE_BUSY_SNAPSHOT` produces
+ * `{"SQLITE_BUSY":24}` on the Windows runner — 24 genuine failures, none
+ * under the demanded code.
+ *
+ * **`SQLITE_BUSY_SNAPSHOT` is reachable on Windows** — measured, 15-20 of 25
+ * in the ordinary case — so this is not a platform that cannot host the
+ * property, and nothing here is skipped or weakened for it. But **which of
+ * the two busy codes a child sees is scheduler-dependent and noisy at every
+ * contention setting**, so demanding a particular code made the control flaky
+ * for a reason that has nothing to do with the property.
+ *
+ * What the control means to say is that the failure was one the busy timeout
+ * **could not retry**, and that is measurable directly: a writer merely
+ * queued behind a held lock waits the whole timeout (measured at 5514ms
+ * against this 5000ms setting), while every deferred failure here raises in
+ * 5-23ms. The assertion is on that wait, and it constrains **every** failure
+ * in the run rather than one of twenty-five.
  */
 
 const require = createRequire(import.meta.url);
@@ -214,26 +235,77 @@ test('the deferred control fails, which is what makes the immediate result mean 
         `harness.ts — rather than lowering this floor. Codes seen: ${JSON.stringify(run.codes)}.`,
     );
 
-    // And it fails the specific way §1.0a describes: a busy-snapshot error,
-    // which the busy timeout cannot retry because the transaction holds a
-    // read snapshot it has lost the right to upgrade. There is nothing to
-    // wait for, so waiting longer would not help.
-    //
-    // Both codes are accepted because both are the same defect: under this
-    // much contention some children lose the snapshot they held and others
-    // never acquire the lock within the timeout. `SQLITE_BUSY_SNAPSHOT` is
-    // the one that cannot be retried and is dominant in every measured run;
-    // requiring it exclusively would make the test flaky for a reason that
-    // is not about the property.
+    // And it fails the specific way §1.0a describes: with an error the busy
+    // timeout cannot retry, because the transaction holds a read snapshot it
+    // has lost the right to upgrade. There is nothing to wait for, so waiting
+    // longer would not help.
     const busy = (run.codes['SQLITE_BUSY_SNAPSHOT'] ?? 0) + (run.codes['SQLITE_BUSY'] ?? 0);
     assert.equal(
       busy,
       run.failed.length,
       `Every deferred failure must be a busy or busy-snapshot error rather than something incidental. Codes seen: ${JSON.stringify(run.codes)}.`,
     );
+
+    // ── Why this asserts the wait rather than the error code ────────────
+    //
+    // **Requiring a specific error code here is not dependable.** Demanding
+    // at least one `SQLITE_BUSY_SNAPSHOT` produces `{"SQLITE_BUSY":24}` on the
+    // Windows runner — 24 real failures, none under the demanded code.
+    // Investigating that on Windows rather than assuming produced the
+    // measurements below, and they say the code is the wrong thing to check
+    // — not that Windows is weaker.
+    //
+    // Which of the two codes a given child sees is **scheduler-dependent**,
+    // and it is noisy at every contention setting. Measured here, deferred
+    // failures out of 25, three runs at each read-then-write window width:
+    //
+    // | widen  | SQLITE_BUSY_SNAPSHOT | SQLITE_BUSY |
+    // |--------|----------------------|-------------|
+    // | 1 ms   | 11-13                | 6-9         |
+    // | 5 ms   | 15-20                | 1-8         |
+    // | 20 ms  | 4-24                 | 0-20        |
+    //
+    // At 20ms one run reported 24 snapshots and no plain busy, and another
+    // reported 4 against 20. **Widening the window raises the average and
+    // guarantees nothing**, so tuning contention could only have moved the
+    // flake rate — it could not have removed it.
+    //
+    // The property the control actually exists to demonstrate is not which
+    // code the engine reached first. It is that **the failure was one the
+    // busy timeout could not retry**, and that is directly measurable rather
+    // than inferred from a code:
+    //
+    // - A writer genuinely queued behind a held write lock **waits the whole
+    //   timeout** before raising. Measured by holding a write lock open past
+    //   the timeout while children contend for it: 5514ms, on every one of
+    //   six children, against this same 5000ms setting. That is the
+    //   retryable kind, and it is what this assertion is built to reject.
+    // - Every deferred failure here, **under both codes alike**, raises in
+    //   **5-23ms**. It never waited, because there was nothing to wait for.
+    //
+    // So a plain `SQLITE_BUSY` arriving in 12ms is not the retryable error
+    // its code suggests; it is the same lost-upgrade defect reported under a
+    // different name. Asserting the wait catches both, and — this is the part
+    // that matters — it **would still fail** if the deferred arm ever started
+    // failing merely because it was queued, which a code check waves through
+    // as soon as one snapshot appears among them.
+    //
+    // **Asserting the wait is the stronger statement, not a broadening.**
+    // Demanding one snapshot code out of 25 says nothing whatever about the
+    // other 24. This constrains **every** failure in the run.
+    const NOT_RETRIED_CEILING_MS = 1000;
+    const waited = run.failed.map((outcome) => outcome.detail['waitedMs'] as number);
     assert.ok(
-      (run.codes['SQLITE_BUSY_SNAPSHOT'] ?? 0) > 0,
-      `At least one process must fail with the busy-snapshot error specifically — the one the busy timeout cannot retry. Codes seen: ${JSON.stringify(run.codes)}.`,
+      waited.every((ms) => typeof ms === 'number'),
+      `Every deferred failure must report how long the engine blocked it, so that "the busy timeout could not retry it" is measured rather than assumed. Waits reported: ${JSON.stringify(waited)}.`,
+    );
+    const retried = waited.filter((ms) => ms >= NOT_RETRIED_CEILING_MS);
+    assert.equal(
+      retried.length,
+      0,
+      `EVERY deferred failure must be one the busy timeout could NOT retry — that is what makes deferred unsafe rather than merely slow. ` +
+        `${String(retried.length)} of ${String(run.failed.length)} waited at least ${String(NOT_RETRIED_CEILING_MS)}ms against a 5000ms busy timeout, which is the signature of a writer that was queued behind a held lock and would have succeeded on a retry. ` +
+        `A run failing this way is NOT evidence that deferred loses its right to upgrade; it is evidence of ordinary lock contention. Waits observed: ${JSON.stringify([...waited].sort((a, b) => a - b))}. Codes seen: ${JSON.stringify(run.codes)}.`,
     );
 
     // The lost writes are real and observable: the counter is short by
