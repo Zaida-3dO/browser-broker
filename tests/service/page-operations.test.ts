@@ -11,7 +11,19 @@ import type {
 } from '../../src/browser/driver.ts';
 import { ARBITRATION_NAMES } from '../../src/service/arbitration.ts';
 import { CallRefusal } from '../../src/service/refusals.ts';
+import { blankImage, encodePng } from '../../src/diff/image.ts';
 import { claimInput, withBroker, type BrokerFixture } from '../helpers/broker.ts';
+
+/**
+ * The size of the picture the fake hands back.
+ *
+ * Small, and **inside the smallest tier's longest edge** so the pipeline does
+ * not downscale it: a test asserting the dimensions that were written wants
+ * them to be the dimensions that were taken, so that a change to the tier
+ * table does not silently change what this asserts.
+ */
+const CAPTURE_WIDTH = 8;
+const CAPTURE_HEIGHT = 6;
 
 /**
  * The six tab-addressed operations, driven through the shipped service.
@@ -104,15 +116,21 @@ function recordingSession(): DriverLog {
       return await Promise.resolve({ value: { ok: true }, bytes: 13 });
     },
     settlePage: async () => {
+      calls.push('settlePage');
       await Promise.resolve();
     },
     capture: async (tab: TabHandle, request: CaptureRequest) => {
       calls.push(`capture:${String(request.fullPage)}`);
       return await Promise.resolve({
-        image: new Uint8Array([1]),
-        width: 2,
-        height: 3,
-        viewportWidth: 2,
+        // **A real encoded image, not a token byte.** The capture path decodes
+        // what a browser hands back in order to downscale it, so bytes that
+        // are not an image make every capture throw inside the after-commit
+        // work — where the failure is swallowed — and the test would then be
+        // asserting against a capture that silently did nothing.
+        image: encodePng(blankImage(CAPTURE_WIDTH, CAPTURE_HEIGHT)),
+        width: CAPTURE_WIDTH,
+        height: CAPTURE_HEIGHT,
+        viewportWidth: CAPTURE_WIDTH,
         url: 'https://example.com/',
       });
     },
@@ -333,6 +351,7 @@ test('capture takes the viewport unless the whole page is asked for', async () =
       key: lease.key,
       tabId: lease.tabId,
       session: () => driver.session,
+      artifacts: fixture.artifacts,
     });
     assert.equal(viewport.fullPage, false);
 
@@ -341,11 +360,21 @@ test('capture takes the viewport unless the whole page is asked for', async () =
       tabId: lease.tabId,
       fullPage: true,
       session: () => driver.session,
+      artifacts: fixture.artifacts,
     });
     assert.equal(whole.fullPage, true);
 
     // Opened once, on the first call; the second addresses the same page.
-    assert.deepEqual(driver.calls, ['openTab', 'capture:false', 'capture:true']);
+    // **`settlePage` before each shutter**, which is the pipeline's own
+    // ordering rule and is only assertable from out here because the two are
+    // separate calls on the seam.
+    assert.deepEqual(driver.calls, [
+      'openTab',
+      'settlePage',
+      'capture:false',
+      'settlePage',
+      'capture:true',
+    ]);
   });
 });
 

@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 
+import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { createBroker, type Broker } from '../../src/service/broker.ts';
 import type { Environment } from '../../src/config/environment.ts';
 import type { OrphanedTab } from '../../src/service/arbitration.ts';
@@ -29,6 +30,16 @@ export interface BrokerFixture {
   readonly environment: Environment;
   /** Every tab the service asked to close, in the order it asked. */
   readonly closed: OrphanedTab[];
+  /**
+   * The artifact store rooted in this fixture's temporary tree.
+   *
+   * Exposed rather than supplied to the broker, so a test says on each call
+   * whether a capture had somewhere to go. That is the distinction `capture`
+   * turns on — a browser with nowhere to put a picture does not take one —
+   * and a fixture that bound it globally would make the no-store path
+   * unreachable from any test.
+   */
+  readonly artifacts: ArtifactStore;
   /** A second, read-only connection — see {@link readCommitted}. */
   readonly readCommitted: <T>(sql: string, parameters?: Record<string, unknown>) => T[];
 }
@@ -59,6 +70,7 @@ export async function withBroker(
         store,
         environment: temp.environment,
         closed,
+        artifacts: new ArtifactStore(temp.environment.artifactsRoot),
         broker: createBroker({
           store,
           environment: temp.environment,
