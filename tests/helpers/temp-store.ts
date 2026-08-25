@@ -19,7 +19,21 @@ export interface TempStore {
   readonly remove: () => void;
 }
 
-export function makeTempStore(): TempStore {
+/**
+ * What a test may vary about the environment its store runs under.
+ *
+ * Only the numbers, because the paths are what the temporary directory is
+ * for. A test that wants a budget of one says so here rather than setting a
+ * process-wide variable, which would be read by every other test in the same
+ * process.
+ */
+export interface TempStoreOptions {
+  readonly tabBudget?: number;
+  readonly leaseSeconds?: number;
+  readonly queueSeconds?: number;
+}
+
+export function makeTempStore(options: TempStoreOptions = {}): TempStore {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-test-'));
   return {
     directory,
@@ -28,6 +42,12 @@ export function makeTempStore(): TempStore {
       configuredDatabasePath: path.join(directory, 'broker.db'),
       artifactsRoot: path.join(directory, 'artefacts'),
       profileRoot: path.join(directory, 'profiles'),
+      // The declared defaults (§6.2). A test that needs a different budget
+      // overrides this field rather than reaching for the environment, so
+      // one test's ceiling cannot leak into another's process.
+      tabBudget: options.tabBudget ?? 15,
+      leaseSeconds: options.leaseSeconds ?? 600,
+      queueSeconds: options.queueSeconds ?? 600,
     },
     remove: () => {
       fs.rmSync(directory, { recursive: true, force: true });
@@ -42,13 +62,14 @@ export function makeTempStore(): TempStore {
  * lines repeated is six lines somebody eventually gets subtly wrong.
  */
 export async function withSteppedStore(
-  fn: (store: StoreHandle) => Promise<void> | void,
+  fn: (store: StoreHandle, temp: TempStore) => Promise<void> | void,
+  options: TempStoreOptions = {},
 ): Promise<void> {
-  const temp = makeTempStore();
+  const temp = makeTempStore(options);
   try {
     const store = await prepareStore(temp.environment);
     try {
-      await fn(store);
+      await fn(store, temp);
     } finally {
       store.close();
     }

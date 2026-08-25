@@ -1,6 +1,9 @@
 import type { Database } from 'better-sqlite3';
 
 import { stepOne } from './step-001-initial.ts';
+import { stepFour } from './step-004-tab-never-opened.ts';
+import { stepThree } from './step-003-queue-order.ts';
+import { stepTwo } from './step-002-tab-budget.ts';
 
 /**
  * The ordered list of schema steps, and the rule that governs it.
@@ -25,7 +28,7 @@ export interface Step {
   readonly apply: (db: Database) => void;
 }
 
-export const STEPS: readonly Step[] = [stepOne];
+export const STEPS: readonly Step[] = [stepOne, stepTwo, stepThree, stepFour];
 
 /**
  * The version a store must be at for this build to use it.
@@ -41,7 +44,7 @@ export const STEPS: readonly Step[] = [stepOne];
  *
  * So the number is written here and the check below is what keeps it honest.
  */
-export const EXPECTED_VERSION = 1;
+export const EXPECTED_VERSION = 4;
 
 /**
  * The list is consistent with the version above, asserted where the list is

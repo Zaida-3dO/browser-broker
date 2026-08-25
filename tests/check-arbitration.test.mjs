@@ -4,7 +4,6 @@ import test from 'node:test';
 
 import {
   ARBITRATION_SOURCE,
-  EMPTY_REGISTRY_EXEMPTION,
   FORBIDDEN_DRIVER_TRANSACTIONS,
   FORBIDDEN_SQL_KEYWORDS,
   REQUIRED_BEGIN,
@@ -83,22 +82,22 @@ test('the real tree passes both rules', () => {
   assert.deepEqual(rules(clean(), ['some_operation']), []);
 });
 
-test('the real registry is readable, and its emptiness is declared rather than assumed', () => {
+test('the real registry is readable, and it is not empty', () => {
   const registry = registeredNamesIn(arbitration);
   assert.notEqual(
     registry.names,
     null,
     `the registry could not be parsed: ${registry.reason}. Reporting zero for an unreadable registry is the silent failure scan C exists to prevent.`,
   );
-  // If this fails because the registry has entries, the fix is to set
-  // EMPTY_REGISTRY_EXEMPTION to null — the hole it names has been filled.
-  if (registry.names.length === 0) {
-    assert.notEqual(
-      EMPTY_REGISTRY_EXEMPTION,
-      null,
-      'the registry is empty and nothing declares why, so every rule is an assertion over an empty set',
-    );
-  }
+  // Unconditional. While the registry was genuinely empty this was excused by
+  // a declared exemption naming the row that would fill it; that row has
+  // landed, so the assertion it deferred is simply made. Every other rule in
+  // this file is an assertion over this set, and an empty one passes them all
+  // forever and silently.
+  assert.ok(
+    registry.names.length > 0,
+    'the arbitration registry is empty, so every rule here asserts over an empty set',
+  );
 });
 
 // ── arbitration.immediate_transaction ───────────────────────────────────
@@ -153,10 +152,12 @@ test('scan A does not fire on the word commit in prose', () => {
 
 test('scan B fires when the arbitration module stops opening a transaction', () => {
   const sources = seeded(ARBITRATION_SOURCE, (source) =>
-    source.replace(
-      'return options.store.immediate(async ({ db }) => {',
-      'return await (async ({ db }) => {',
-    ),
+    // Matched on the call rather than on the whole line: the runner wraps
+    // this in a try/finally so that a refusal's ledger row survives the
+    // rollback, and a seed pinned to the surrounding statement silently stops
+    // matching the moment that wrapping changes — which is a mutation that
+    // misses, and an assertion that passes vacuously.
+    source.replace('options.store.immediate(async ({ db }) => {', '(async ({ db }) => {'),
   );
   assert.ok(
     scansThatFired(rules(sources, ['some_operation'])).includes(
@@ -274,25 +275,20 @@ test('scan B fires when the sweep is removed outright', () => {
   );
 });
 
-test('scan C fires on an empty registry once the exemption is retired', () => {
-  // The exemption is a constant in the script, so this seed cannot flip it.
-  // What it asserts instead is the branch: with the exemption in place an
-  // empty registry passes, and the message says so loudly. When #12 sets the
-  // constant to null, this test's first half becomes the failing one — which
-  // is the intended direction.
-  const withExemption = rules(clean(), []);
-  if (EMPTY_REGISTRY_EXEMPTION === null) {
-    assert.ok(
-      scansThatFired(withExemption).includes('arbitration.no_read_only_path/C'),
-      'the exemption is retired, so an empty registry must fire scan C and does not',
-    );
-  } else {
-    assert.deepEqual(
-      withExemption,
-      [],
-      'the exemption is in place, so an empty registry must pass rather than fail the row that introduces the check',
-    );
-  }
+test('scan C fires on an empty registry, with nothing left to excuse it', () => {
+  // The seeded violation is the empty name list rather than an edit to the
+  // source: scan C's subject is what the registry parses to, so an empty set
+  // is the whole of the violation it exists to catch.
+  assert.ok(
+    scansThatFired(rules(clean(), [])).includes('arbitration.no_read_only_path/C'),
+    'an empty registry must fire scan C',
+  );
+  // And the clean tree does not fire it, so the assertion above is about the
+  // seed rather than about something already broken.
+  assert.equal(
+    scansThatFired(rules(clean(), ['some_operation'])).includes('arbitration.no_read_only_path/C'),
+    false,
+  );
 });
 
 test('scan D fires on a field that would let an operation opt out of writing', () => {
@@ -341,4 +337,30 @@ test('comments are stripped before scanning, and literals are found within lines
       ['"two"', 2],
     ],
   );
+});
+
+test('the registry parser counts operations, not the keys inside them', () => {
+  // A real defect this caught rather than a hypothetical one: an operation is
+  // an object with its own `kind`, `summary` and `handler` keys, and a flat
+  // key scan read three operations as twelve. The count is what scan C's
+  // non-empty assertion rests on, so a count inflatable by the shape of a
+  // value is not a count of operations.
+  const wrap = (body) => `export const ARBITRATION_OPERATIONS = ${body} as const satisfies X;`;
+  const nested = wrap(
+    [
+      '{',
+      "  claim: { kind: 'claim_requested', summary: 'ask', handler: claimHandler },",
+      "  giveBack: { kind: 'claim_released', summary: 'give back', handler: backHandler },",
+      '}',
+    ].join('\n'),
+  );
+  assert.deepEqual(registeredNamesIn(nested).names, ['claim', 'giveBack']);
+});
+
+test('an outer-empty registry reads as empty however its values would be shaped', () => {
+  // The sharp edge of the defect above: were nesting ignored, a registry with
+  // no operation in it could satisfy the non-empty assertion out of keys
+  // belonging to something else entirely.
+  const wrap = (body) => `export const ARBITRATION_OPERATIONS = ${body} as const satisfies X;`;
+  assert.deepEqual(registeredNamesIn(wrap('{\n}')).names, []);
 });

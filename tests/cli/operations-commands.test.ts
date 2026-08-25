@@ -232,12 +232,10 @@ describe('broker events', () => {
       await run([], { streams: first.streams, env: envFor(temp.directory) });
 
       const { prepareStore } = await import('../../src/store/open.ts');
-      const environment = {
-        databasePath: path.join(temp.directory, 'broker.db'),
-        configuredDatabasePath: path.join(temp.directory, 'broker.db'),
-        artifactsRoot: path.join(temp.directory, 'artefacts'),
-        profileRoot: path.join(temp.directory, 'profiles'),
-      };
+      // Spread from the shared fixture rather than rebuilt field by field, so
+      // a variable added to the registry reaches every store a test opens
+      // instead of six literals drifting apart one rebase at a time.
+      const environment = { ...temp.environment };
       const store = await prepareStore(environment);
       seedEvent(store.db, { kind: 'claim_granted', sessionId: 'session-a' });
       seedEvent(store.db, { kind: 'navigate', outcome: 'deny', guard: 'lease.required' });
@@ -263,12 +261,7 @@ describe('broker events', () => {
       await run([], { streams: first.streams, env: envFor(temp.directory) });
 
       const { prepareStore } = await import('../../src/store/open.ts');
-      const store = await prepareStore({
-        databasePath: path.join(temp.directory, 'broker.db'),
-        configuredDatabasePath: path.join(temp.directory, 'broker.db'),
-        artifactsRoot: path.join(temp.directory, 'artefacts'),
-        profileRoot: path.join(temp.directory, 'profiles'),
-      });
+      const store = await prepareStore({ ...temp.environment });
       seedEvent(store.db, { kind: 'navigate', outcome: 'deny', guard: 'lease.required' });
       seedEvent(store.db, { kind: 'claim_requested', outcome: 'deny', guard: 'capacity.bounded' });
       store.close();
