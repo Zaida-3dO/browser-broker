@@ -41,6 +41,47 @@ import type { ArbitrationOutcome, ArbitrationScope } from '../arbitration.ts';
  * mechanical rather than remembered.
  */
 
+/**
+ * The purpose bound (§1.3), stated here because this is where it is enforced.
+ *
+ * **The same two numbers as `claims.purpose`'s `CHECK`**, and they have to
+ * stay the same two: the guard's job is to make sure no caller ever reaches
+ * that constraint, which it can only do if it refuses exactly what the column
+ * would have refused. A guard with a *wider* bound would let a caller back
+ * through to the crash it exists to prevent; a narrower one would refuse
+ * purposes the store would have accepted.
+ *
+ * They are not imported from the schema module because the schema is SQL text
+ * — there is nothing there to import — and duplicating the pair with the
+ * reason stated is honest, where deriving one from a parse of the other would
+ * be fragile in the direction that fails silently. A test pins them against
+ * the live column instead (`tests/operations/claim-purpose.test.ts`), so the
+ * two moving apart is a failing test rather than a returning crash.
+ */
+export const PURPOSE_MINIMUM = 3;
+/** @see PURPOSE_MINIMUM */
+export const PURPOSE_MAXIMUM = 200;
+
+/**
+ * How the refusal describes what was wrong, in the caller's own terms.
+ *
+ * Three sentences rather than one, because "missing", "too short" and "too
+ * long" are three different mistakes with three different fixes, and a single
+ * "invalid purpose" would make the caller work out which it made.
+ */
+function describePurpose(purpose: unknown): string {
+  if (typeof purpose !== 'string' || purpose.length === 0) {
+    // Covers both the argument that was never supplied and the empty string a
+    // surface produces from a missing one — indistinguishable by the time
+    // they arrive here, and the same mistake from the caller's side.
+    return 'is missing';
+  }
+  if (purpose.length < PURPOSE_MINIMUM) {
+    return `is ${String(purpose.length)} character${purpose.length === 1 ? '' : 's'} long`;
+  }
+  return `is ${String(purpose.length)} characters long`;
+}
+
 /** What a caller supplies to ask for a lease. */
 export interface ClaimInput {
   /** The caller's identity (§1.3). **Not a limit** — a session may hold many leases. */
@@ -175,6 +216,75 @@ export function decideClaim(
       'unknown_browser',
       `There is no browser named ${JSON.stringify(input.browser)}. This service has exactly two: ${BROWSER_IDS.join(' and ')}. ${BROWSER_CHOICE_GUIDANCE}`,
       { detail: { requested: input.browser, known: BROWSER_IDS } },
+    );
+  }
+
+  // **The purpose, checked here rather than by the column** (§7.1
+  // `claim.purpose_bounded`).
+  //
+  // ── Why this guard exists, given the column already had a CHECK ────────
+  //
+  // Because a `CHECK` is not a refusal. Before this guard the bound was
+  // enforced only by `claims.purpose`'s own
+  // `CHECK (length(purpose) BETWEEN 3 AND 200)`, which fires *after* the
+  // insert is handed to the store — so the command line died with an
+  // unhandled `SqliteError` and exit 1, and the tool surface answered
+  // `unexpected_failure` with the constraint text in it. A caller was told
+  // the name of a database constraint rather than the name of the argument
+  // it got wrong, on the first command anybody runs.
+  //
+  // The column keeps its CHECK, and that is deliberate: it is the backstop
+  // for a writer that is not this function. What changes is that no caller
+  // reaches it any more, because the argument is refused before a statement
+  // is built.
+  //
+  // ── The position ──────────────────────────────────────────────────────
+  //
+  // **Before the first insert and before the arrival counter is allocated**,
+  // for the reason the seed check below gives: a refused caller is not
+  // charged capacity, holds no key, and has nothing to release. It sits
+  // *after* the browser check because a caller that named a browser that does
+  // not exist should hear about the name first — the same ordering, and the
+  // same reasoning, that puts the sign-in check after both.
+  //
+  // Length is counted in UTF-16 code units, which is what SQLite's `length()`
+  // counts over a `TEXT` value and therefore what the column would have
+  // measured. Counting anything else here would refuse strings the store
+  // would have taken, or take strings it would have refused.
+  if (
+    typeof input.purpose !== 'string' ||
+    input.purpose.length < PURPOSE_MINIMUM ||
+    input.purpose.length > PURPOSE_MAXIMUM
+  ) {
+    scope.recordRefusal({
+      kind: 'claim_requested',
+      outcome: 'deny',
+      guard: 'claim.purpose_bounded',
+      adapter,
+      sessionId: input.sessionId,
+      // The length and the bounds, and **never the purpose itself** — the
+      // same discipline the seed refusal keeps, for the same reason: a
+      // refusal's detail is read by whoever reads the ledger.
+      detail: {
+        length: typeof input.purpose === 'string' ? input.purpose.length : null,
+        minimum: PURPOSE_MINIMUM,
+        maximum: PURPOSE_MAXIMUM,
+      },
+    });
+    throw new CallRefusal(
+      'purpose_out_of_bounds',
+      // Names the argument and what is wrong with it, and says what the
+      // purpose is *for* — an operator deciding whether to revoke this lease
+      // reads it, so "one line about the work" is the guidance that produces
+      // a useful one rather than three filler characters.
+      `A claim carries a purpose of ${String(PURPOSE_MINIMUM)} to ${String(PURPOSE_MAXIMUM)} characters, and this one ${describePurpose(input.purpose)}. Say what the lease is for in one line — it is what an operator reads when deciding whether to revoke it, so name the work rather than the tool.`,
+      {
+        detail: {
+          length: typeof input.purpose === 'string' ? input.purpose.length : null,
+          minimum: PURPOSE_MINIMUM,
+          maximum: PURPOSE_MAXIMUM,
+        },
+      },
     );
   }
 

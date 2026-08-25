@@ -116,6 +116,40 @@ export const REFUSALS = {
   },
 
   /**
+   * §7.1 `claim.purpose_bounded`. The bound §1.3 states — three to two
+   * hundred characters, mandatory — checked before a row is written.
+   *
+   * ── Why this row exists at all ──────────────────────────────────────────
+   *
+   * Because until it did, the bound was enforced **only** by the column's
+   * `CHECK (length(purpose) BETWEEN 3 AND 200)`, which is not a refusal: it
+   * is a driver error raised after the statement is handed to the store. On
+   * the command line it left the process with an unhandled `SqliteError` and
+   * exit 1, and on the tool surface it came back as `unexpected_failure`
+   * carrying the constraint text verbatim. Both told a caller the name of a
+   * database constraint instead of the name of the argument they got wrong,
+   * and the first of the two is indistinguishable from the service being
+   * broken — on the first command anybody runs.
+   *
+   * **This is the rule §7.1 was missing rather than a new policy.** §1.3
+   * already made the field mandatory and already fixed the bound; every other
+   * bounded free-text field in the service had its refusal
+   * (`feedback.note_bounded`, `evaluate.expression_bounded`,
+   * `capture.max_tier_reason`) and this one did not. The naming follows those
+   * — `<operation>.<field>_bounded` — rather than starting a second
+   * convention beside them.
+   *
+   * Not retryable: the identical call, with the identical argument, fails
+   * identically forever. What changes it is the caller writing a purpose, not
+   * the caller waiting.
+   */
+  purpose_out_of_bounds: {
+    rule: 'claim.purpose_bounded',
+    summary: 'A claim carries a purpose, three to two hundred characters.',
+    retryable: false,
+  },
+
+  /**
    * §5.5.1's last line: the private browser cannot be signed into.
    *
    * ── Why this is not `unknown_browser`, which it was at first ────────────

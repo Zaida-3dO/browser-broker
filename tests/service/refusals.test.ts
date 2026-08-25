@@ -83,7 +83,7 @@ test('every code names a rule, a summary and a retry answer', () => {
   // shipped a check that iterated a list rather than naming its entries, so
   // deleting an entry stayed green. The count is asserted first, so removing
   // a code fails here even though the loop below would happily skip it.
-  assert.equal(REFUSAL_CODES.length, 9, 'a refusal code was added or removed without a test');
+  assert.equal(REFUSAL_CODES.length, 10, 'a refusal code was added or removed without a test');
   assert.deepEqual([...REFUSAL_CODES].sort(), [
     'browser_unavailable',
     // Added with the sign-in path. It shares `browser.serving` with the code
@@ -93,6 +93,11 @@ test('every code names a rule, a summary and a retry answer', () => {
     'cannot_sign_in',
     'key_missing',
     'lease_ended',
+    // Added with the guard that refuses a claim's purpose before the insert.
+    // Until it existed the bound was enforced only by the column's own CHECK,
+    // which is a driver error rather than a refusal — a crash on the command
+    // line and `unexpected_failure` on the tool surface.
+    'purpose_out_of_bounds',
     'reason_required',
     'tab_not_found',
     'unknown_browser',
