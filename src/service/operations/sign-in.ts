@@ -214,6 +214,32 @@ export function decideBeginSignIn(
   // rows read here are the ones this transaction's sweep has already
   // reconciled, so `active` means active now rather than active when
   // somebody last looked.
+  //
+  // ── What the two conditions each carry, stated because one of them is
+  //    not falsifiable by any test this build can write ─────────────────
+  //
+  // The query requires **both** a live claim and an open tab. In this build
+  // those two move together on every path the product can reach — a grant
+  // makes the pair (`active`, `opening`), a release makes it (`released`,
+  // `closed`), and an expiry makes it (`expired`, `closed`) — so **no
+  // reachable state separates them**, and a mutation that drops either
+  // condition alone survives the suite. That was measured rather than
+  // assumed, by removing each in turn and watching the tests stay green.
+  //
+  // Both are kept anyway, and the reason is that the redundancy is a
+  // property of this build rather than of the design. A lease is one tab
+  // (§2.3), and the tab-addressed operations that give a tab up and take a
+  // fresh one need a browser to run at all — so the state where a live claim
+  // has no open tab is unreachable while no browser runs, and becomes
+  // reachable once one does. Narrowing the query to whichever half suffices
+  // for the reachable states would be correct against those states and wrong
+  // against the rest, and the failure it produces is a person handed a
+  // window a caller is holding.
+  //
+  // This is written down rather than left as a surviving mutation somebody
+  // rediscovers: the condition is deliberate, it is not covered, and the
+  // reason it is not covered is that the product cannot yet produce the
+  // state that would cover it.
   const holders = db
     .prepare<{ browserId: string }, HoldingLease>(
       `SELECT c.id AS claimId, c.session_id AS sessionId, c.purpose AS purpose,
