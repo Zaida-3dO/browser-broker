@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Database } from 'better-sqlite3';
 
 import { admits, countActiveClaims } from './capacity.ts';
@@ -147,6 +149,8 @@ export interface Promotion {
   readonly claimId: string;
   readonly browserId: string;
   readonly sessionId: string;
+  /** The tab row created for it, `opening` and not yet opened. */
+  readonly tabId: string;
 }
 
 /**
@@ -166,10 +170,13 @@ export interface Promotion {
  * §1.3 requires a renewal to extend by the duration the caller was told and
  * the caller is being told this one on this response.
  *
- * **It does not open the tab.** Opening is browser work and browser work
- * never happens inside the arbitration transaction (§2.4b) — one wedged
- * browser inside it blocks every arbitration call on the machine. The tab row
- * is created `opening`, and the driver call belongs to the caller's
+ * **It creates the tab row but does not open the tab.** The row is required:
+ * §1.4 makes active leases and live tab rows the same count, always, so a
+ * promotion that moved the state without creating the row would leave the
+ * store one short of that identity — invisibly, because a capacity count
+ * counts claims. Opening the page is browser work and browser work never
+ * happens inside the arbitration transaction (§2.4b), so the row is created
+ * `opening` with no driver name and the driver call belongs to the caller's
  * after-commit work.
  *
  * The loop is bounded by capacity and by the queue's own length, both of
@@ -223,17 +230,51 @@ export function promoteWhileCapacity(
       break;
     }
 
+    // The tab row, created here rather than left to the caller.
+    //
+    // **A promoted lease is an active lease, and §1.4 makes active leases and
+    // live tab rows the same count, always** — "a lease is a tab (§2.3), so
+    // this table and the live part of `claims` have the same number of rows".
+    // A promotion that flipped the state without creating the row would put
+    // the store one short of that identity, and the shortfall would be
+    // invisible to a capacity count, which counts claims.
+    //
+    // `opening` with no driver name, exactly as a grant creates one
+    // (`claim.ts`): opening the page is browser work, and browser work never
+    // happens inside the arbitration transaction (§2.4b).
+    const tabId = randomUUID();
+    db.prepare(
+      `INSERT INTO tabs (id, claim_id, browser_id, state, created_at, updated_at)
+       VALUES (@tabId, @claimId, @browserId, 'opening', @now, @now)`,
+    ).run({ tabId, claimId: head.id, browserId: row.browserId, now: options.now });
+
     append(db, {
       kind: 'claim_promoted',
       outcome: 'allow',
       adapter: options.adapter,
       claimId: head.id,
+      tabId,
       sessionId: row.sessionId,
       browserId: row.browserId,
       detail: { promotedAt: options.now },
     });
 
-    promoted.push({ claimId: head.id, browserId: row.browserId, sessionId: row.sessionId });
+    append(db, {
+      kind: 'tab_opening',
+      outcome: 'allow',
+      adapter: options.adapter,
+      claimId: head.id,
+      tabId,
+      sessionId: row.sessionId,
+      browserId: row.browserId,
+    });
+
+    promoted.push({
+      claimId: head.id,
+      browserId: row.browserId,
+      sessionId: row.sessionId,
+      tabId,
+    });
   }
 
   return promoted;

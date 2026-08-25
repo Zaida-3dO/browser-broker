@@ -1,4 +1,9 @@
-import type { ArbitrationOutcome, ArbitrationScope, OrphanedTab } from '../arbitration.ts';
+import {
+  updateSweptTabs,
+  type ArbitrationOutcome,
+  type ArbitrationScope,
+  type OrphanedTab,
+} from '../arbitration.ts';
 import { append } from '../events.ts';
 import { hashKey } from '../keys.ts';
 import { promoteWhileCapacity } from '../queue.ts';
@@ -170,12 +175,13 @@ export function decideRelease(
     )
     .all({ claimId: row.claimId }) as OrphanedTab[];
 
-  if (tabs.length > 0) {
-    const placeholders = tabs.map(() => '?').join(', ');
-    db.prepare(
-      `UPDATE tabs SET state = 'closing', updated_at = ? WHERE id IN (${placeholders})`,
-    ).run(now, ...tabs.map((tab) => tab.tabId));
-  }
+  // The same rule the sweep uses, from the same function, because two writers
+  // spelling it separately is how they come to disagree — and they did: both
+  // moved every tab to `closing`, which the schema refuses for a tab that
+  // never opened, and every tab this build creates is one of those.
+  //
+  // What comes back is the subset a browser still owes an answer about.
+  const pendingCloses = updateSweptTabs(db, tabs, now);
 
   append(db, {
     kind: 'claim_released',
@@ -191,7 +197,7 @@ export function decideRelease(
     },
   });
 
-  for (const tab of tabs) {
+  for (const tab of pendingCloses) {
     // Collected inside, closed outside (§2.4b). This schedules; it cannot
     // call a browser, because the scope carries no driver to call one with.
     scope.closeAfterCommit(tab);

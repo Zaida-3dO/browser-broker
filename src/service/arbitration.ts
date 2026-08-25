@@ -378,19 +378,98 @@ function sweep(db: Database): SweepResult {
      WHERE id IN (${placeholders})`,
   ).run(now, ...ids);
 
-  // The tab rows follow their claims. 'closing' rather than 'closed', because
-  // the close has not happened yet and will not until after the commit —
-  // section 1.4 puts it plainly: 'closing' is "the honest representation of
-  // the tool was asked and has not answered", and it is what stops a page
-  // that may still exist being counted as free.
-  if (orphanedTabs.length > 0) {
-    const tabPlaceholders = orphanedTabs.map(() => '?').join(', ');
-    db.prepare(
-      `UPDATE tabs SET state = 'closing', updated_at = ? WHERE id IN (${tabPlaceholders})`,
-    ).run(now, ...orphanedTabs.map((tab) => tab.tabId));
+  // The tab rows follow their claims, and which state they follow into
+  // depends on whether there is anything to ask a browser about.
+  //
+  // §1.4 defines the two precisely, and the definition decides this rather
+  // than a preference: `closing` is "the honest representation of *the tool
+  // was asked and has not answered*", and it is what stops **a page that may
+  // still exist** being counted as free.
+  //
+  // - **A tab with a driver name was opened.** A page exists, the tool will be
+  //   asked to close it after the commit, and until it answers `closing` is
+  //   the only honest thing to say.
+  // - **A tab with no driver name was never opened.** Nothing was asked,
+  //   because there is nothing to ask about — no page exists and none ever
+  //   did. Calling that `closing` would assert an outstanding round trip that
+  //   is not outstanding, and would leave the row waiting forever for an
+  //   answer nobody is coming to give.
+  //
+  // So the second goes straight to `closed`, which is also what the schema
+  // requires: `CHECK ((state = 'opening') = (driver_tab_id IS NULL))` permits
+  // a null driver name only on `opening`, and a `closed` row with one is
+  // exactly as consistent as an `open` row with one. **The constraint is
+  // right and it caught a genuine error**, rather than being an obstacle to
+  // route around — a tab moved to `closing` with nothing to close is a claim
+  // about the world that is false.
+  // What comes back is the subset a browser still owes an answer about. The
+  // rest are already `closed`, so scheduling a close for them would ask the
+  // driver to shut a page that never existed.
+  const pendingCloses = updateSweptTabs(db, orphanedTabs, now);
+
+  return { expiredClaimIds: ids, orphanedTabs: pendingCloses, sweptAt: now };
+}
+
+/**
+ * Move tabs out of a lease that has ended, into the state that is true of
+ * each.
+ *
+ * **Exported because release needs exactly this rule** (§3.4) and two writers
+ * spelling it separately is how they come to disagree. The defect this
+ * function exists to make impossible was precisely that: the sweep and
+ * release each moved every tab to `closing`, and every tab this build creates
+ * has no driver name, so both violated the schema's own check on the ordinary
+ * path.
+ *
+ * Returns the tabs that still need a browser round trip — which is **not**
+ * every tab handed in. A tab that never opened has nothing to close, so
+ * scheduling one would be asking the driver to close a page that does not
+ * exist.
+ */
+export function updateSweptTabs(
+  db: Database,
+  tabs: readonly OrphanedTab[],
+  now: string,
+): readonly OrphanedTab[] {
+  if (tabs.length === 0) {
+    return [];
   }
 
-  return { expiredClaimIds: ids, orphanedTabs, sweptAt: now };
+  const ids = tabs.map((tab) => tab.tabId);
+  const placeholders = ids.map(() => '?').join(', ');
+
+  // Opened, so a page exists and the tool has to be asked. `closing` until it
+  // answers.
+  db.prepare(
+    `UPDATE tabs
+        SET state = 'closing', updated_at = ?
+      WHERE id IN (${placeholders})
+        AND state IN ('opening', 'open')
+        AND driver_tab_id IS NOT NULL`,
+  ).run(now, ...ids);
+
+  // Never opened, so there is nothing to ask and nothing to wait for. The
+  // close time is this moment because the tab is over now, not when some
+  // round trip that will never happen would have returned.
+  db.prepare(
+    `UPDATE tabs
+        SET state = 'closed', closed_at = ?, updated_at = ?
+      WHERE id IN (${placeholders})
+        AND state = 'opening'
+        AND driver_tab_id IS NULL`,
+  ).run(now, now, ...ids);
+
+  // Only the ones a browser still owes an answer about.
+  const pending = db
+    .prepare(
+      `SELECT id AS tabId, claim_id AS claimId, browser_id AS browserId
+         FROM tabs
+        WHERE id IN (${placeholders}) AND state = 'closing'
+        ORDER BY id`,
+    )
+    .all(...ids) as OrphanedTab[];
+
+  return pending;
 }
 
 /**

@@ -90,11 +90,46 @@ function seedClaim(
   });
 }
 
-function seedTab(db: Database, options: { id: string; claimId: string }): void {
+/**
+ * A tab, seeded in one of the two shapes a tab can really be in.
+ *
+ * **The default is `opening` with no driver name, because that is what the
+ * product produces.** Granting a lease inserts exactly that (`claim.ts`), and
+ * nothing in this build opens a tab — opening is M4.
+ *
+ * **This default is the whole point of the parameter.** Seeding only `open`
+ * with a driver name tests a shape no code path produces, which leaves the
+ * sweep green against a row it never meets while being broken against the row
+ * it always meets — a failure worth naming because it costs nothing to write
+ * and cannot be seen from a passing run. **A fixture that seeds a state the
+ * product cannot reach is a test of something else.** So the default is the
+ * reachable shape, and the M4 shape is opt-in and labelled as anticipatory.
+ */
+function seedTab(
+  db: Database,
+  options: {
+    id: string;
+    claimId: string;
+    /**
+     * Seed the shape a tab has **once a driver has opened it** — `open` with
+     * a driver name. Nothing produces this yet; it is what M4 will, and the
+     * sweep has to handle both.
+     */
+    opened?: boolean;
+  },
+): void {
+  if (options.opened === true) {
+    db.prepare(
+      `INSERT INTO tabs (id, claim_id, browser_id, driver_tab_id, state, opened_at)
+       VALUES (@id, @claimId, 'regular', @driverTabId, 'open', '2020-01-01T00:00:00.000Z')`,
+    ).run({ id: options.id, claimId: options.claimId, driverTabId: `driver-${options.id}` });
+    return;
+  }
+
   db.prepare(
-    `INSERT INTO tabs (id, claim_id, browser_id, driver_tab_id, state, opened_at)
-     VALUES (@id, @claimId, 'regular', @driverTabId, 'open', '2020-01-01T00:00:00.000Z')`,
-  ).run({ id: options.id, claimId: options.claimId, driverTabId: `driver-${options.id}` });
+    `INSERT INTO tabs (id, claim_id, browser_id, driver_tab_id, state)
+     VALUES (@id, @claimId, 'regular', NULL, 'opening')`,
+  ).run({ id: options.id, claimId: options.claimId });
 }
 
 /** Long past. Written as a literal so the sweep's comparison is unambiguous. */
@@ -260,7 +295,7 @@ test('the handler is told what the sweep did', async () => {
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     let seen: { expired: readonly string[]; orphans: readonly OrphanedTab[] } | undefined;
@@ -296,7 +331,7 @@ test('a swept tab is closed after the commit, never inside the transaction', asy
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     const closed: OrphanedTab[] = [];
@@ -347,7 +382,7 @@ test('a tab that will not close is a leaked tab, not a leaked lease', async () =
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     await withOperation(
@@ -379,7 +414,7 @@ test('a swept tab is left in the closing state, which is not free capacity', asy
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     await withOperation(
@@ -401,7 +436,7 @@ test("the sweep's closes are scheduled before the operation's own after-commit w
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     const order: string[] = [];
@@ -444,7 +479,7 @@ test('with no way to close a tab, the lease still ends and the tab is left recor
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     await withOperation(
@@ -544,7 +579,7 @@ test('a handler that throws does not run the after-commit work of the sweep', as
   await withSteppedStore(async (store) => {
     store.db.exec('BEGIN');
     seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
-    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a', opened: true });
     store.db.exec('COMMIT');
 
     let closes = 0;
@@ -630,5 +665,128 @@ test('the handler receives the input it was dispatched with, and returns its own
       },
     );
     assert.deepEqual(received, { session: 'session-a' });
+  });
+});
+
+// ── The shape the product actually produces ─────────────────────────────
+//
+// Every tab this build creates is `opening` with no driver name, because
+// granting a lease inserts exactly that and nothing opens a tab: opening is
+// M4. The tests above seed the shape M4 will produce and are labelled as
+// anticipatory; these are the ones about the shape this build reaches.
+
+test('a lapsed lease whose tab never opened is swept, and does not throw', async () => {
+  // The defect this pins: both writers moved every tab to `closing`, which
+  // the schema refused for a tab with no driver name — and because the sweep
+  // runs before every handler, one such lease made every arbitration call by
+  // every caller throw, permanently and across spawns.
+  //
+  // The mutation that breaks this is moving a never-opened tab to `closing`
+  // instead of `closed` in `updateSweptTabs`.
+  await withSteppedStore(async (store) => {
+    store.db.exec('BEGIN');
+    seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    store.db.exec('COMMIT');
+
+    await withOperation(
+      'ask',
+      { kind: 'sweep', summary: 'asks', handler: () => ({ value: null }) },
+      async () => {
+        await runArbitration({ store, name: 'ask', adapter: 'cli', input: null });
+      },
+    );
+
+    assert.equal(stateOf(store, 'claim-a'), 'expired');
+  });
+});
+
+test('a tab that never opened ends as closed, not closing — there was nothing to ask', async () => {
+  // §1.4: `closing` is "the honest representation of *the tool was asked and
+  // has not answered*", and it exists to stop **a page that may still exist**
+  // being counted as free. A tab with no driver name was never asked and no
+  // page ever existed, so `closing` would assert an outstanding round trip
+  // that is not outstanding — and would leave the row waiting forever for an
+  // answer nobody is coming to give.
+  await withSteppedStore(async (store) => {
+    store.db.exec('BEGIN');
+    seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    store.db.exec('COMMIT');
+
+    await withOperation(
+      'ask',
+      { kind: 'sweep', summary: 'asks', handler: () => ({ value: null }) },
+      async () => {
+        await runArbitration({ store, name: 'ask', adapter: 'cli', input: null });
+      },
+    );
+
+    const tab = store.db
+      .prepare('SELECT state, driver_tab_id AS driverTabId, closed_at AS closedAt FROM tabs')
+      .get() as { state: string; driverTabId: string | null; closedAt: string | null };
+    assert.equal(tab.state, 'closed');
+    assert.equal(tab.driverTabId, null);
+    assert.notEqual(tab.closedAt, null, 'a closed tab records when it closed');
+  });
+});
+
+test('a tab that never opened is not scheduled for a close', async () => {
+  // Asking a driver to close a page that does not exist is a round trip that
+  // can only fail, and it would be attributed to a tab as a close failure.
+  await withSteppedStore(async (store) => {
+    store.db.exec('BEGIN');
+    seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    store.db.exec('COMMIT');
+
+    const closed: OrphanedTab[] = [];
+    await withOperation(
+      'ask',
+      { kind: 'sweep', summary: 'asks', handler: () => ({ value: null }) },
+      async () => {
+        await runArbitration({
+          store,
+          name: 'ask',
+          adapter: 'cli',
+          input: null,
+          closeTab: (tab) => {
+            closed.push(tab);
+          },
+        });
+      },
+    );
+
+    assert.deepEqual(closed, [], 'a tab that never opened was handed to the driver to close');
+  });
+});
+
+test('one lapsed never-opened lease does not wedge later calls, or a later spawn', async () => {
+  // The escalation that made this critical rather than merely broken: the
+  // sweep is unconditional before every handler, so a row it cannot sweep
+  // fails every caller forever — including a fresh process, because the row
+  // is still there.
+  await withSteppedStore(async (store) => {
+    store.db.exec('BEGIN');
+    seedClaim(store.db, { id: 'claim-a', expiresAt: LAPSED });
+    seedTab(store.db, { id: 'tab-a', claimId: 'claim-a' });
+    seedClaim(store.db, { id: 'claim-healthy', expiresAt: LIVE, session: 'session-b' });
+    store.db.exec('COMMIT');
+
+    await withOperation(
+      'ask',
+      { kind: 'sweep', summary: 'asks', handler: () => ({ value: null }) },
+      async () => {
+        // Three consecutive calls by an unrelated caller. The second and
+        // third are the ones that would have failed on a store the first
+        // could not reconcile.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await runArbitration({ store, name: 'ask', adapter: 'cli', input: null });
+        }
+      },
+    );
+
+    assert.equal(stateOf(store, 'claim-a'), 'expired');
+    assert.equal(stateOf(store, 'claim-healthy'), 'active', 'an unrelated lease was disturbed');
   });
 });

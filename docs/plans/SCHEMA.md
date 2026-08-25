@@ -1202,8 +1202,14 @@ one step, if it simply knew.
 So when a claim cannot be granted immediately **and the asking session already holds one or more live
 leases**, the response carries three things:
 
-1. **The leases it already holds, with their keys.** A caller that lost track of its own grants can
-   carry on with what it has instead of waiting for something it does not need.
+1. **The leases it already holds — named, not keyed.** Each is identified by its lease identifier,
+   state, purpose, browser and expiry, so a caller that lost track of its own grants can carry on
+   with what it has instead of waiting for something it does not need. **The keys are deliberately
+   absent, and cannot be otherwise:** only a hash is stored (§1.3) and a key is unrecoverable by
+   construction (§2.2), so there is nothing to look up. The caller was handed each key on the
+   response that granted it, and matches them against these identifiers itself. Returning keys here
+   would require a key store, which would delete the single best security property in this design to
+   save a caller one lookup of its own records.
 2. **Start with what you hold.** The strongest advice, because it is frequently self-solving —
    finishing the work on a held tab frees capacity the same caller can then reuse. It unblocks itself
    by working rather than by waiting.
