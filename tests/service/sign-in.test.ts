@@ -128,6 +128,20 @@ test('THE PRIVATE BROWSER IS REFUSED — an ephemeral profile keeps no sign-in',
     // §5.5.1: the failure this prevents is a command that *appears to work*,
     // so the sentence has to say that rather than only saying no.
     assert.match(refusal.message, /ephemeral|discarded/u);
+
+    // **The rule and the sentence must agree.** This was wrong once: the
+    // refusal borrowed `unknown_browser`, so the command reported the rule
+    // `claim.browser_known` while the message correctly explained that the
+    // profile was ephemeral. The private browser *is* one of the two, so a
+    // caller branching on that rule would conclude it had a typo and retry
+    // the identical word forever. The taxonomy looks the rule up from the
+    // code for exactly this reason, which means the wrong rule is only ever
+    // fixable by using the right code.
+    assert.equal(refusal.code, 'cannot_sign_in');
+    assert.equal(refusal.rule, SIGN_IN_RULES.serving);
+    assert.notEqual(refusal.rule, 'claim.browser_known', 'refused as though the name were wrong');
+    // And waiting will never help, so it must not invite a retry.
+    assert.equal(refusal.retryable, false);
     assert.match(
       refusal.message,
       new RegExp(SIGNABLE_BROWSER, 'u'),
@@ -325,6 +339,6 @@ test('a refused sign-in is in the ledger too, so a guard firing is visible', asy
       "SELECT guard FROM events WHERE kind = 'browser_signin_began' AND outcome = 'deny'",
     );
     assert.equal(rows.length, 1, 'the refused sign-in left no ledger row');
-    assert.equal(rows[0]?.guard, SIGN_IN_RULES.noLiveLeases);
+    assert.equal(rows[0]?.guard, SIGN_IN_RULES.busyForLogin);
   });
 });

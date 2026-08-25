@@ -50,14 +50,30 @@ import { append } from '../events.ts';
  * denials reads as a person signing in rather than as a browser fault.
  */
 
-/** The refusal rules this module raises, spelled as §7.2 spells them. */
+/**
+ * The refusal rules this module raises, **spelled as §7.1 spells them**.
+ *
+ * Named from the design's own table rather than invented here, which is what
+ * §8's fourth parity assertion counts over: *every rule in §7 appears in at
+ * least one refusal the service actually produced*. A rule this file made up
+ * would satisfy nothing and would be invisible to that count — and the build
+ * check that reconciles cited rules against the design refuses it outright.
+ */
 export const SIGN_IN_RULES = {
-  /** A sign-in never happens underneath a caller's work (§5.5.1 step 1). */
-  noLiveLeases: 'signin.no_live_leases',
-  /** Only the browser that has a profile to sign into (§5.5.1, last line). */
-  persistentProfileOnly: 'signin.persistent_profile_only',
-  /** One sign-in at a time, and ending one that never began is a mistake. */
-  stateOrder: 'signin.state_order',
+  /**
+   * §7.1 `browser.busy_for_login`: *"Signing in is refused while any live
+   * lease holds a tab on that browser"*, refused *"naming the leases"*.
+   */
+  busyForLogin: 'browser.busy_for_login',
+  /**
+   * §7.1 `browser.serving`, whose entry says outright that it *"covers
+   * signing-in"* — so a browser handed to a person is refused by the same
+   * rule as one that is failed, starting or stopped. That is the design's
+   * grouping and not this module's: from a caller's side all four are *the
+   * browser is not available right now*, and the retry hint is what
+   * distinguishes the pause from the fault.
+   */
+  serving: 'browser.serving',
 } as const;
 
 /**
@@ -157,13 +173,17 @@ function resolveSignableBrowser(scope: ArbitrationScope, requested: string): Bro
     scope.recordRefusal({
       kind: 'browser_signin_began',
       outcome: 'deny',
-      guard: SIGN_IN_RULES.persistentProfileOnly,
+      guard: SIGN_IN_RULES.serving,
       adapter,
       browserId: requested,
       detail: { requested, signable: SIGNABLE_BROWSER },
     });
     throw new CallRefusal(
-      'unknown_browser',
+      // **Not `unknown_browser`.** The private browser is one of the two, and
+      // refusing it with the code for a name that does not exist made the
+      // command report `claim.browser_known` — telling a person their browser
+      // name was wrong when it was right. See the taxonomy entry.
+      'cannot_sign_in',
       `The ${requested} browser cannot be signed into. Its profile is ephemeral, so everything a sign-in produces is discarded with the browser — the command would appear to work and leave you signed into nothing. Sign in to the ${SIGNABLE_BROWSER} browser, whose profile persists and is the identity every caller shares.`,
       { detail: { requested, signable: SIGNABLE_BROWSER } },
     );
@@ -198,7 +218,7 @@ export function decideBeginSignIn(
     scope.recordRefusal({
       kind: 'browser_signin_began',
       outcome: 'deny',
-      guard: SIGN_IN_RULES.stateOrder,
+      guard: SIGN_IN_RULES.serving,
       adapter,
       browserId: browser,
       detail: { state: row.state },
@@ -257,7 +277,7 @@ export function decideBeginSignIn(
     scope.recordRefusal({
       kind: 'browser_signin_began',
       outcome: 'deny',
-      guard: SIGN_IN_RULES.noLiveLeases,
+      guard: SIGN_IN_RULES.busyForLogin,
       adapter,
       browserId: browser,
       // Which leases, so a person knows who they would interrupt — and
@@ -343,7 +363,7 @@ export function decideEndSignIn(
     scope.recordRefusal({
       kind: 'browser_signin_ended',
       outcome: 'deny',
-      guard: SIGN_IN_RULES.stateOrder,
+      guard: SIGN_IN_RULES.serving,
       adapter,
       browserId: browser,
       detail: { state: row.state },
