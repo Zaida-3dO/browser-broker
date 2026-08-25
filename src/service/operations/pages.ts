@@ -22,6 +22,10 @@ import { BrokerError } from '../../errors.ts';
 import type { ArtifactStore } from '../../artifacts/store.ts';
 import { takeCapture } from '../../capture/pipeline.ts';
 import { capturesTakenBy, recordCapture } from '../capture-store.ts';
+import { captureSource } from '../capture-seam.ts';
+import { insertComparison } from '../comparison-store.ts';
+import { runComparison, type ComparisonResult } from '../comparison.ts';
+import { DEFAULT_DIFF_SETTINGS, type DiffSettings } from '../../diff/settings.ts';
 
 /**
  * The six tab-addressed operations, joined to the arbitration transaction.
@@ -660,6 +664,33 @@ export interface CaptureInput extends TabOperationInput {
    * pair — see {@link decideCapture}.
    */
   readonly artifacts?: ArtifactStore;
+  /**
+   * An earlier capture to diff against — `compare_to` on the tool surface and
+   * `--compare-to` on the command line (§3.11).
+   *
+   * **Optional, and its absence is the ordinary case.** §3.11 makes the diff
+   * *an argument on a capture* rather than an operation of its own, which is
+   * the property that decides every branch downstream: a capture that cannot
+   * find what it was told to compare against still took the picture, so it
+   * returns the picture with a sentence rather than a refusal.
+   *
+   * Nothing in the capture pipeline sees this field. It is read here, in the
+   * service operation, after `takeCapture` has already returned — which is
+   * what keeps `capture.no_diff_dependency` (§7.3) true: the closure the
+   * check walks starts at `src/capture/pipeline.ts`, and the pipeline neither
+   * receives this argument nor knows a comparison exists.
+   */
+  readonly compareTo?: string;
+  /**
+   * The five numbers that decide a diff's output (§6.2).
+   *
+   * Supplied by the caller that read the environment once, rather than read
+   * here, for the reason §6.3 gives: one snapshot per process, so every rule
+   * inside one operation sees one configuration. Defaulted rather than
+   * required so that every existing caller and every test that never diffs is
+   * unaffected by the field existing.
+   */
+  readonly diffSettings?: DiffSettings;
 }
 
 export interface CaptureResult extends TabOperationResult {
@@ -678,6 +709,21 @@ export interface CaptureResult extends TabOperationResult {
     readonly height: number;
     readonly bytes: number;
   };
+  /**
+   * What the diff produced, present only when `compareTo` was supplied.
+   *
+   * **Absent when no diff was asked for, and present-but-`diffed: false` when
+   * one was asked for and could not run.** Those are different facts and
+   * collapsing them would make "you did not ask" and "you asked and it could
+   * not find the target" the same answer — the confusion §1.9 spends a
+   * section preventing, and the reason the field is optional rather than
+   * always carrying a null-ish result.
+   *
+   * It carries `comparedAgainst` echoed back and `truncated` when the region
+   * cap bit, both of which §1.9 requires the caller be told rather than left
+   * to assume.
+   */
+  readonly comparison?: ComparisonResult;
 }
 
 /**
@@ -720,7 +766,12 @@ export function decideCapture(
   const takenBefore = input.artifacts === undefined ? 0 : capturesTakenBy(scope.db, lease.claimId);
 
   let written: CaptureResult['capture'];
+  // Set inside the after-commit closure, read by the getter below — the same
+  // arrangement `written` uses and for the same reason: neither value exists
+  // until the work has run.
+  let compared: ComparisonResult | undefined;
   const artifacts = input.artifacts;
+  const compareTo = input.compareTo;
 
   const work = afterCommitWork(scope, input, tab, async (session, page) => {
     if (artifacts === undefined) {
@@ -769,6 +820,64 @@ export function decideCapture(
       height: taken.height,
       bytes: taken.bytes,
     };
+
+    // ── The diff, when one was asked for (§3.11, §1.9) ──────────────────
+    //
+    // **Here, and not one line earlier.** Three separate rules put it at this
+    // exact point and they agree:
+    //
+    // 1. §2.4b — never browser I/O inside the arbitration transaction. This
+    //    whole closure is after-commit, so the shutter above already obeyed
+    //    that. The comparison itself is arithmetic over two decoded images
+    //    and some file writes: no browser, no seam method, nothing that could
+    //    reintroduce the thing that rule forbids.
+    // 2. §1.7 order — the `captures` row is written above, *before* this
+    //    runs, because the comparison names that capture as its source and a
+    //    row referencing one that does not exist yet is a foreign key waiting
+    //    to fail.
+    // 3. `capture.no_diff_dependency` (§7.3) — the direction still runs one
+    //    way. This module reads the diff feature; the diff feature does not
+    //    read this. `takeCapture` was handed no comparison argument and
+    //    returned before any of this was considered, so the pipeline remains
+    //    a module that could be built with the diff feature deleted.
+    //
+    // **Nothing here can fail the capture.** `runComparison` throws only on a
+    // programming mistake and returns an explanation for every caller-caused
+    // failure, so a diff that cannot run leaves `written` exactly as it is
+    // above and the caller still gets its picture — which is §3.11's rule that
+    // an optional argument may not withhold the thing it is optional on.
+    if (compareTo !== undefined) {
+      const source = captureSource(scope.db, artifacts);
+      const justTaken = {
+        id: taken.captureId,
+        claimId: lease.claimId,
+        path: taken.path,
+        kind: taken.telemetry.kind,
+        width: taken.width,
+        height: taken.height,
+      };
+      compared = await runComparison({
+        capture: justTaken,
+        // **Read back through the seam rather than kept from the pipeline.**
+        // `takeCapture` returns `bytes` as a *file size*, not the image, and
+        // deliberately so — §3.11 is emphatic that a capture result carries
+        // "a path, the dimensions … **Never the image**", and `CaptureResult`
+        // has no field that could hold pixels. So the bytes are read from the
+        // file just written, through `ArtifactStore.resolve` — the single
+        // implementation that refuses a path escaping the root in either
+        // namespace. Reading the file directly would have meant a second
+        // resolver, and the second one is the one missing a case.
+        captureBytes: await source.readBytes(justTaken),
+        targetCaptureId: compareTo,
+        source,
+        settings: input.diffSettings ?? DEFAULT_DIFF_SETTINGS,
+        artifacts,
+        // The row is written through the same handle every other write in
+        // this closure uses, so a comparison and the capture it describes
+        // cannot end up in different states of the store.
+        writeRow: (row) => insertComparison(scope.db, row),
+      });
+    }
   });
 
   return {
@@ -783,6 +892,12 @@ export function decideCapture(
         // would always be absent.
         get capture() {
           return written;
+        },
+        // A getter for the same reason `capture` is one. Stays `undefined`
+        // when no diff was asked for, which is what distinguishes "you did
+        // not ask" from a comparison that ran and found nothing.
+        get comparison() {
+          return compared;
         },
       },
       work,
