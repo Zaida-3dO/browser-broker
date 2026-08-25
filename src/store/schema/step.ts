@@ -47,20 +47,29 @@ export async function stepSchema(
   steps: readonly Step[] = STEPS,
   expected: number = EXPECTED_VERSION,
 ): Promise<StepResult> {
-  const from = readStoreVersion(db);
+  // ── The version is read OUTSIDE the transaction only to decide whether to
+  //    open one, and is read AGAIN INSIDE it before anything is applied ────
+  //
+  // **This read decides nothing on its own.** It exists so that the ordinary
+  // case — a store already at the right version, which is every spawn after
+  // the first — costs a pragma rather than a transaction. Every decision that
+  // matters is taken again below, inside the transaction, against a version
+  // re-read there.
+  //
+  // A reader tempted to trust this value and delete the re-read should know
+  // what that costs: it is the defect this function was changed to fix.
+  const observed = readStoreVersion(db);
 
-  if (from > expected) {
+  if (observed > expected) {
     throw new StartupRefusal(
       'startup.schema_stepped',
-      `The store is at schema version ${String(from)} and this build understands version ${String(expected)}. A store newer than the build is refused rather than downgraded: two callers on different builds against one store is ordinary here, and guessing is how one of them corrupts it. Upgrade this installation.`,
+      `The store is at schema version ${String(observed)} and this build understands version ${String(expected)}. A store newer than the build is refused rather than downgraded: two callers on different builds against one store is ordinary here, and guessing is how one of them corrupts it. Upgrade this installation.`,
     );
   }
 
-  if (from === expected) {
-    return { from, to: expected, applied: [] };
+  if (observed === expected) {
+    return { from: observed, to: expected, applied: [] };
   }
-
-  const pending = steps.filter((step) => step.version > from).sort((a, b) => a.version - b.version);
 
   // ── Foreign keys are suspended for the duration of the steps ────────────
   //
@@ -101,6 +110,61 @@ export async function stepSchema(
     // rebuild it was suspended for. The await is what makes the restore
     // happen after the steps rather than during them.
     return await immediate(db, () => {
+      // ══════════════════════════════════════════════════════════════════
+      // THE VERSION IS READ AGAIN HERE, AND THIS READ IS THE ONE THAT COUNTS
+      // ══════════════════════════════════════════════════════════════════
+      //
+      // **The defect this closes.** The version used to be read once, outside
+      // the transaction, and the steps derived from it. Two processes spawning
+      // simultaneously against an empty store both read zero, both decided
+      // step one was pending, and the loser ran a `CREATE TABLE` the winner
+      // had already committed — `table browsers already exists`.
+      //
+      // That is not an exotic race here. The service is **spawned per session
+      // and exits with it**, so two callers starting at once is the ordinary
+      // case, and it is exactly what a fresh install hits: the first two
+      // agents to reach for a browser on a machine that has never run this.
+      //
+      // **Why re-reading inside is sufficient.** `immediate` issues
+      // `BEGIN IMMEDIATE`, which declares intent to write at the moment it
+      // opens, so the store serialises the two writers itself rather than
+      // letting both proceed and discovering the conflict at the end (§1.0a).
+      // The loser therefore does not enter this callback until the winner has
+      // committed, and the version it reads here is the version the winner
+      // stamped. It finds nothing pending and applies nothing.
+      //
+      // This is the same read-then-write window every arbitration path closes
+      // the same way. The stepper is not an arbitration path, but it has the
+      // identical shape of problem and takes the identical answer.
+      const from = readStoreVersion(db);
+
+      // The winner of the race stamped the expected version while this
+      // process waited to enter. §1.2d's promise — a store already at the
+      // right version is left untouched — now holds for the first two spawns
+      // as well as for every later one.
+      if (from === expected) {
+        return { value: { from, to: expected, applied: [] } };
+      }
+
+      // Re-checked inside as well, and not merely for symmetry: between the
+      // read above and this one another process may have stepped the store
+      // **past** what this build understands. Refusing here rather than
+      // stepping onto a store a newer build owns is the same refusal §7.2
+      // makes outside, applied to the version that is actually current.
+      if (from > expected) {
+        throw new StartupRefusal(
+          'startup.schema_stepped',
+          `The store is at schema version ${String(from)} and this build understands version ${String(expected)}. A store newer than the build is refused rather than downgraded: two callers on different builds against one store is ordinary here, and guessing is how one of them corrupts it. Upgrade this installation.`,
+        );
+      }
+
+      // Derived from the version read **inside** the transaction, so the
+      // steps applied are the ones actually still pending rather than the
+      // ones that were pending when this process first looked.
+      const pending = steps
+        .filter((step) => step.version > from)
+        .sort((a, b) => a.version - b.version);
+
       const applied: number[] = [];
       for (const step of pending) {
         step.apply(db);
