@@ -33,6 +33,22 @@ import { withCounterStore } from './stores.ts';
  * makes the passing arm mean something, so it is asserted rather than
  * observed — and its assertion message says outright that a green deferred
  * run is a broken control rather than good news.
+ *
+ * ── The control is asserted on quantity, and can refuse to conclude ──────
+ *
+ * Two things distinguish this from the version that reported green on a CI
+ * runner where contention had collapsed:
+ *
+ * - **It asserts how much failed, not that anything did.** `failed.length > 0`
+ *   is satisfied by a run where 4 of 25 failed, which is contention nearly
+ *   gone. {@link DEFERRED_FAILURE_FLOOR} carries the measurements.
+ * - **It refuses to draw a conclusion when the barrier could not line the
+ *   children up**, rather than reporting whatever the thin overlap produced.
+ *   A run that could not establish its own premise is reported as such, and
+ *   deliberately not as a statement about the transaction mode.
+ *
+ * Neither is a relaxation. Both make this arm harder to satisfy, which is the
+ * only direction a control may ever be moved.
  */
 
 const require = createRequire(import.meta.url);
@@ -48,6 +64,42 @@ const Database = require('better-sqlite3') as typeof import('better-sqlite3');
  */
 const IMMEDIATE_PROCESSES = 30;
 const DEFERRED_PROCESSES = 25;
+
+/**
+ * The fewest deferred failures this run will accept as evidence.
+ *
+ * ── Why there is a floor at all, rather than `failed.length > 0` ─────────
+ *
+ * **`> 0` is satisfied by a control that has almost entirely stopped
+ * working.** Measured on this repository by varying only the start barrier's
+ * lead time, deferred failures out of 25:
+ *
+ * | lead    | failures per run   |
+ * |---------|--------------------|
+ * | 4000 ms | 22, 23, 23, 23, 23 |
+ * | 800 ms  | 23, 23, 22         |
+ * | 400 ms  | 10, 7, 10          |
+ * | 100 ms  | 8, 9, 4, 7         |
+ * | 50 ms   | 4, 5, 6, 4         |
+ *
+ * Every one of those runs passed `> 0`. A collapse from 23 to 4 is the
+ * contention nearly gone, and the loose assertion reports it as success —
+ * which is how a hosted runner reported this control green on one run and red
+ * on the next, and it is also how a reviewer reading only the assertion
+ * concluded a barrier change had done nothing when measuring the mechanism
+ * showed it had inverted the result.
+ *
+ * **This is not a relaxation and must never become one.** The test's own
+ * comment forbids allowing zero failures, and this raises the bar rather than
+ * lowering it: a run that fails here and would have passed before is a run
+ * whose contention had degraded to the point of proving nothing.
+ *
+ * Set well below the measured floor with the rendezvous barrier in place
+ * (19–23 across every lead time tried) so that ordinary variation on a busy
+ * runner does not fail it, and well above the collapsed regime (4–10) so that
+ * a barrier that has stopped working cannot pass it.
+ */
+const DEFERRED_FAILURE_FLOOR = 15;
 
 /**
  * How long each child holds its read-then-write window open, in milliseconds.
@@ -114,25 +166,52 @@ test('the deferred control fails, which is what makes the immediate result mean 
       argv: [databasePath, 'deferred', String(WIDEN_MS)],
     });
 
+    // ── Refuse to conclude when the run could not establish contention ──
+    //
+    // A child that was never released raises rather than contending alone, so
+    // this is the run saying its own premise did not hold. It is reported
+    // separately from the assertion below because the two mean different
+    // things: this one says **the experiment did not happen**, while the one
+    // below says the experiment happened and produced the wrong answer.
+    // Collapsing them would report a broken harness as a broken store.
+    const notRun = run.failed.filter((outcome) =>
+      /rendezvous timed out/.test(outcome.message ?? ''),
+    );
+    assert.equal(
+      notRun.length,
+      0,
+      `THIS RUN CANNOT DRAW A CONCLUSION: ${String(notRun.length)} of ${String(DEFERRED_PROCESSES)} processes were ` +
+        `never released by the start barrier, so they did not overlap and their outcomes measure nothing. This is ` +
+        `not a statement about the transaction mode — it is the harness reporting that it could not create the ` +
+        `conditions the statement requires. First said: ${String(notRun[0]?.message)}`,
+    );
+
     // ── The assertion this whole file exists for ────────────────────────
     //
-    // If this fails because nothing failed, **the control has stopped
+    // If this fails because too little failed, **the control has stopped
     // controlling**: either the contention is not real (most likely the start
     // barrier in `harness.ts` fails to line the children up) or the store's
     // configuration differs from what this assumes. Either way the immediate
     // arm above is quietly not evidence of anything, because it lacks a case
     // that fails to be compared against.
     //
-    // Do not "fix" this by relaxing it to allow zero failures. The correct
-    // repair is to restore the contention.
+    // **Asserted on the quantity rather than on `failed.length > 0`.** The
+    // loose form passes on a run where contention has almost entirely
+    // collapsed — see {@link DEFERRED_FAILURE_FLOOR} for the measurements —
+    // and a control that only *sometimes* controls stops being one.
+    //
+    // Do not "fix" this by relaxing it, and in particular do not lower the
+    // floor to whatever the failing run produced. The correct repair is to
+    // restore the contention.
     assert.ok(
-      run.failed.length > 0,
-      `THE FAILING CONTROL PASSED, WHICH MEANS THIS SUITE HAS STOPPED PROVING ANYTHING. ` +
-        `All ${String(DEFERRED_PROCESSES)} deferred processes committed. A deferred transaction with a widened ` +
-        `read-then-write window is expected to fail under real contention; it passes at low contention, so a green ` +
-        `run here says the processes did not actually overlap rather than that deferred is safe. The immediate ` +
-        `assertion above is only evidence while this one fails. Restore the contention — check the start barrier ` +
-        `in harness.ts — rather than relaxing this assertion.`,
+      run.failed.length >= DEFERRED_FAILURE_FLOOR,
+      `THE FAILING CONTROL HAS STOPPED CONTROLLING, WHICH MEANS THIS SUITE HAS STOPPED PROVING ANYTHING. ` +
+        `Only ${String(run.failed.length)} of ${String(DEFERRED_PROCESSES)} deferred processes failed, and this run ` +
+        `requires at least ${String(DEFERRED_FAILURE_FLOOR)}. A deferred transaction with a widened read-then-write ` +
+        `window fails 19-23 times in 25 under real contention; it passes at low contention, so a low count here says ` +
+        `the processes did not actually overlap rather than that deferred is safe. The immediate assertion above is ` +
+        `only evidence while this one fails properly. Restore the contention — check the start barrier in ` +
+        `harness.ts — rather than lowering this floor. Codes seen: ${JSON.stringify(run.codes)}.`,
     );
 
     // And it fails the specific way §1.0a describes: a busy-snapshot error,
