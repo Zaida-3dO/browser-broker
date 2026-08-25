@@ -153,6 +153,27 @@ jobs:
       - run: npm ci
       - run: npm run check:install
 
+  # Drive the shipped executables and assert they reach the service.
+  #
+  # This is its own job rather than a case in the suite because of what it
+  # refuses to do: it injects nothing. Every test in the suite hands a service
+  # to the dispatcher — correctly, since that injection is the seam that lets
+  # the command line be driven in process at all — and so not one of them can
+  # observe whether the binary builds one by itself. That is the claim a user
+  # depends on, and it needs a job that spawns the executables the manifest
+  # names and speaks to them over real pipes.
+  operations:
+    name: operations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      - run: npm run check:operations
+
   # Windows earns a job because the network-location refusal has a
   # platform-specific path that would otherwise never execute in continuous
   # integration at all. A hosted runner has nothing mapped, so this proves the
