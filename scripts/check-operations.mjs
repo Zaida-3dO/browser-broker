@@ -350,6 +350,73 @@ export async function runOperationsCheck() {
       `exit ${String(feedback.code)}; stdout: ${feedback.stdout.trim()} stderr: ${feedback.stderr.trim()}`,
     );
 
+    // ── A feedback row carries the lease it was written about ────────────
+    //
+    // Submitting with a lease key attaches `leaseKeyHash`, which resolves to
+    // the granting lease's `claim_id`. Nothing pinned that: dropping the
+    // attachment entirely left the whole suite and this check green, because
+    // the only assertion on feedback was that a row was written at all, and
+    // a row is still written without it.
+    //
+    // Both halves are asserted, and the pair is the point. A check that only
+    // looked for a lease on the keyed row would pass against a build that
+    // stamped every row with something, and a check that only looked for its
+    // absence on the unkeyed row would pass against a build that attached
+    // nothing at all — which is exactly the mutation that survived. Together
+    // they say the attachment tracks the key.
+    //
+    // Read back through the *other* binary, which prints the resolved lease
+    // rather than the hash — so this measures the thing the column is for
+    // (a row bound to the lease it describes) rather than that a field is
+    // non-null.
+    const keyedFeedback = await spawnBinary(
+      COMMAND_LINE,
+      [
+        'feedback',
+        '--rating',
+        '5',
+        '--category',
+        'worked-well',
+        '--note',
+        'submitted while holding the lease this check granted',
+        '--lease-key',
+        granted?.value?.key ?? 'no-key-was-granted',
+        '--json',
+      ],
+      { env: environment },
+    );
+    check(
+      'broker feedback accepts a submission carrying a lease key',
+      keyedFeedback.code === 0,
+      `exit ${String(keyedFeedback.code)}; stdout: ${keyedFeedback.stdout.trim()} stderr: ${keyedFeedback.stderr.trim()}`,
+    );
+
+    const feedbackRows = await spawnBinary(COMMAND_LINE, ['feedback'], { env: environment });
+    const keyedLine = feedbackRows.stdout
+      .split('\n')
+      .findIndex((line) => line.includes('submitted while holding the lease this check granted'));
+    const unkeyedLine = feedbackRows.stdout
+      .split('\n')
+      .findIndex((line) =>
+        line.includes('the operations check drove this through the shipped executable'),
+      );
+    const lines = feedbackRows.stdout.split('\n');
+
+    // The context line sits directly above the note in each entry.
+    const keyedContext = keyedLine > 0 ? (lines[keyedLine - 1] ?? '') : '';
+    const unkeyedContext = unkeyedLine > 0 ? (lines[unkeyedLine - 1] ?? '') : '';
+
+    check(
+      'a feedback row submitted with a lease resolves to the lease that granted it',
+      typeof granted?.value?.claimId === 'string' && keyedContext.includes(granted.value.claimId),
+      `the entry read back as ${JSON.stringify(keyedContext)}, expecting lease ${String(granted?.value?.claimId)}`,
+    );
+    check(
+      'a feedback row submitted without a lease is bound to none',
+      unkeyedContext.includes('no context was captured'),
+      `the entry read back as ${JSON.stringify(unkeyedContext)}`,
+    );
+
     // ── The tool shim drives a whole lease, in one session ────────────────
     //
     // The stdio surface is the route a calling agent uses, and it is the one
