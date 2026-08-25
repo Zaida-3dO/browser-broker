@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { BrowserSession, TabHandle } from '../../src/browser/driver.ts';
 import { CAPTURES_BEFORE_WARNING } from '../../src/capture/tiers.ts';
 import { blankImage, encodePng } from '../../src/diff/image.ts';
+import { BrokerError } from '../../src/errors.ts';
 import { claimInput, withBroker, type BrokerFixture } from '../helpers/broker.ts';
 
 /**
@@ -210,6 +211,84 @@ test('a browser that works reports the page as driven', async () => {
     // to `false` would satisfy every test above — which is exactly the shape
     // where correct and incorrect behaviour coincide.
     assert.equal(result.pageDriven, true);
+  });
+});
+
+test('a page that was not driven says WHY, in the words the failure gave', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+
+    // ── Why the fact alone was not enough ────────────────────────────────
+    //
+    // `pageDriven: false` is honest and it is not actionable: the causes want
+    // opposite responses. A browser that will not launch is not the caller's
+    // to fix; a stale element reference is fixed by reading the page again,
+    // which a caller can do immediately and unattended. Telling the two apart
+    // is the difference between a caller that can recover by itself and one
+    // that can only give up.
+    const result = await fixture.broker.navigate({
+      key: lease.key,
+      tabId: lease.tabId,
+      url: 'https://example.com/',
+      session: () => brokenSession(new Error('the browser stopped answering')),
+    });
+
+    assert.equal(result.pageDriven, false);
+
+    // **The failure's own words, not a generic label.** Asserting merely that
+    // the field is a non-empty string would pass on a hard-coded "something
+    // went wrong", which carries no more information than `pageDriven` did.
+    assert.match(
+      String(result.notDrivenReason),
+      /the browser stopped answering/u,
+      'the reason names what actually failed',
+    );
+  });
+});
+
+test('a refusal from the driver arrives with its RULE, not only its English', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+
+    // A `BrokerError` is how the driver refuses — an unresolvable element
+    // reference being the case this was built for. The rule is the half a
+    // caller branches on without matching on prose, so it has to survive the
+    // trip out; carrying only the message would leave a caller parsing
+    // English to decide whether to re-read the page.
+    const refusal = new BrokerError(
+      'act.ref_resolves',
+      'No element on this page matches the reference "e4".',
+    );
+
+    const result = await fixture.broker.navigate({
+      key: lease.key,
+      tabId: lease.tabId,
+      url: 'https://example.com/',
+      session: () => brokenSession(refusal),
+    });
+
+    assert.equal(result.pageDriven, false);
+    assert.match(String(result.notDrivenReason), /act\.ref_resolves/u, 'the rule survives');
+    assert.match(String(result.notDrivenReason), /reference "e4"/u, 'and so does the detail');
+  });
+});
+
+test('a page that WAS driven carries no reason, so the field is never a stale excuse', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+
+    const result = await fixture.broker.navigate({
+      key: lease.key,
+      tabId: lease.tabId,
+      url: 'https://example.com/',
+      session: () => workingSession(),
+    });
+
+    // **The other half of the pair**, and the one that stops the field being
+    // written unconditionally: a reason attached to a call that worked would
+    // be read as a failure by anything branching on its presence.
+    assert.equal(result.pageDriven, true);
+    assert.equal(result.notDrivenReason, undefined);
   });
 });
 
