@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 import { hasNetworkShareRoot, type NetworkPathChecks } from '../../src/store/network-path.ts';
 
 /**
@@ -63,4 +65,17 @@ export function checksReporting(options: {
       return type === undefined ? undefined : { type };
     },
   };
+}
+
+/**
+ * A file at the root of this repository, resolved from this module's own
+ * location.
+ *
+ * Computed rather than written down, for the same reason every other path in
+ * this file is composed: an absolute path is machine-specific and the hygiene
+ * gate refuses one in a tracked file. It is also the only way a test that reads
+ * a committed file works regardless of the directory the suite is run from.
+ */
+export function repositoryFile(...segments: string[]): string {
+  return fileURLToPath(new URL(`../../${segments.join('/')}`, import.meta.url));
 }

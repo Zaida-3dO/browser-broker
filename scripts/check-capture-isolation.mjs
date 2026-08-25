@@ -118,7 +118,18 @@ const CAPTURE_ENTRY_POINTS = ['src/capture/pipeline.ts'];
  * **before** the tempting code exists, or it arrives after the first violation
  * rather than before it.
  */
-const DIFF_OWNED = ['src/diff/', 'src/comparison/'];
+const DIFF_OWNED = [
+  'src/diff/',
+  'src/comparison/',
+  // The diff feature also owns three modules that live beside the service
+  // layer rather than under a directory of their own, because they are service
+  // operations rather than image arithmetic. **Named individually**, since a
+  // prefix of `src/service/` would make the whole service layer diff-owned and
+  // this check would then refuse every legitimate capture import.
+  'src/service/comparison.ts',
+  'src/service/comparison-store.ts',
+  'src/service/artifacts.ts',
+];
 
 /**
  * Constructs that would load a module by a name this walk cannot follow.
