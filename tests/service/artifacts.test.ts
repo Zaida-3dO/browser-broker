@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import test from 'node:test';
 
-import { resolveArtifact } from '../../src/diff/artifact-path.ts';
+import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { decodePng } from '../../src/diff/image.ts';
 import { DEFAULT_DIFF_SETTINGS } from '../../src/diff/settings.ts';
 import {
@@ -46,7 +46,7 @@ import { makeTempStore } from '../helpers/temp-store.ts';
 
 interface Harness {
   readonly rawDb: Parameters<typeof insertClaim>[0];
-  readonly artifactsRoot: string;
+  readonly artifacts: ArtifactStore;
   readonly claimId: string;
   readonly tabId: string;
   readonly captures: CaptureLookup;
@@ -57,13 +57,14 @@ async function withHarness(fn: (harness: Harness) => Promise<void>): Promise<voi
   try {
     const store = await prepareStore(temp.environment);
     try {
+      const artifacts = new ArtifactStore(temp.environment.artifactsRoot);
       const claimId = insertClaim(store.db);
       const tabId = insertTab(store.db, claimId);
-      const source = storeBackedCaptureSource(store.db, temp.environment.artifactsRoot);
+      const source = storeBackedCaptureSource(store.db, artifacts);
 
       await fn({
         rawDb: store.db,
-        artifactsRoot: temp.environment.artifactsRoot,
+        artifacts,
         claimId,
         tabId,
         captures: {
@@ -89,19 +90,19 @@ async function comparisonFor(harness: Harness): Promise<{
 }> {
   const before = filled(400, 300, WHITE);
   const after = withRectangle(before, { x: 100, y: 100, width: 80, height: 40 }, BLACK);
-  const source = storeBackedCaptureSource(harness.rawDb, harness.artifactsRoot);
+  const source = storeBackedCaptureSource(harness.rawDb, harness.artifacts);
 
   const target = await insertCapture(harness.rawDb, {
     claimId: harness.claimId,
     tabId: harness.tabId,
     image: before,
-    artifactsRoot: harness.artifactsRoot,
+    artifacts: harness.artifacts,
   });
   const current = await insertCapture(harness.rawDb, {
     claimId: harness.claimId,
     tabId: harness.tabId,
     image: after,
-    artifactsRoot: harness.artifactsRoot,
+    artifacts: harness.artifacts,
   });
 
   const result = await runComparison({
@@ -110,7 +111,7 @@ async function comparisonFor(harness: Harness): Promise<{
     targetCaptureId: target.id,
     source,
     settings: DEFAULT_DIFF_SETTINGS,
-    artifactsRoot: harness.artifactsRoot,
+    artifacts: harness.artifacts,
     writeRow: (row) => insertComparison(harness.rawDb, row),
   });
 
@@ -132,14 +133,14 @@ test('a capture and a crop come back in the identical shape', async () => {
 
     const capture = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'capture', captureId },
     });
     const crop = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'region', comparisonId, index: 0, side: 'before' },
@@ -176,12 +177,12 @@ test('there is no size cap and no inline branch — a large artifact serves the 
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: big,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const outcome = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'capture', captureId: capture.id },
@@ -200,7 +201,7 @@ test('the overlay is served by naming the comparison, and it decodes at the full
 
     const outcome = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'overlay', comparisonId },
@@ -221,14 +222,14 @@ test('the two sides of one region are different images', async () => {
 
     const before = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'region', comparisonId, index: 0, side: 'before' },
     });
     const after = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'region', comparisonId, index: 0, side: 'after' },
@@ -262,19 +263,19 @@ test("another lease's capture is refused, in the same words as one that does not
       claimId: otherClaim,
       tabId: otherTab,
       image: filled(400, 300, WHITE),
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const notMine = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'capture', captureId: theirs.id },
     });
     const notThere = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'capture', captureId: 'no-such-capture' },
@@ -307,7 +308,7 @@ test("another lease's comparison is refused for its overlay and for its crops", 
     ]) {
       const outcome = await fetchArtifact({
         db: harness.rawDb,
-        artifactsRoot: harness.artifactsRoot,
+        artifacts: harness.artifacts,
         claimId: stranger,
         captures: harness.captures,
         request,
@@ -329,7 +330,7 @@ test('a region index past the end is refused rather than serving something else'
 
     const outcome = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'region', comparisonId, index: regionCount + 5, side: 'before' },
@@ -349,7 +350,7 @@ test('a negative region index is refused', async () => {
 
     const outcome = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'region', comparisonId, index: -1, side: 'before' },
@@ -369,13 +370,13 @@ test('a recorded artifact whose file is missing says so, distinctly from not fou
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: filled(400, 300, WHITE),
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
-    await fs.rm(resolveArtifact(harness.artifactsRoot, capture.path));
+    await fs.rm(harness.artifacts.resolve(capture.path));
 
     const outcome = await fetchArtifact({
       db: harness.rawDb,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       claimId: harness.claimId,
       captures: harness.captures,
       request: { kind: 'capture', captureId: capture.id },

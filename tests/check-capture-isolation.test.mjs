@@ -160,6 +160,56 @@ test('SEEDED VIOLATION: no capture entry point at all FAILS rather than passing 
   });
 });
 
+test('SEEDED VIOLATION: a diff-owned module named as a FILE is caught, not only a directory', () => {
+  // M8 added three diff-owned modules that live beside the service layer
+  // rather than under a directory of their own, so DIFF_OWNED carries file
+  // entries as well as directory prefixes. **The two forms match by different
+  // code paths** — a prefix test and an exact-equality test — so a directory
+  // seed passes while the file form is broken, and the several seeds above are
+  // all of the directory form.
+  //
+  // This is the one that fails if the file form stops being matched, which
+  // would silently un-protect `src/service/comparison.ts` and its two
+  // neighbours while every other assertion in this file stayed green.
+  withTree(
+    {
+      'src/capture/pipeline.ts': `import { run } from '../service/comparison.ts';
+export const x = run;
+`,
+      'src/service/comparison.ts': `export const run = 1;
+`,
+    },
+    (root) => {
+      const findings = findViolations(root);
+      assert.equal(findings.length, 1);
+      assert.match(findings[0].message, /src\/service\/comparison\.ts/);
+      assert.match(findings[0].message, /belongs to the diff feature/);
+    },
+  );
+});
+
+test('a capture module may still import the service layer generally', () => {
+  // The counterweight, and the reason the three modules are named individually
+  // rather than as a `src/service/` prefix: the capture pipeline legitimately
+  // sits beside the service layer, and a prefix entry would have made every
+  // such import a violation — turning a real rule into one everybody works
+  // around.
+  withTree(
+    {
+      'src/capture/pipeline.ts': `import { tabs } from '../service/tabs.ts';
+export const x = tabs;
+`,
+      'src/service/tabs.ts': `export const tabs = 1;
+`,
+      'src/service/comparison.ts': `export const run = 1;
+`,
+    },
+    (root) => {
+      assert.deepEqual(findViolations(root), []);
+    },
+  );
+});
+
 test('a clean tree passes, so the gate is not merely always-red', () => {
   withTree(
     {

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import type { Database } from 'better-sqlite3';
 
-import { resolveArtifact } from '../diff/artifact-path.ts';
+import type { ArtifactStore } from '../artifacts/store.ts';
 import { findComparison } from './comparison-store.ts';
 
 /**
@@ -57,6 +57,15 @@ import { findComparison } from './comparison-store.ts';
  * `scripts/check-artifact-path.mjs` is what keeps that true as a build rule
  * rather than as an intention, and it ships with a seeded violation proving it
  * fires.
+ *
+ * ── Resolution belongs to the artifact store, not to this file ──────────
+ *
+ * The one join of a stored path to a location goes through
+ * `ArtifactStore.resolve`, which refuses a path that escapes the root **and**
+ * asks the question in both path namespaces — because a name absolute in the
+ * other namespace is a legal relative filename here, so it resolves quietly
+ * under the root and the computed answer looks clean. A second resolver in
+ * this file would be the one missing that case.
  */
 
 /** The one success shape. Identical for a capture and for a crop. */
@@ -118,7 +127,8 @@ export interface CaptureLookup {
 
 export interface FetchArtifactOptions {
   readonly db: Database;
-  readonly artifactsRoot: string;
+  /** Where files live. The only thing that turns a stored path into a location. */
+  readonly artifacts: ArtifactStore;
   /** The lease asking. Everything is checked against this. */
   readonly claimId: string;
   readonly captures: CaptureLookup;
@@ -177,11 +187,12 @@ export async function fetchArtifact(options: FetchArtifactOptions): Promise<Arti
     return notFound();
   }
 
-  // The one join of a stored path to the root in this file, and it goes
-  // through the single resolver so the containment assertion cannot be
-  // skipped. A throw from here is a constructed path that is wrong — our bug,
-  // not a caller's — and it is deliberately not caught.
-  const absolute = resolveArtifact(options.artifactsRoot, stored);
+  // The one join of a stored path to a location in this file, and it goes
+  // through the artifact store so the containment assertion cannot be skipped
+  // and cannot be a second, weaker copy of itself. A throw from here is a
+  // constructed path that is wrong — our bug, not a caller's — and it is
+  // deliberately not caught.
+  const absolute = options.artifacts.resolve(stored);
 
   try {
     const bytes = await fs.readFile(absolute);

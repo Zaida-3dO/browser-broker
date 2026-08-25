@@ -51,7 +51,19 @@ import { spawnSync } from 'node:child_process';
  * rules apply to it, taken in the diff.
  */
 export const ARTIFACTS_SOURCE = 'src/service/artifacts.ts';
-export const RESOLVER_SOURCE = 'src/diff/artifact-path.ts';
+
+/**
+ * The module that owns turning a stored path into a location.
+ *
+ * **The artifact store, not a resolver of the diff feature's own.** Both
+ * refusals this rule cares about live there, and they ask the question in a way
+ * a second implementation would get wrong: they test the **supplied name as
+ * well as the computed result**, in **both path namespaces**, because a name
+ * absolute in the other namespace is a legal relative filename here and
+ * resolves quietly under the root. Scanning the store rather than a diff-local
+ * copy is what keeps this rule pointed at the code that actually runs.
+ */
+export const RESOLVER_SOURCE = 'src/artifacts/store.ts';
 
 /**
  * Field names that would mean a caller supplies a location.
@@ -89,8 +101,30 @@ export const FORBIDDEN_REQUEST_FIELDS = [
  */
 export const REQUEST_TYPE = 'ArtifactRequest';
 
-/** The single function permitted to join a stored path to the artifact root. */
-export const RESOLVER_NAME = 'resolveArtifact';
+/**
+ * The single method permitted to join a stored path to the artifact root.
+ *
+ * A method on the artifact store rather than a free function, so scan C looks
+ * for a call through a handle rather than for a bare name.
+ */
+export const RESOLVER_NAME = 'resolve';
+
+/**
+ * The predicate that answers "is this absolute", asked of the supplied name.
+ *
+ * Named as a constant so the self-test can seed its removal, and so a rename
+ * of it is a visible edit here rather than a silently weakened scan.
+ */
+export const ABSOLUTE_CHECK = 'isAbsoluteInEitherNamespace';
+
+/**
+ * Both path namespaces, which the refusal must consult explicitly.
+ *
+ * `path.isAbsolute` asks whichever namespace the host process runs in, and the
+ * two disagree — so a guard built on it protects one platform and reports
+ * protection on the other.
+ */
+export const REQUIRED_NAMESPACES = ['path.posix', 'path.win32'];
 
 /**
  * Filesystem calls that take a path directly.
@@ -267,14 +301,20 @@ export function checkResolverIsTheOnlyRoute(sources) {
   const source = stripComments(sources[ARTIFACTS_SOURCE]);
 
   // The resolver is called, and its result is bound to a name.
-  const binding = new RegExp(`const\\s+(\\w+)\\s*=\\s*${RESOLVER_NAME}\\s*\\(`).exec(source);
+  // Reached through a handle — `options.artifacts.resolve(...)` — so the
+  // prefix is part of the shape. Requiring a dotted prefix is deliberate: a
+  // bare `resolve(` in this file would be a local function, which is the
+  // second implementation this rule exists to keep from appearing.
+  const binding = new RegExp(`const\\s+(\\w+)\\s*=\\s*[\\w.]+\\.${RESOLVER_NAME}\\s*\\(`).exec(
+    source,
+  );
   if (binding === null) {
     failures.push({
       rule: 'artifact.no_request_path',
       scan: 'C',
       line: 0,
       detail:
-        `${ARTIFACTS_SOURCE} never calls ${RESOLVER_NAME}. ` +
+        `${ARTIFACTS_SOURCE} never calls the artifact store's ${RESOLVER_NAME}. ` +
         'Either it resolves a path another way, or it serves bytes from a path it did not resolve — the same finding either way.',
     });
     return failures;
@@ -334,24 +374,30 @@ export function checkResolverRefuses(sources) {
   const failures = [];
   const source = stripComments(sources[RESOLVER_SOURCE]);
 
-  if (!new RegExp(`export function ${RESOLVER_NAME}\\s*\\(`).test(source)) {
+  // The resolver is a method on the artifact store. Matched as a declaration
+  // at the start of a line rather than as an exported function, because that
+  // is what it is — and a scan looking for the wrong shape reports nothing,
+  // which reads exactly like a clean tree.
+  // Anchored on the newline and the two-space method indentation, and scanned
+  // globally rather than for the first hit: the bare word also appears as
+  // `path.resolve` inside the class, and a non-global search settles on that
+  // one and reports the method missing.
+  const declaration = [
+    ...source.matchAll(new RegExp(`\n  ${RESOLVER_NAME}\\s*\\(([^)]*)\\)\\s*:\\s*string`, 'g')),
+  ][0];
+  if (declaration === undefined) {
     failures.push({
       rule: 'artifact.no_request_path',
       scan: 'D',
       line: 0,
-      detail: `${RESOLVER_SOURCE} exports no ${RESOLVER_NAME} to check.`,
+      detail:
+        `${RESOLVER_SOURCE} declares no ${RESOLVER_NAME} this check can read. ` +
+        'A rule pointed at a resolver that has moved reports nothing, which reads exactly like a clean tree.',
     });
     return failures;
   }
 
-  // **Named on the stored value specifically**, not merely present in the
-  // file. The resolver legitimately calls `isAbsolute` twice — once on the
-  // input and once on the relative result — so a scan for the bare call is
-  // satisfied by either, and deleting the input check would leave the scan
-  // green. The parameter name is read from the signature rather than assumed,
-  // so a rename is a rename and not a silent hole.
-  const signature = new RegExp(`export function ${RESOLVER_NAME}\\s*\\(([^)]*)\\)`).exec(source);
-  const parameters = (signature?.[1] ?? '').split(',').map((each) => each.trim());
+  const parameters = declaration[1].split(',').map((each) => each.trim());
   const storedParameter = parameters[parameters.length - 1]?.split(':')[0]?.trim();
 
   if (storedParameter === undefined || storedParameter === '') {
@@ -361,22 +407,18 @@ export function checkResolverRefuses(sources) {
       line: 0,
       detail: `${RESOLVER_SOURCE}: the signature of ${RESOLVER_NAME} could not be read, so the refusals below cannot be attributed to the stored path.`,
     });
-  } else if (!new RegExp(`isAbsolute\\s*\\(\\s*${storedParameter}\\s*\\)`).test(source)) {
-    failures.push({
-      rule: 'artifact.no_request_path',
-      scan: 'D',
-      line: 0,
-      detail:
-        `${RESOLVER_SOURCE} does not test whether ${storedParameter}, the stored path, is absolute. ` +
-        'Section 1.7a: every path stored is relative to the artifact root, never absolute.',
-    });
+    return failures;
   }
 
-  // The containment assertion: the resolved value is compared back against the
-  // root. `path.relative` is the shape that does it; a check on the string
-  // before resolution is the one that does not, because `a/../../b` is
-  // innocent-looking until it is resolved.
-  if (!/relative\s*\(/.test(source) || !/startsWith\s*\(\s*['"]\.\.['"]\s*\)/.test(source)) {
+  // ── The three things the refusal has to ask ───────────────────────────
+  //
+  // These are checked as three separate scans rather than as one, because each
+  // catches a different single-character deletion and a combined check would
+  // go green when any two of them survived.
+
+  // 1. The computed result is compared back against the root. A check on the
+  //    stored string alone passes a path that only escapes once resolved.
+  if (!/relative\.startsWith\(\s*['"]\.\.['"]\s*\)/.test(source)) {
     failures.push({
       rule: 'artifact.no_request_path',
       scan: 'D',
@@ -385,6 +427,40 @@ export function checkResolverRefuses(sources) {
         `${RESOLVER_SOURCE} does not assert that the resolved path stays under the artifact root. ` +
         'A check on the stored string before resolution passes a path that only escapes once it is resolved.',
     });
+  }
+
+  // 2. **The supplied name is asked, not only the computed result.** This is
+  //    the check most easily deleted while every test still passes on the
+  //    platform it was written on: a name absolute in the *other* namespace is
+  //    a legal relative filename here, so it resolves quietly under the root
+  //    and the computed answer is clean. Nothing downstream can notice.
+  if (!new RegExp(`${ABSOLUTE_CHECK}\\s*\\(\\s*${storedParameter}\\s*\\)`).test(source)) {
+    failures.push({
+      rule: 'artifact.no_request_path',
+      scan: 'D',
+      line: 0,
+      detail:
+        `${RESOLVER_SOURCE} does not ask whether ${storedParameter}, the supplied path, is absolute in either namespace. ` +
+        'A name absolute in the other namespace is a legal relative filename here, so it resolves quietly under the root and the computed answer looks clean.',
+    });
+  }
+
+  // 3. That question is asked in **both** namespaces. The host platform's own
+  //    answer is the wrong one: the two namespaces disagree about what a root
+  //    is, so a guard using it fires on one platform and not the other — which
+  //    is worse than no guard, because it reports a protection that does not
+  //    exist.
+  for (const namespace of REQUIRED_NAMESPACES) {
+    if (!source.includes(namespace)) {
+      failures.push({
+        rule: 'artifact.no_request_path',
+        scan: 'D',
+        line: 0,
+        detail:
+          `${RESOLVER_SOURCE} never consults ${namespace}, so it reads a path in one namespace only. ` +
+          'The two namespaces disagree about what an absolute path is, so a guard that asks only the host platform fires on one platform and not the other.',
+      });
+    }
   }
 
   return failures;

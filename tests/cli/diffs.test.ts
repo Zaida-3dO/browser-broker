@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { parseDiffsArguments, runDiffs } from '../../src/cli/diffs.ts';
 import { DEFAULT_DIFF_SETTINGS } from '../../src/diff/settings.ts';
 import { insertComparison } from '../../src/service/comparison-store.ts';
@@ -140,7 +141,8 @@ async function withComparisons(fn: (fixture: Fixture) => Promise<void> | void): 
   try {
     const store = await prepareStore(temp.environment);
     try {
-      const source = storeBackedCaptureSource(store.db, temp.environment.artifactsRoot);
+      const artifacts = new ArtifactStore(temp.environment.artifactsRoot);
+      const source = storeBackedCaptureSource(store.db, artifacts);
       const before = filled(300, 200, WHITE);
       const after = withRectangle(before, { x: 40, y: 40, width: 60, height: 40 }, BLACK);
 
@@ -154,13 +156,13 @@ async function withComparisons(fn: (fixture: Fixture) => Promise<void> | void): 
           claimId,
           tabId,
           image: before,
-          artifactsRoot: temp.environment.artifactsRoot,
+          artifacts,
         });
         const current = await insertCapture(store.db, {
           claimId,
           tabId,
           image: after,
-          artifactsRoot: temp.environment.artifactsRoot,
+          artifacts,
         });
         await runComparison({
           capture: current,
@@ -168,7 +170,7 @@ async function withComparisons(fn: (fixture: Fixture) => Promise<void> | void): 
           targetCaptureId: target.id,
           source,
           settings: DEFAULT_DIFF_SETTINGS,
-          artifactsRoot: temp.environment.artifactsRoot,
+          artifacts,
           writeRow: (row) => insertComparison(store.db, row),
         });
         return [target.id, current.id];

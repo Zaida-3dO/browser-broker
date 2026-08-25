@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import test from 'node:test';
 
-import { resolveArtifact } from '../../src/diff/artifact-path.ts';
+import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { decodePng } from '../../src/diff/image.ts';
 import { DEFAULT_DIFF_SETTINGS } from '../../src/diff/settings.ts';
 import { insertComparison, listComparisons } from '../../src/service/comparison-store.ts';
@@ -57,7 +57,7 @@ import { makeTempStore } from '../helpers/temp-store.ts';
  */
 
 interface Harness {
-  readonly artifactsRoot: string;
+  readonly artifacts: ArtifactStore;
   readonly source: CaptureSource;
   readonly claimId: string;
   readonly tabId: string;
@@ -74,14 +74,15 @@ async function withHarness(
   try {
     const store = await prepareStore(temp.environment);
     try {
+      const artifacts = new ArtifactStore(temp.environment.artifactsRoot);
       const claimId = insertClaim(store.db);
       const tabId = insertTab(store.db, claimId);
       const written: ComparisonRow[] = [];
 
       await fn({
         rawDb: store.db,
-        artifactsRoot: temp.environment.artifactsRoot,
-        source: storeBackedCaptureSource(store.db, temp.environment.artifactsRoot),
+        artifacts,
+        source: storeBackedCaptureSource(store.db, artifacts),
         claimId,
         tabId,
         written,
@@ -112,13 +113,13 @@ test('a capture naming an earlier one gets regions, crops, an overlay and a row'
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: before,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: after,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -127,7 +128,7 @@ test('a capture naming an earlier one gets regions, crops, an overlay and a row'
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -158,10 +159,10 @@ test('a capture naming an earlier one gets regions, crops, an overlay and a row'
 
     // **The files exist and decode**, which is the assertion that separates
     // "a path was returned" from "an image was written".
-    assert.ok(await artifactExists(harness.artifactsRoot, region.beforePath));
-    assert.ok(await artifactExists(harness.artifactsRoot, region.afterPath));
+    assert.ok(await artifactExists(harness.artifacts, region.beforePath));
+    assert.ok(await artifactExists(harness.artifacts, region.afterPath));
     assert.ok(result.overlayPath !== null);
-    assert.ok(await artifactExists(harness.artifactsRoot, result.overlayPath));
+    assert.ok(await artifactExists(harness.artifacts, result.overlayPath));
   });
 });
 
@@ -175,13 +176,13 @@ test('both crops come from the same rectangle, and it is padded', async () => {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: before,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: after,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -190,19 +191,15 @@ test('both crops come from the same rectangle, and it is padded', async () => {
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
     const region = result.regions[0];
     assert.ok(region !== undefined);
 
-    const beforeCrop = decodePng(
-      await fs.readFile(resolveArtifact(harness.artifactsRoot, region.beforePath)),
-    );
-    const afterCrop = decodePng(
-      await fs.readFile(resolveArtifact(harness.artifactsRoot, region.afterPath)),
-    );
+    const beforeCrop = decodePng(await fs.readFile(harness.artifacts.resolve(region.beforePath)));
+    const afterCrop = decodePng(await fs.readFile(harness.artifacts.resolve(region.afterPath)));
 
     // **From the same rectangle**, which is the property #42 names. Two crops
     // of different sizes, shown side by side, invite the reader to attribute
@@ -234,13 +231,13 @@ test('a region flush against the page edge is clamped rather than overflowing', 
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: before,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: after,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -249,15 +246,13 @@ test('a region flush against the page edge is clamped rather than overflowing', 
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
     const region = result.regions[0];
     assert.ok(region !== undefined);
-    const crop = decodePng(
-      await fs.readFile(resolveArtifact(harness.artifactsRoot, region.beforePath)),
-    );
+    const crop = decodePng(await fs.readFile(harness.artifacts.resolve(region.beforePath)));
 
     // Padding is applied on the sides where there is room and clamped where
     // there is not: no padding above or to the left, full padding below and
@@ -274,13 +269,13 @@ test('an unchanged pair reports changed false, and writes no crops', async () =>
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: pair.earlier,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: pair.current,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -289,7 +284,7 @@ test('an unchanged pair reports changed false, and writes no crops', async () =>
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -303,7 +298,7 @@ test('an unchanged pair reports changed false, and writes no crops', async () =>
     assert.equal(result.regions.length, 0);
     // The overlay is still written: it is the picture of where nothing was.
     assert.ok(result.overlayPath !== null);
-    assert.ok(await artifactExists(harness.artifactsRoot, result.overlayPath));
+    assert.ok(await artifactExists(harness.artifacts, result.overlayPath));
   });
 });
 
@@ -318,7 +313,7 @@ test('a capture identifier that does not exist returns an explanation, never a r
       claimId: harness.claimId,
       tabId: harness.tabId,
       image,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     // No throw, which is the whole assertion — §1.9: "It never refuses."
@@ -328,7 +323,7 @@ test('a capture identifier that does not exist returns an explanation, never a r
       targetCaptureId: 'a-capture-that-was-never-taken',
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -356,13 +351,13 @@ test("another lease's capture is refused in the same words as one that does not 
       claimId: otherClaim,
       tabId: otherTab,
       image,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const mine = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const theirsResult = await runComparison({
@@ -371,7 +366,7 @@ test("another lease's capture is refused in the same words as one that does not 
       targetCaptureId: theirs.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -381,7 +376,7 @@ test("another lease's capture is refused in the same words as one that does not 
       targetCaptureId: theirs.id.split('').reverse().join(''),
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -411,18 +406,18 @@ test('a capture whose file is missing returns an explanation, not a throw', asyn
       claimId: harness.claimId,
       tabId: harness.tabId,
       image,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     // Deleted by hand. §6.2 says nothing sweeps a capture file, so this is the
     // only way it happens — and it must not take the capture down with it.
-    await fs.rm(resolveArtifact(harness.artifactsRoot, target.path));
+    await fs.rm(harness.artifacts.resolve(target.path));
 
     const result = await runComparison({
       capture: current,
@@ -430,7 +425,7 @@ test('a capture whose file is missing returns an explanation, not a throw', asyn
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -453,13 +448,13 @@ test('two captures of different widths report the mismatch and produce no diff',
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: filled(400, 300, WHITE),
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: filled(600, 300, WHITE),
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -468,7 +463,7 @@ test('two captures of different widths report the mismatch and produce no diff',
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -504,14 +499,14 @@ test('a full page that got longer is compared over the shared rows, and the grow
       tabId: harness.tabId,
       image: shorter,
       kind: 'full_page',
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: tallerFinal,
       kind: 'full_page',
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -520,7 +515,7 @@ test('a full page that got longer is compared over the shared rows, and the grow
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -550,14 +545,14 @@ test('a viewport capture whose height differs produces no diff', async () => {
       tabId: harness.tabId,
       image: filled(400, 300, WHITE),
       kind: 'viewport',
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: filled(400, 500, WHITE),
       kind: 'viewport',
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -566,7 +561,7 @@ test('a viewport capture whose height differs produces no diff', async () => {
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -607,13 +602,13 @@ test('past the region cap the result is truncated, smallest dropped, and it says
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: before,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: after,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const uncapped = await runComparison({
@@ -622,7 +617,7 @@ test('past the region cap the result is truncated, smallest dropped, and it says
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -635,7 +630,7 @@ test('past the region cap the result is truncated, smallest dropped, and it says
       targetCaptureId: target.id,
       source: harness.source,
       settings: { ...DEFAULT_DIFF_SETTINGS, maximumRegions: 3 },
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -665,13 +660,13 @@ test('the comparison row records the three settings that were actually applied',
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: before,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: after,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     // Deliberately not the defaults, so the row proves it copied what was
@@ -689,7 +684,7 @@ test('the comparison row records the three settings that were actually applied',
       targetCaptureId: target.id,
       source: harness.source,
       settings: applied,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -736,13 +731,13 @@ test('the changed ratio is the changed pixels over the area actually compared', 
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: before,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
     const current = await insertCapture(harness.rawDb, {
       claimId: harness.claimId,
       tabId: harness.tabId,
       image: after,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
     });
 
     const result = await runComparison({
@@ -751,7 +746,7 @@ test('the changed ratio is the changed pixels over the area actually compared', 
       targetCaptureId: target.id,
       source: harness.source,
       settings: DEFAULT_DIFF_SETTINGS,
-      artifactsRoot: harness.artifactsRoot,
+      artifacts: harness.artifacts,
       writeRow: harness.writeRow,
     });
 
@@ -771,13 +766,13 @@ test('every known-changed fixture produces at least one region end to end', asyn
         claimId: harness.claimId,
         tabId: harness.tabId,
         image: pair.earlier,
-        artifactsRoot: harness.artifactsRoot,
+        artifacts: harness.artifacts,
       });
       const current = await insertCapture(harness.rawDb, {
         claimId: harness.claimId,
         tabId: harness.tabId,
         image: pair.current,
-        artifactsRoot: harness.artifactsRoot,
+        artifacts: harness.artifacts,
       });
 
       const result = await runComparison({
@@ -786,7 +781,7 @@ test('every known-changed fixture produces at least one region end to end', asyn
         targetCaptureId: target.id,
         source: harness.source,
         settings: DEFAULT_DIFF_SETTINGS,
-        artifactsRoot: harness.artifactsRoot,
+        artifacts: harness.artifacts,
         writeRow: harness.writeRow,
       });
 
@@ -796,8 +791,8 @@ test('every known-changed fixture produces at least one region end to end', asyn
       // images it implies are proved to exist.
       const region = result.regions[0];
       assert.ok(region !== undefined);
-      assert.ok(await artifactExists(harness.artifactsRoot, region.beforePath));
-      assert.ok(await artifactExists(harness.artifactsRoot, region.afterPath));
+      assert.ok(await artifactExists(harness.artifacts, region.beforePath));
+      assert.ok(await artifactExists(harness.artifacts, region.afterPath));
     }
   });
 });

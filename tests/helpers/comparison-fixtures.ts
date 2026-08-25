@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as DatabaseHandle } from 'better-sqlite3';
 
-import { resolveArtifact } from '../../src/diff/artifact-path.ts';
+import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { type RasterImage, encodePng } from '../../src/diff/image.ts';
-import type { CaptureRecord, CaptureSource } from '../../src/service/capture-seam.ts';
+import {
+  type CaptureRecord,
+  type CaptureSource,
+  captureSource,
+} from '../../src/service/capture-seam.ts';
 
 /**
  * Rows and files a comparison needs, written through the real store.
@@ -81,7 +84,8 @@ export interface InsertCaptureOptions {
   readonly image: RasterImage;
   readonly kind?: CaptureRecord['kind'];
   readonly fileName?: string;
-  readonly artifactsRoot: string;
+  /** Where the file goes. The same store the comparison writes its crops with. */
+  readonly artifacts: ArtifactStore;
 }
 
 /**
@@ -92,20 +96,29 @@ export interface InsertCaptureOptions {
  * means to be in — so the helper that makes a capture makes a whole one, and a
  * test wanting the broken case removes the file explicitly and says so.
  */
-export async function insertCapture(
+export function insertCapture(
   db: DatabaseHandle,
   options: InsertCaptureOptions,
 ): Promise<CaptureRecord> {
+  // Returns a promise although nothing here awaits: the real capture pipeline
+  // is asynchronous, so every call site reads the way it will when a capture
+  // row writes one. A synchronous helper here would be a signature the
+  // production path does not have.
   const id = randomUUID();
   const fileName =
     options.fileName ?? `page-view-${String(options.image.width)}-when-${id.slice(0, 8)}.png`;
-  const storedPath = ['claims', options.claimId, 'images', fileName].join('/');
   const kind = options.kind ?? 'viewport';
   const bytes = encodePng(options.image);
 
-  const absolute = resolveArtifact(options.artifactsRoot, storedPath);
-  await fs.mkdir(path.dirname(absolute), { recursive: true });
-  await fs.writeFile(absolute, bytes);
+  // Written through the artifact store, exactly as the capture pipeline writes
+  // one — so the stored path is produced by the same code that produces it in
+  // production rather than assembled here and hoped to match.
+  const storedPath = options.artifacts.write(
+    options.claimId,
+    'images',
+    fileName,
+    bytes,
+  ).relativePath;
 
   db.prepare(
     `INSERT INTO captures (id, claim_id, tab_id, kind, tier, source_width, source_height,
@@ -125,64 +138,36 @@ export async function insertCapture(
     url: 'https://example.com/a-page',
   });
 
-  return {
+  return Promise.resolve({
     id,
     claimId: options.claimId,
     path: storedPath,
     kind,
     width: options.image.width,
     height: options.image.height,
-  };
+  });
 }
 
 /**
- * A capture source backed by the real tables and the real artifact root.
+ * The capture source the comparison tests run against.
  *
- * **This is the implementation the capture row will replace with its own, and
- * it is deliberately not a fake.** It reads the `captures` table with SQL and
- * the file from disk — exactly what a production implementation does. What
- * makes it a test helper rather than production code is only that the capture
- * pipeline, not this milestone, owns where it lives.
+ * **A thin alias for the production one**, deliberately. An earlier version of
+ * this helper reimplemented the lookup and the file read, which meant every
+ * comparison test exercised the helper rather than the code that ships — the
+ * hollow-test shape this repository has already been caught by once. Delegating
+ * means a break in the real join fails these tests.
  */
-export function storeBackedCaptureSource(db: DatabaseHandle, artifactsRoot: string): CaptureSource {
-  return {
-    find: (captureId) => {
-      const row = db
-        .prepare('SELECT id, claim_id, path, kind, width, height FROM captures WHERE id = @id')
-        .get({ id: captureId }) as
-        | {
-            id: string;
-            claim_id: string;
-            path: string;
-            kind: CaptureRecord['kind'];
-            width: number;
-            height: number;
-          }
-        | undefined;
-
-      if (row === undefined) {
-        return null;
-      }
-      return {
-        id: row.id,
-        claimId: row.claim_id,
-        path: row.path,
-        kind: row.kind,
-        width: row.width,
-        height: row.height,
-      };
-    },
-    readBytes: async (capture) => {
-      const bytes = await fs.readFile(resolveArtifact(artifactsRoot, capture.path));
-      return new Uint8Array(bytes);
-    },
-  };
+export function storeBackedCaptureSource(
+  db: DatabaseHandle,
+  artifacts: ArtifactStore,
+): CaptureSource {
+  return captureSource(db, artifacts);
 }
 
 /** Does a stored path exist under the artifact root? */
-export async function artifactExists(artifactsRoot: string, stored: string): Promise<boolean> {
+export async function artifactExists(artifacts: ArtifactStore, stored: string): Promise<boolean> {
   try {
-    await fs.access(resolveArtifact(artifactsRoot, stored));
+    await fs.access(artifacts.resolve(stored));
     return true;
   } catch {
     return false;

@@ -3,9 +3,11 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  ABSOLUTE_CHECK,
   ARTIFACTS_SOURCE,
   FORBIDDEN_REQUEST_FIELDS,
   REQUEST_TYPE,
+  REQUIRED_NAMESPACES,
   RESOLVER_NAME,
   RESOLVER_SOURCE,
   checkRequestType,
@@ -195,14 +197,14 @@ test('scan C fires when a filesystem call is passed something the resolver did n
 
 test('scan C fires when the resolver is not called at all', () => {
   const sources = seeded(ARTIFACTS_SOURCE, (source) =>
-    source.replace(`const absolute = ${RESOLVER_NAME}(`, 'const absolute = String('),
+    source.replace('options.artifacts.' + RESOLVER_NAME + '(', 'String('),
   );
 
   const fired = rules(sources);
   assert.ok(fired.some((failure) => failure.scan === 'C'));
   assert.match(
     fired.find((failure) => failure.scan === 'C')?.detail ?? '',
-    /never calls resolveArtifact/,
+    /never calls the artifact store/,
   );
 });
 
@@ -225,13 +227,33 @@ test('scan E fires when the surface exports a function taking a path', () => {
 
 // ── Scan D: the resolver stops refusing ─────────────────────────────────
 
-test('scan D fires when the resolver stops rejecting absolute paths', () => {
+test('scan D fires when the supplied name stops being asked', () => {
+  // **The most dangerous single deletion in the artifact store**, and the one a
+  // test on the platform it was written on would not notice: a name absolute in
+  // the *other* namespace is a legal relative filename here, so it resolves
+  // quietly under the root and the computed answer is clean. Asking the
+  // supplied name is the only check that catches it.
   const sources = seeded(RESOLVER_SOURCE, (source) =>
-    source.replace('path.isAbsolute(stored)', 'false'),
+    source.replace(ABSOLUTE_CHECK + '(relativePath)', 'false'),
   );
 
-  const fired = rules(sources);
-  assert.ok(fired.some((failure) => failure.scan === 'D'));
+  assert.ok(
+    rules(sources).some((failure) => failure.scan === 'D'),
+    'scan D must fire when the supplied path is not tested',
+  );
+});
+
+test('scan D fires when either namespace stops being consulted', () => {
+  // Walks the exported list rather than spot-checking one entry, so deleting an
+  // entry from REQUIRED_NAMESPACES fails here instead of quietly narrowing the
+  // rule to a single platform.
+  for (const namespace of REQUIRED_NAMESPACES) {
+    const sources = seeded(RESOLVER_SOURCE, (source) => source.replaceAll(namespace, 'path'));
+    assert.ok(
+      rules(sources).some((failure) => failure.scan === 'D'),
+      'scan D did not fire when ' + namespace + " was replaced by the host platform's own answer",
+    );
+  }
 });
 
 test('scan D fires when the containment assertion is removed', () => {
@@ -240,24 +262,28 @@ test('scan D fires when the containment assertion is removed', () => {
   // before resolution passes `a/../../b`, which is innocent-looking until it
   // is resolved.
   const sources = seeded(RESOLVER_SOURCE, (source) =>
-    source.replace('const relative = path.relative(root, resolved);', 'const relative = stored;'),
+    source.replaceAll("relative.startsWith('..')", 'false'),
   );
 
-  const fired = rules(sources);
   assert.ok(
-    fired.some((failure) => failure.scan === 'D'),
+    rules(sources).some((failure) => failure.scan === 'D'),
     'scan D must fire when containment is not asserted on the resolved path',
   );
 });
 
 test('scan D reports the resolver as unreadable rather than clean when it is renamed', () => {
+  // A rule pointed at a method that has moved reports no violations, which
+  // reads exactly like a clean tree. This asserts the script refuses instead.
   const sources = seeded(RESOLVER_SOURCE, (source) =>
-    source.replace(`export function ${RESOLVER_NAME}(`, 'export function somethingElse('),
+    source.replace(
+      String.fromCharCode(10) + '  ' + RESOLVER_NAME + '(relativePath',
+      String.fromCharCode(10) + '  somethingElse(relativePath',
+    ),
   );
 
   const fired = checkResolverRefuses(sources);
   assert.ok(fired.length > 0);
-  assert.match(fired[0]?.detail ?? '', /exports no resolveArtifact/);
+  assert.match(fired[0]?.detail ?? '', /declares no resolve this check can read/);
 });
 
 // ── The scans are distinct ──────────────────────────────────────────────
@@ -279,8 +305,8 @@ test('each seed fires its own scan and not merely something', () => {
   );
   assert.deepEqual(scansThatFired(rules(unresolvedRead)), ['C']);
 
-  const noContainment = seeded(RESOLVER_SOURCE, (source) =>
-    source.replace('const relative = path.relative(root, resolved);', 'const relative = stored;'),
+  const noSuppliedNameCheck = seeded(RESOLVER_SOURCE, (source) =>
+    source.replace(ABSOLUTE_CHECK + '(relativePath)', 'false'),
   );
-  assert.deepEqual(scansThatFired(rules(noContainment)), ['D']);
+  assert.deepEqual(scansThatFired(rules(noSuppliedNameCheck)), ['D']);
 });

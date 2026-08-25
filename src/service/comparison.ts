@@ -1,7 +1,5 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-
-import { overlayPath, regionCropPath, resolveArtifact } from '../diff/artifact-path.ts';
+import { fileNameFrom, overlayFileName, regionCropFileName } from '../diff/artifact-path.ts';
+import type { ArtifactStore } from '../artifacts/store.ts';
 import { cutRegionCrops, drawOverlay, paddedRectangle } from '../diff/crops.ts';
 import { reconcileGeometry } from '../diff/geometry.ts';
 import { type RasterImage, decodePng, encodePng } from '../diff/image.ts';
@@ -118,7 +116,16 @@ export interface RunComparisonOptions {
   readonly targetCaptureId: string;
   readonly source: CaptureSource;
   readonly settings: DiffSettings;
-  readonly artifactsRoot: string;
+  /**
+   * Where files are written and read.
+   *
+   * **The store rather than a root path**, so every join of a stored path to a
+   * location goes through the one implementation that refuses an escape in
+   * both path namespaces (`src/artifacts/store.ts`). A root string here would
+   * have meant a second resolver, and the second one is the one that would be
+   * missing a case.
+   */
+  readonly artifacts: ArtifactStore;
   /**
    * Write the `comparisons` row and return its identifier.
    *
@@ -176,15 +183,20 @@ function noDiff(
   };
 }
 
-/** Write a PNG under the artifact root, creating the directory it needs. */
-async function writeImage(
-  artifactsRoot: string,
-  storedPath: string,
+/**
+ * Write a PNG into a lease's images directory and return its stored path.
+ *
+ * The store creates the directory, refuses a name that would land outside the
+ * root, and hands back the relative path — which is the only form that goes in
+ * a row (§1.7a).
+ */
+function writeImage(
+  artifacts: ArtifactStore,
+  claimId: string,
+  fileName: string,
   image: RasterImage,
-): Promise<void> {
-  const absolute = resolveArtifact(artifactsRoot, storedPath);
-  await fs.mkdir(path.dirname(absolute), { recursive: true });
-  await fs.writeFile(absolute, encodePng(image));
+): string {
+  return artifacts.write(claimId, 'images', fileName, encodePng(image)).relativePath;
 }
 
 /**
@@ -194,7 +206,7 @@ async function writeImage(
  * returns a picture with an explanation rather than a refusal.
  */
 export async function runComparison(options: RunComparisonOptions): Promise<ComparisonResult> {
-  const { capture, targetCaptureId, source, settings, artifactsRoot } = options;
+  const { capture, targetCaptureId, source, settings, artifacts } = options;
 
   // ── 1. The capture the caller named ───────────────────────────────────
   const target = source.find(targetCaptureId);
@@ -274,7 +286,7 @@ export async function runComparison(options: RunComparisonOptions): Promise<Comp
   const kept = truncated ? allRegions.slice(0, settings.maximumRegions) : allRegions;
 
   // ── 6. The crops and the overlay (#42) ────────────────────────────────
-  const captureFileName = path.posix.basename(capture.path.replaceAll('\\', '/'));
+  const captureFileName = fileNameFrom(capture.path);
   const regions: ComparisonRegion[] = [];
 
   for (const [index, region] of kept.entries()) {
@@ -293,11 +305,18 @@ export async function runComparison(options: RunComparisonOptions): Promise<Comp
     }
 
     const crops = cutRegionCrops(earlier, current, rectangle);
-    const beforePath = regionCropPath(capture.claimId, captureFileName, index, 'before');
-    const afterPath = regionCropPath(capture.claimId, captureFileName, index, 'after');
-
-    await writeImage(artifactsRoot, beforePath, crops.before);
-    await writeImage(artifactsRoot, afterPath, crops.after);
+    const beforePath = writeImage(
+      artifacts,
+      capture.claimId,
+      regionCropFileName(captureFileName, index, 'before'),
+      crops.before,
+    );
+    const afterPath = writeImage(
+      artifacts,
+      capture.claimId,
+      regionCropFileName(captureFileName, index, 'after'),
+      crops.after,
+    );
 
     regions.push({
       x: region.x,
@@ -310,8 +329,12 @@ export async function runComparison(options: RunComparisonOptions): Promise<Comp
     });
   }
 
-  const storedOverlayPath = overlayPath(capture.claimId, captureFileName);
-  await writeImage(artifactsRoot, storedOverlayPath, drawOverlay(current, kept));
+  const storedOverlayPath = writeImage(
+    artifacts,
+    capture.claimId,
+    overlayFileName(captureFileName),
+    drawOverlay(current, kept),
+  );
 
   // ── 7. The row (§1.9) ─────────────────────────────────────────────────
   //
