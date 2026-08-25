@@ -191,6 +191,23 @@ export interface TabOperationResult {
    * cannot drift apart.
    */
   readonly pageDriven: boolean;
+
+  /**
+   * Why the page was not driven, present only when it was not.
+   *
+   * ── Why the fact alone was not enough ───────────────────────────────────
+   *
+   * `pageDriven: false` tells a caller that its call did not reach the page.
+   * It does not tell it whether that is worth retrying, and the causes want
+   * opposite responses: a browser that will not launch is not the caller's to
+   * fix, while **a reference naming nothing on the page is fixed by
+   * reading the page again** — which a caller can do by itself, immediately,
+   * without a person.
+   *
+   * Absent on success rather than empty, so the field's presence is itself
+   * the signal and there is no "" to mistake for a reason nobody gave.
+   */
+  readonly notDrivenReason?: string | undefined;
 }
 
 /**
@@ -287,6 +304,12 @@ interface ScheduledWork {
   readonly afterCommit: readonly (() => Promise<void>)[];
   /** Whether a browser was genuinely reached. Read **after** the work ran. */
   readonly pageDriven: boolean;
+  /**
+   * Why it was not, when it was not. A getter for the same reason
+   * `pageDriven` is one, and `undefined` whenever the work succeeded — so
+   * the field is never a stale explanation attached to a call that worked.
+   */
+  readonly notDrivenReason: string | undefined;
 }
 
 /**
@@ -343,26 +366,65 @@ function afterCommitWork(
 ): ScheduledWork {
   const source = input.session;
   if (source === undefined) {
-    return { afterCommit: [], pageDriven: false };
+    return {
+      afterCommit: [],
+      pageDriven: false,
+      notDrivenReason:
+        'This build has no browser to drive: the call was decided, recorded and its lease renewed, but no page was touched.',
+    };
   }
 
   // The one mutable cell, written by the one statement below and read by the
   // getter. Not exposed: a handler receives the getter and never this.
   let driven = false;
 
+  // ── Why the failure's reason is kept, and not only the fact of it ───────
+  //
+  // `pageDriven: false` is honest and it is **not actionable**: it says the
+  // page did not move and says nothing about whether the caller can do
+  // anything about that. The causes want opposite responses — a browser that
+  // will not launch is not the caller's to fix, while a stale element
+  // reference is fixed by reading the page again, which is a thing a caller
+  // can do unattended and immediately.
+  //
+  // The failure is still swallowed (§2.4b) and the outcome is still
+  // `accepted`, both for the reasons above; what changes is that the reason
+  // travels with the report instead of dying in the runner's empty `catch`.
+  // A refusal's `rule` is carried when there is one, because that is the
+  // half a caller can branch on without matching on English.
+  let notDrivenReason: string | undefined;
+
   return {
     afterCommit: [
       async () => {
-        const session = await source(tab.browserId as BrowserId);
-        await work(session, await pageFor(scope, session, tab));
-        // **Last, deliberately.** Anything above this that throws leaves the
-        // flag false, which is what makes a browser failing mid-operation
-        // report as the page not having been driven rather than as success.
-        driven = true;
+        try {
+          const session = await source(tab.browserId as BrowserId);
+          await work(session, await pageFor(scope, session, tab));
+          // **Last, deliberately.** Anything above this that throws leaves the
+          // flag false, which is what makes a browser failing mid-operation
+          // report as the page not having been driven rather than as success.
+          driven = true;
+        } catch (error) {
+          // Recorded, then **rethrown unchanged**. The runner's swallow is
+          // what keeps a committed decision from being unmade by a browser
+          // that will not answer, and catching here without rethrowing would
+          // quietly take that path over — including for the callers of this
+          // helper that are not about references at all.
+          notDrivenReason =
+            error instanceof BrokerError
+              ? `${error.rule}: ${error.message}`
+              : error instanceof Error
+                ? error.message
+                : String(error);
+          throw error;
+        }
       },
     ],
     get pageDriven() {
       return driven;
+    },
+    get notDrivenReason() {
+      return notDrivenReason;
     },
   };
 }
@@ -384,11 +446,25 @@ function afterCommitWork(
  * on the sixth. That is the same reason {@link TabOperationResult} declares it
  * on the shared base rather than on each verb.
  */
-function withPageDriven<T>(value: T, work: ScheduledWork): T & { readonly pageDriven: boolean } {
-  return Object.defineProperty(value as T & { pageDriven: boolean }, 'pageDriven', {
+function withPageDriven<T>(
+  value: T,
+  work: ScheduledWork,
+): T & { readonly pageDriven: boolean; readonly notDrivenReason: string | undefined } {
+  const withFlag = Object.defineProperty(value as T & { pageDriven: boolean }, 'pageDriven', {
     get: () => work.pageDriven,
     enumerable: true,
   });
+
+  // Composed through the same way and for the same reason: read eagerly it
+  // would always be `undefined`, because nothing has run yet.
+  return Object.defineProperty(
+    withFlag as T & { pageDriven: boolean; notDrivenReason: string | undefined },
+    'notDrivenReason',
+    {
+      get: () => work.notDrivenReason,
+      enumerable: true,
+    },
+  );
 }
 
 export interface NavigateInput extends TabOperationInput {
@@ -831,42 +907,66 @@ export function decideTabReplace(
   // field is composed by {@link withPageDriven} — the same function the other
   // five go through, which is what stops the two answers drifting.
   let driven = false;
+  // Carried for the same reason and by the same rule as in
+  // {@link afterCommitWork}: the fact that the swap did not reach a browser is
+  // not actionable on its own. This verb addresses no element, so the stale
+  // reference case cannot arise here — what it reports is a browser that could
+  // not be reached or a page that would not open.
+  let notDrivenReason: string | undefined =
+    source === undefined
+      ? 'This build has no browser to drive: the tab was exchanged in the store, but no page was opened for it.'
+      : undefined;
   const work: ScheduledWork = {
     get pageDriven() {
       return driven;
+    },
+    get notDrivenReason() {
+      return notDrivenReason;
     },
     afterCommit:
       source === undefined
         ? []
         : [
             async () => {
-              const session = await source(browser);
-              // The tab being given up is closed first, and only if a page
-              // was ever opened for it. If it will not close it is a leaked
-              // tab; the fresh one is owed either way, and making it wait on
-              // a page that is refusing to die is how one stuck close turns
-              // into a lease with no tab at all.
-              // At most one, and empty when no page was ever opened for this
-              // tab — in which case there is nothing to ask a browser about
-              // and the row is already `closed`.
-              if (pendingCloses.length > 0 && tab.driverTabId !== null) {
-                try {
-                  await session.closeTab({ browser, driverTabId: tab.driverTabId });
-                } catch {
-                  // Best effort (§2.4b). The row stays `closing`, which is
-                  // what the administrative clear-a-leaked-tab operation
-                  // selects on.
+              try {
+                const session = await source(browser);
+                // The tab being given up is closed first, and only if a page
+                // was ever opened for it. If it will not close it is a leaked
+                // tab; the fresh one is owed either way, and making it wait on
+                // a page that is refusing to die is how one stuck close turns
+                // into a lease with no tab at all.
+                // At most one, and empty when no page was ever opened for this
+                // tab — in which case there is nothing to ask a browser about
+                // and the row is already `closed`.
+                if (pendingCloses.length > 0 && tab.driverTabId !== null) {
+                  try {
+                    await session.closeTab({ browser, driverTabId: tab.driverTabId });
+                  } catch {
+                    // Best effort (§2.4b). The row stays `closing`, which is
+                    // what the administrative clear-a-leaked-tab operation
+                    // selects on.
+                  }
                 }
+                const opened = await session.openTab();
+                // Recorded on its own connection-free path: this runs after the
+                // commit, so it opens its own short write rather than
+                // reaching back into a transaction that is gone.
+                recordTabOpened(scope.db, replacementId, opened.driverTabId);
+                // Last, for the same reason it is last in `afterCommitWork`: a
+                // throw above leaves this false, so a browser that failed
+                // partway through reports the page as not driven.
+                driven = true;
+              } catch (error) {
+                // Recorded and rethrown unchanged, so the runner's swallow
+                // (§2.4b) still governs what a failure costs.
+                notDrivenReason =
+                  error instanceof BrokerError
+                    ? `${error.rule}: ${error.message}`
+                    : error instanceof Error
+                      ? error.message
+                      : String(error);
+                throw error;
               }
-              const opened = await session.openTab();
-              // Recorded on its own connection-free path: this runs after the
-              // commit, so it opens its own short write rather than
-              // reaching back into a transaction that is gone.
-              recordTabOpened(scope.db, replacementId, opened.driverTabId);
-              // Last, for the same reason it is last in `afterCommitWork`: a
-              // throw above leaves this false, so a browser that failed
-              // partway through reports the page as not driven.
-              driven = true;
             },
           ],
   };

@@ -23,7 +23,7 @@ import {
 } from 'playwright-core';
 
 import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
-import { StartupRefusal } from '../errors.ts';
+import { BrokerError, StartupRefusal } from '../errors.ts';
 import { readDiscoveryRecord, verifyDiscoveryRecord } from './discovery.ts';
 import type {
   ActionRequest,
@@ -130,6 +130,32 @@ function readPngDimensions(image: Uint8Array): { width: number; height: number }
  * itself somewhere else.
  */
 export const KEEPER_TAB_URL = 'about:blank';
+
+/**
+ * How long a single attempt to resolve an element reference may take, in
+ * milliseconds.
+ *
+ * ── Why this exists at all ──────────────────────────────────────────────
+ *
+ * Without it the wait is the automation library's **default action timeout**,
+ * which is thirty seconds and is the right length for the question it was
+ * chosen to answer — *is this element going to appear* — and the wrong length
+ * for the one asked here, which is *does this connection know this reference*.
+ * A connection that has taken no snapshot never will, and waiting thirty
+ * seconds to say so was measured: 30.5 seconds for a command-line action whose
+ * reference was minted in the previous process.
+ *
+ * ── Why this number ─────────────────────────────────────────────────────
+ *
+ * Long enough that an element still being attached by the page's own scripts
+ * is found rather than declared missing; short enough that the whole failure
+ * path — a bounded attempt, a snapshot, a second bounded attempt — is a thing
+ * a caller waits through rather than a thing it times out on. It is a bound on
+ * *resolution only*: once a reference resolves, the verb runs under the
+ * library's ordinary timeouts, so nothing here shortens how long a click may
+ * take to complete.
+ */
+export const REFERENCE_RESOLUTION_MS = 250;
 
 /**
  * How a keeper tab is told apart from a leased one.
@@ -286,6 +312,28 @@ class RealBrowserSession implements BrowserSession {
 
   /** How the next dialog on each page will be answered. See {@link DialogDisposition}. */
   readonly #dialogs = new Map<string, DialogDisposition>();
+
+  /**
+   * The pages this connection has registered element references against.
+   *
+   * ── Why this is remembered rather than recomputed ───────────────────────
+   *
+   * A reference resolves only in a connection that has snapshotted the page,
+   * and this service is daemonless — so the first action in a spawned process
+   * always reaches a page with no registration. {@link #locate} establishes it
+   * on first contact, and this is what tells it that the first contact has
+   * happened. **Asking the page instead is not available**: an unregistered
+   * reference and a reference whose element is gone both simply fail to
+   * resolve, so a lookup cannot distinguish the two and the whole point of
+   * remembering is to distinguish them. See {@link #locate}.
+   *
+   * Keyed by the page object rather than by the tab's name, and **weakly**: a
+   * page that closes is collectable with nothing here keeping it alive, which
+   * matters because a session may outlive many tabs. Membership means only
+   * *this connection has snapshotted this page at least once* — the reference
+   * engine's own registrations are what actually resolve anything.
+   */
+  readonly #referenced = new WeakSet<Page>();
 
   /** Where this session writes the files `act` and `read` hand back paths to. */
   readonly #outputDirectory: string;
@@ -744,18 +792,18 @@ class RealBrowserSession implements BrowserSession {
 
     switch (request.action) {
       case 'click':
-        await this.#locate(page, request.ref).click();
+        await (await this.#locate(page, request.ref)).click();
         break;
 
       case 'hover':
-        await this.#locate(page, request.ref).hover();
+        await (await this.#locate(page, request.ref)).hover();
         break;
 
       case 'check':
         // `check` rather than `click`: it asserts the box ends up checked and
         // is a no-op on one already checked, where a click would toggle it
         // off. A caller asking for `check` twice means the box is checked.
-        await this.#locate(page, request.ref).check();
+        await (await this.#locate(page, request.ref)).check();
         break;
 
       case 'type':
@@ -763,16 +811,16 @@ class RealBrowserSession implements BrowserSession {
         // a field that reacts to each key — a combo box filtering as it goes,
         // a validator running per character — sees the keys it would see from
         // a person.
-        await this.#locate(page, request.ref).pressSequentially(request.value);
+        await (await this.#locate(page, request.ref)).pressSequentially(request.value);
         break;
 
       case 'fill':
         // Sets the value in one step. The ordinary way to put text in a field.
-        await this.#locate(page, request.ref).fill(request.value);
+        await (await this.#locate(page, request.ref)).fill(request.value);
         break;
 
       case 'select':
-        await this.#locate(page, request.ref).selectOption(request.value);
+        await (await this.#locate(page, request.ref)).selectOption(request.value);
         break;
 
       case 'press':
@@ -783,7 +831,7 @@ class RealBrowserSession implements BrowserSession {
         if (request.ref === undefined) {
           await page.keyboard.press(request.value);
         } else {
-          await this.#locate(page, request.ref).press(request.value);
+          await (await this.#locate(page, request.ref)).press(request.value);
         }
         break;
 
@@ -801,7 +849,7 @@ class RealBrowserSession implements BrowserSession {
             scope.scrollBy(0, scope.innerHeight);
           });
         } else {
-          await this.#locate(page, request.ref).scrollIntoViewIfNeeded();
+          await (await this.#locate(page, request.ref)).scrollIntoViewIfNeeded();
         }
         break;
 
@@ -862,7 +910,7 @@ class RealBrowserSession implements BrowserSession {
         // and filling them in parallel would race against the page's own
         // reaction to the previous field.
         for (const field of request.fields) {
-          await this.#locate(page, field.ref).fill(field.value);
+          await (await this.#locate(page, field.ref)).fill(field.value);
         }
         break;
       }
@@ -876,7 +924,13 @@ class RealBrowserSession implements BrowserSession {
         // **In-page, element to element.** Both references come from the same
         // snapshot; there is no file-from-the-desktop shape here, because a
         // lease is a tab and the desktop is not in it.
-        await this.#locate(page, request.ref).dragTo(this.#locate(page, request.targetRef));
+        //
+        // **Both references are resolved before either is used**, so a drag
+        // naming one good reference and one stale one refuses rather than
+        // picking the element up and dropping it nowhere.
+        await (
+          await this.#locate(page, request.ref)
+        ).dragTo(await this.#locate(page, request.targetRef));
         break;
     }
 
@@ -900,15 +954,139 @@ class RealBrowserSession implements BrowserSession {
    * evaluates. A caller's reference is matched against references the browser
    * itself handed out, so a reference that names nothing resolves to nothing
    * rather than to whatever a hand-built selector would have matched.
+   *
+   * ── Why resolution is attempted here rather than left to the verb ───────
+   *
+   * **The reference engine is populated per connection, and this service is
+   * daemonless.** A snapshot registers its references against the connection
+   * that took it; a caller running one command per process reads references in
+   * one process and acts on them in the next, which reaches a connection that
+   * has taken no snapshot and therefore knows no references at all. That is
+   * the ordinary arrangement on the command line, not an edge case.
+   *
+   * Left to the verb, that lookup does not fail — it **waits**, for the whole
+   * of the automation library's default action timeout, and only then reports
+   * a failure whose text is about the element not appearing. Measured at 30.5
+   * seconds for a reference that could never have resolved. So the wait is
+   * bounded here instead, and the refusal names the reference rather than the
+   * timeout.
+   *
+   * ── The snapshot is taken ONCE PER PAGE, and only when this connection has
+   *    never taken one ───────────────────────────────────────────────────
+   *
+   * Two measured facts about the reference engine decide the shape here, and
+   * they pull in opposite directions.
+   *
+   * **Within one connection, a reference is bound to an element and stays
+   * bound to it.** Snapshotting a second time does not renumber: on a page of
+   * heading `e3`, button `e4`, textbox `e5`, removing the button and
+   * snapshotting again leaves the textbox `e5` and leaves `e4` resolving to
+   * nothing. So inside a connection, a reference going stale is *reported* as
+   * a reference going stale, which is what a caller needs.
+   *
+   * **Across connections, the names are assigned afresh from the tree's
+   * current shape.** The same removal seen by a connection that had never
+   * snapshotted the page yields heading `e3`, **textbox `e4`** — the textbox
+   * inherits the removed button's name.
+   *
+   * Taking the snapshot is what makes the cross-process case work at all: a
+   * connection that has snapshotted nothing knows no references, and every
+   * `act` from a freshly spawned process was in that state.
+   *
+   * ── Why it is taken up front rather than on the failure path ────────────
+   *
+   * The obvious alternative is to try the lookup first and snapshot only when
+   * it fails, which saves a round trip on every action after the first.
+   * **Measured, that alternative behaves identically** — the renumbering above
+   * happens only on a connection's *first* snapshot, and once a page has been
+   * registered here a further snapshot never revives or re-points a reference
+   * whose element has gone. So it is not the hazard it looks like.
+   *
+   * It is not used because its safety rests on that last fact, which is a
+   * detail of the automation library established by measurement rather than by
+   * documentation, and which nothing would fail if a future version changed.
+   * Registering before the first lookup makes the guarantee structural
+   * instead: by the time any lookup runs, this connection's references
+   * describe the page, so a reference that does not resolve has genuinely gone
+   * — and that stays true however the engine renumbers. The cost is the same
+   * one snapshot per page per connection either way.
+   *
+   * So the first action against a page pays one round trip, every action after
+   * it pays none, and the staleness a caller must be told about is preserved
+   * rather than papered over. The protection against acting on a page that
+   * moved underneath you is unchanged and lives where it always did: every
+   * action hands back a fresh snapshot ({@link act}).
    */
-  #locate(page: Page, ref: string): ReturnType<Page['locator']> {
+  async #locate(page: Page, ref: string): Promise<ReturnType<Page['locator']>> {
     // `aria-ref` is the engine that resolves the identifiers an AI-mode aria
     // snapshot mints, which is the same snapshot {@link #writeSnapshot}
     // writes and hands a path to. The two halves are deliberately the same
     // mechanism: a reference a caller read out of our snapshot file is a
     // reference this resolves, and there is no translation step in between to
     // get wrong.
-    return page.locator(`aria-ref=${ref}`);
+    //
+    // Once per page, before the first lookup against it — so that what follows
+    // is a question about the page rather than about this connection's
+    // history. See the note above for why it is not repeated.
+    if (!this.#referenced.has(page)) {
+      this.#referenced.add(page);
+      await page.locator('html').ariaSnapshot({ mode: 'ai' });
+    }
+
+    const locator = page.locator(`aria-ref=${ref}`);
+    if (await this.#resolves(locator)) {
+      return locator;
+    }
+
+    // **Nothing, so this refuses rather than proceeding.** An action on an
+    // unresolvable reference must not report success: a verb that accepted and
+    // did nothing is the defect this whole path exists to remove. The throw
+    // leaves `pageDriven` false — the flag is set by the last statement of the
+    // after-commit closure, which this never reaches — so the caller is told
+    // the page was not driven, and told why.
+    throw new BrokerError(
+      'act.ref_resolves',
+      `No element on this page matches the reference "${ref}". References are minted by a snapshot and describe the page as it was when that snapshot was taken, so a reference goes stale when the page changes underneath it. Read the page again and use a reference from the snapshot that read returns.`,
+    );
+  }
+
+  /**
+   * Whether a reference names something on the page **now**, answered within a
+   * bound.
+   *
+   * ── Why a bounded wait rather than a count ──────────────────────────────
+   *
+   * Counting the matches would answer immediately and would answer the wrong
+   * question on a page that is still settling: an element arriving a moment
+   * later is present, and a check that ran before it arrived would refuse a
+   * reference that was about to be perfectly good. So this waits — but for a
+   * *short* bound of its own rather than the action timeout, because the case
+   * it is distinguishing is a reference that was never registered in this
+   * connection, and no amount of waiting fixes that one.
+   *
+   * The bound is deliberately far below the automation library's default
+   * action timeout of thirty seconds, which is the length a lookup takes to
+   * fail when nothing bounds it. What follows a `false` here is a refusal, so
+   * an unresolvable reference costs one of these and is answered well inside a
+   * second.
+   *
+   * Attached is not required, only present: `attached` is the weakest state
+   * that means *the reference resolves to an element*, and the stronger states
+   * are the verb's business. A disabled button, an element scrolled out of
+   * view or one covered by an overlay is a reference that resolved and an
+   * action that should fail on its own terms, with the automation library's
+   * own message about why — not one this misreports as an unknown reference.
+   */
+  async #resolves(locator: ReturnType<Page['locator']>): Promise<boolean> {
+    try {
+      await locator.waitFor({ state: 'attached', timeout: REFERENCE_RESOLUTION_MS });
+      return true;
+    } catch {
+      // The only thing a failure here means is *not attached within the
+      // bound*, which is the question being asked. It is not reported: the
+      // caller gets the refusal below it, which names the reference.
+      return false;
+    }
   }
 
   /**
