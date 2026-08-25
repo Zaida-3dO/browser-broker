@@ -84,8 +84,11 @@ test('the two-word command resolves to its verb rather than to an unknown noun',
   assert.deepEqual(parsed.kind === 'operation' ? parsed.rest : [], ['--lease-key', 'k']);
 });
 
-test('the commands with no operation behind them are the four of §5.5, by name', () => {
+test('the commands with no operation behind them are named, not counted', () => {
+  // §5.5's four, plus `diffs`, which reads the recorded comparisons back and
+  // sits here for the same reason: it decides nothing and takes no lease.
   assert.deepEqual(STANDALONE_COMMANDS.map((command) => command.words.join(' ')).sort(), [
+    'diffs',
     'doctor',
     'init',
     'login',

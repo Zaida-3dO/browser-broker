@@ -84,7 +84,14 @@ export interface StandaloneCommand {
   readonly owedBy: string;
 }
 
-/** The four of §5.5, none of which this row implements. */
+/**
+ * The commands with no service operation behind them.
+ *
+ * §5.5 names four; the fifth is `diffs`, which reads the comparison history
+ * back. It sits here rather than beside the operations because it decides
+ * nothing and takes no lease — it is a read of what has already been recorded,
+ * which is the same reason `events` is not an operation either.
+ */
 export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
   {
     words: ['snapshot'],
@@ -105,6 +112,11 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     words: ['init'],
     summary: 'Run the setup handshake explicitly and show its report.',
     owedBy: 'the row that builds the setup report',
+  },
+  {
+    words: ['diffs'],
+    summary: 'List the recorded comparisons, filtered by lease, tab or outcome.',
+    owedBy: 'the row that builds changed-region review',
   },
 ];
 
