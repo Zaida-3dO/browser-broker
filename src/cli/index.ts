@@ -282,7 +282,37 @@ async function runOperation(
     // §5.6: a machine-readable mode produces one document per call and puts
     // all human text on the error stream, "so a caller that did not ask for
     // prose gets none".
-    const value = withoutSecrets(outcome.value);
+    //
+    // ── The one command that keeps its key, and why ───────────────────────
+    //
+    // §5.6's rule is that the lease key is never printed, and it is
+    // load-bearing: "absent rather than masked" is the specification, because
+    // a masked field advertises that a secret exists and is one format change
+    // from being the real one. That rule is kept everywhere here except the
+    // grant, which is the single named hole — spelled exactly as the tool
+    // surface spells its own in `tool/session.ts`, so the two surfaces state
+    // one rule rather than two.
+    //
+    // Without the hole, `broker claim` was a command that **succeeded and
+    // could not be used**. It takes real capacity — §2.3 makes grants and
+    // tabs the same integer — mints a lease, and then withheld the only thing
+    // that can address it. §2.2 returns a key once and makes it unrecoverable
+    // by construction, so there was no second way to learn it: the lease sat
+    // holding a tab until its lifetime elapsed, and every one of the nine
+    // keyed commands on this surface was unreachable for it. A command that
+    // silently spends bounded capacity on an unusable lease is worse than one
+    // that refuses.
+    //
+    // Removing `claim` from this surface was the alternative and is the wrong
+    // one: `commands.ts` exists so that "every §3 operation has a command, so
+    // parity is real rather than claimed", and dropping one would make that
+    // sentence false to buy a secrecy the tool surface does not keep either.
+    //
+    // The exception is as narrow as it can be. It is keyed on the operation
+    // being `claim`, so it cannot widen to a command added later; every other
+    // command, and every refusal on every command including this one, still
+    // goes through `withoutSecrets`.
+    const value = operation === 'claim' ? outcome.value : withoutSecrets(outcome.value);
     if (context.json) {
       context.streams.out(JSON.stringify({ outcome: 'accepted', value }));
     } else {
@@ -310,6 +340,28 @@ async function runOperation(
   return EXIT.refused;
 }
 
+/**
+ * The sentence a person gets when an operation was accepted but no browser
+ * was reached.
+ *
+ * ── Why the boolean is not enough on this surface ───────────────────────
+ *
+ * `pageDriven` is what a *caller* branches on, and the machine-readable mode
+ * prints it as-is because that mode is for a program. The default mode is for
+ * a person, and §5.6 puts the prose there for exactly that reason. A line
+ * reading `pageDriven: false` among four identifiers is true, but it asks the
+ * reader to already know what the field means — and the whole defect being
+ * fixed here is a truth that was only legible to someone who already knew
+ * where to look. So the person-facing surface says it in words.
+ *
+ * It is derived from the same field rather than from a second source, so
+ * there is no way for the sentence and the boolean to disagree.
+ */
+const NO_BROWSER_NOTE =
+  'note: no browser is attached in this build, so the page was not driven. ' +
+  'The lease, its tab and this decision are real and recorded; nothing was ' +
+  'navigated, read or captured.';
+
 /** Human-readable by default (§5.6): one `key: value` line per field. */
 function renderForAPerson(value: unknown): string {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -319,12 +371,14 @@ function renderForAPerson(value: unknown): string {
   if (entries.length === 0) {
     return 'done';
   }
-  return entries
-    .map(
-      ([key, entry]) =>
-        `${key}: ${typeof entry === 'object' && entry !== null ? JSON.stringify(entry) : String(entry)}`,
-    )
-    .join('\n');
+  const lines = entries.map(
+    ([key, entry]) =>
+      `${key}: ${typeof entry === 'object' && entry !== null ? JSON.stringify(entry) : String(entry)}`,
+  );
+  if ((value as Record<string, unknown>).pageDriven === false) {
+    lines.push(NO_BROWSER_NOTE);
+  }
+  return lines.join('\n');
 }
 
 /**

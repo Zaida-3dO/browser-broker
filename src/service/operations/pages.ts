@@ -116,6 +116,61 @@ export interface TabOperationResult {
   readonly tabId: string;
   /** The expiry **after** this call extended it. */
   readonly expiresAt: string;
+  /**
+   * Whether a browser was actually reached, or the page half was a no-op.
+   *
+   * ── Why this field exists, stated as the thing that happened ────────────
+   *
+   * This module's header already said it plainly — "a handler with no session
+   * still decides, still writes, and still refuses; it simply has no browser
+   * work to hand back" — and that remained true and remained *invisible*. A
+   * caller driving the shipped binary against a build with no session source
+   * got this, over real pipes:
+   *
+   * ```
+   * browser_read     -> {"outcome":"accepted","value":{…,"artifacts":["snapshot"]}}
+   * browser_capture  -> {"outcome":"accepted","value":{…,"fullPage":false}}
+   * ```
+   *
+   * …while `SELECT count(*) FROM captures` was **0**. `read` named an
+   * artifact nobody collected, `capture` reported an image that does not
+   * exist, and the only place the truth was written down was a source comment
+   * in `runtime.ts`. `accepted` reads as success, so a caller scripting
+   * against this reasonably concluded the page had moved.
+   *
+   * That is the inverse of the house rule. `refusals.ts` opens on §7's "a
+   * rule that never refuses anything protects nothing, so the refusals are
+   * the specification", and the whole taxonomy exists so that a no arrives
+   * carrying its reason. Silence dressed as acceptance is the same defect
+   * pointed the other way: a ledger asserting a fact that did not happen.
+   *
+   * ── Why a field on the accepted result, and not a refusal ───────────────
+   *
+   * A refusal here would be **a second lie in the opposite direction.** The
+   * arbitration half of the call genuinely happened and is genuinely durable:
+   * capacity was taken, the lease was resolved and renewed (§2.5), ownership
+   * was enforced (§7.1), and a row went into the ledger. §5.6 already fixes
+   * the meaning of the outcomes — a refusal is a call that "does not happen"
+   * — so reporting one would tell a caller to retry a decision that is
+   * already committed and already extended its lease. Two of the refusal
+   * table's own constraints point the same way: it refuses to carry a code
+   * the build cannot raise, and `retryable` would have no honest value here.
+   *
+   * So the outcome stays `accepted`, because the operation was accepted, and
+   * the result says what was and was not done with it. The name is negative
+   * (`pageDriven: false`) rather than positive so that the surprising state
+   * is the one that has to be spelled out.
+   *
+   * ── Why it is on the shared base rather than on each verb ───────────────
+   *
+   * All six tab-addressed results extend this interface, so declaring it here
+   * is what makes it impossible to answer honestly on five verbs and silently
+   * on the sixth. The value comes from {@link afterCommitWork}, which is the
+   * one place in the service that knows whether a session was supplied — the
+   * knowledge and the reporting of it are therefore the same expression, and
+   * cannot drift apart.
+   */
+  readonly pageDriven: boolean;
 }
 
 /**
@@ -205,6 +260,16 @@ async function pageFor(
 /**
  * Schedule one piece of browser work, if the caller brought a browser.
  *
+ * **Returns the fact alongside the work, because this is the only place that
+ * knows it.** `input.session === undefined` is the single expression in the
+ * service that distinguishes *a page was driven* from *there was no page*,
+ * and it used to answer that question and then throw the answer away, which
+ * is exactly how a caller came to be told `accepted` for a capture that wrote
+ * no row. Handing back `pageDriven` next to `afterCommit` means the report
+ * and the reality are computed once, from the same branch: a build that
+ * starts supplying a session reports `true` by construction, and no handler
+ * can spell the answer differently from the work it scheduled.
+ *
  * **Every failure is swallowed**, matching what the runner already does with
  * the sweep's closes and what §2.4b requires of after-commit work generally:
  * the transaction has committed, the decision stands, and a driver that will
@@ -218,16 +283,22 @@ function afterCommitWork(
   input: TabOperationInput,
   tab: ResolvedTab,
   work: (session: BrowserSession, page: TabHandle) => Promise<unknown>,
-): readonly (() => Promise<void>)[] {
+): {
+  readonly afterCommit: readonly (() => Promise<void>)[];
+  readonly pageDriven: boolean;
+} {
   const source = input.session;
-  if (source === undefined) return [];
+  if (source === undefined) return { afterCommit: [], pageDriven: false };
 
-  return [
-    async () => {
-      const session = await source();
-      await work(session, await pageFor(scope, session, tab));
-    },
-  ];
+  return {
+    afterCommit: [
+      async () => {
+        const session = await source();
+        await work(session, await pageFor(scope, session, tab));
+      },
+    ],
+    pageDriven: true,
+  };
 }
 
 export interface NavigateInput extends TabOperationInput {
@@ -263,9 +334,16 @@ export function decideNavigate(
     detail: { url },
   });
 
+  const work = afterCommitWork(scope, input, tab, (session, page) => session.navigate(page, url));
   return {
-    value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, url },
-    afterCommit: afterCommitWork(scope, input, tab, (session, page) => session.navigate(page, url)),
+    value: {
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      expiresAt,
+      url,
+      pageDriven: work.pageDriven,
+    },
+    afterCommit: work.afterCommit,
   };
 }
 
@@ -300,9 +378,16 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
     detail: { action: request.action },
   });
 
+  const work = afterCommitWork(scope, input, tab, (session, page) => session.act(page, request));
   return {
-    value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, action: request.action },
-    afterCommit: afterCommitWork(scope, input, tab, (session, page) => session.act(page, request)),
+    value: {
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      expiresAt,
+      action: request.action,
+      pageDriven: work.pageDriven,
+    },
+    afterCommit: work.afterCommit,
   };
 }
 
@@ -342,11 +427,16 @@ export function decideRead(
     detail: { artifacts: [...artifacts] },
   });
 
+  const work = afterCommitWork(scope, input, tab, (session, page) => session.read(page, artifacts));
   return {
-    value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, artifacts },
-    afterCommit: afterCommitWork(scope, input, tab, (session, page) =>
-      session.read(page, artifacts),
-    ),
+    value: {
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      expiresAt,
+      artifacts,
+      pageDriven: work.pageDriven,
+    },
+    afterCommit: work.afterCommit,
   };
 }
 
@@ -389,16 +479,23 @@ export function decideEvaluate(
     detail: { expressionBytes },
   });
 
+  const work = afterCommitWork(scope, input, tab, async (session, page) => {
+    const result = await session.evaluate(page, expression);
+    // The spill decision is made against the result the page actually
+    // produced, which is only knowable here. `disposeEvaluationResult` is
+    // what decides it, and it is the same function the seam's own tests
+    // measure — joining the two is row #24's missing half.
+    return disposeEvaluationResult(result.value);
+  });
   return {
-    value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, expressionBytes },
-    afterCommit: afterCommitWork(scope, input, tab, async (session, page) => {
-      const result = await session.evaluate(page, expression);
-      // The spill decision is made against the result the page actually
-      // produced, which is only knowable here. `disposeEvaluationResult` is
-      // what decides it, and it is the same function the seam's own tests
-      // measure — joining the two is row #24's missing half.
-      return disposeEvaluationResult(result.value);
-    }),
+    value: {
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      expiresAt,
+      expressionBytes,
+      pageDriven: work.pageDriven,
+    },
+    afterCommit: work.afterCommit,
   };
 }
 
@@ -444,11 +541,18 @@ export function decideCapture(
     detail: { fullPage },
   });
 
+  const work = afterCommitWork(scope, input, tab, (session, page) =>
+    session.capture(page, request),
+  );
   return {
-    value: { claimId: lease.claimId, tabId: tab.tabId, expiresAt, fullPage },
-    afterCommit: afterCommitWork(scope, input, tab, (session, page) =>
-      session.capture(page, request),
-    ),
+    value: {
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      expiresAt,
+      fullPage,
+      pageDriven: work.pageDriven,
+    },
+    afterCommit: work.afterCommit,
   };
 }
 
@@ -465,6 +569,20 @@ export interface TabReplaceResult {
   /** The tab that replaced it, reserved by this call. */
   readonly tabId: string;
   readonly expiresAt: string;
+  /**
+   * Whether a browser was reached, with the same meaning as
+   * {@link TabOperationResult.pageDriven} and declared separately only
+   * because this result does not extend that base.
+   *
+   * **It matters more here than anywhere else**, which is why it is repeated
+   * rather than left off as an exception. The other five verbs leave nothing
+   * behind when no session is supplied; this one exchanges the tab in the
+   * store regardless. With no browser the surrendered page is never closed
+   * and the replacement is never opened, so the lease comes back holding a
+   * fresh tab identifier whose row is still `opening` with no page under it. A caller
+   * told only that the swap succeeded would believe it now had a clean page.
+   */
+  readonly pageDriven: boolean;
 }
 
 /**
@@ -542,6 +660,7 @@ export function decideTabReplace(
       previousTabId: tab.tabId,
       tabId: replacementId,
       expiresAt,
+      pageDriven: source !== undefined,
     },
     afterCommit:
       source === undefined

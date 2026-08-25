@@ -2686,6 +2686,26 @@ working · not configured.
 **The lease key is never printed by any command**, including in error output and in the
 machine-readable mode, where the field is absent rather than masked.
 
+**There is exactly one exception, and it is the grant.** `claim` returns the key it just issued,
+because a lease whose key was never returned is a lease nobody can address: §2.2 returns a key once
+and makes it unrecoverable by construction, so there is no second way to learn it. Withholding it
+made `claim` a command that **succeeded and could not be used** — it took real tab budget (§2.3
+makes grants and tabs the same integer), minted a lease, and left every keyed command on this
+surface unable to reach it. The lease then held its tab until its lifetime elapsed. A command that
+silently spends bounded capacity on an unusable lease is worse than one that refuses.
+
+This is deliberately the *same* exception the tool surface already carries and states, rather than a
+second rule for a second surface: one hole, named identically in both places, is what keeps
+"identical enforcement asserted rather than assumed" true. The alternative considered was removing
+`claim` from the command line, and it was rejected because §5.3 requires every §3 operation to have
+a command "so parity is real rather than claimed" — dropping one would make that false in exchange
+for a secrecy the other surface does not keep either.
+
+**The hole is exactly this wide:** the key appears on `claim`, on the grant, and nowhere else. Every
+other command strips it, and so does every refusal, including a refusal of `claim` itself. The
+edges are asserted rather than intended — the operations check drives a second command with the key
+and confirms it does not come back.
+
 ### 5.7 Nothing needs anything running
 
 **Every surface runs in the process that invoked it.** The tool surface runs in the service a caller

@@ -225,13 +225,78 @@ export async function runOperationsCheck() {
       `the grant was ${JSON.stringify(granted?.value)}`,
     );
 
-    // §5.6, asserted against the real path rather than against a stub: the
-    // key is absent rather than masked, in the machine-readable mode.
+    // §5.6, asserted against the real path rather than against a stub.
+    //
+    // The grant is the one named exception to "the lease key is never
+    // printed": without it this command spent real tab budget on a lease
+    // nobody could then address, because §2.2 returns a key once and makes it
+    // unrecoverable. So the assertion here is that the key **is** returned,
+    // and the assertions further down are that it is returned by nothing
+    // else — a hole this narrow is only worth having if its edges are pinned.
     check(
-      'the command line does not print the lease key it just issued',
-      granted?.value !== undefined && !('key' in granted.value),
+      'the command line returns the key for the lease it just granted',
+      typeof granted?.value?.key === 'string' && granted.value.key.length > 0,
       `the grant carried ${JSON.stringify(Object.keys(granted?.value ?? {}))}`,
     );
+
+    // ── The lease the command line granted can actually be driven ────────
+    //
+    // This is the point of the exception above, and it is asserted rather
+    // than argued: the key the grant returned is carried back to two other
+    // commands, in two further processes, and the lease is ended through the
+    // same surface that started it. Before the exception, `claim` succeeded
+    // here and the lease was unreachable from every one of these — it held a
+    // tab against the capacity budget until its lifetime elapsed.
+    if (typeof granted?.value?.key === 'string') {
+      const cliKey = granted.value.key;
+
+      const cliStatus = await spawnBinary(
+        COMMAND_LINE,
+        ['status', '--lease-key', cliKey, '--json'],
+        { env: environment },
+      );
+      let statusAnswer;
+      try {
+        statusAnswer = JSON.parse(cliStatus.stdout.trim());
+      } catch {
+        statusAnswer = undefined;
+      }
+      check(
+        'the key the command line issued addresses the lease it granted',
+        statusAnswer?.outcome === 'accepted' &&
+          statusAnswer.value?.claimId === granted.value.claimId &&
+          statusAnswer.value.state === 'active',
+        `status answered ${cliStatus.stdout.trim()} ${cliStatus.stderr.trim()}`,
+      );
+
+      // The narrowness of the hole, asserted on a command that is *not* the
+      // grant but does carry a key in. A surface that stripped on the way out
+      // by operation name rather than by field would leak here.
+      check(
+        'no command other than the grant prints a key back',
+        statusAnswer?.value !== undefined && !('key' in statusAnswer.value),
+        `status carried ${JSON.stringify(Object.keys(statusAnswer?.value ?? {}))}`,
+      );
+
+      const cliRelease = await spawnBinary(
+        COMMAND_LINE,
+        ['release', '--lease-key', cliKey, '--json'],
+        { env: environment },
+      );
+      let releaseAnswer;
+      try {
+        releaseAnswer = JSON.parse(cliRelease.stdout.trim());
+      } catch {
+        releaseAnswer = undefined;
+      }
+      check(
+        'the command line can give back the tab budget its own claim spent',
+        releaseAnswer?.outcome === 'accepted' &&
+          releaseAnswer.value?.released === 'tab' &&
+          releaseAnswer.value.alreadyEnded === false,
+        `release answered ${cliRelease.stdout.trim()} ${cliRelease.stderr.trim()}`,
+      );
+    }
 
     // ── Every keyed operation reaches a rule, not a missing service ───────
     //
@@ -285,6 +350,73 @@ export async function runOperationsCheck() {
       `exit ${String(feedback.code)}; stdout: ${feedback.stdout.trim()} stderr: ${feedback.stderr.trim()}`,
     );
 
+    // ── A feedback row carries the lease it was written about ────────────
+    //
+    // Submitting with a lease key attaches `leaseKeyHash`, which resolves to
+    // the granting lease's `claim_id`. Nothing pinned that: dropping the
+    // attachment entirely left the whole suite and this check green, because
+    // the only assertion on feedback was that a row was written at all, and
+    // a row is still written without it.
+    //
+    // Both halves are asserted, and the pair is the point. A check that only
+    // looked for a lease on the keyed row would pass against a build that
+    // stamped every row with something, and a check that only looked for its
+    // absence on the unkeyed row would pass against a build that attached
+    // nothing at all — which is exactly the mutation that survived. Together
+    // they say the attachment tracks the key.
+    //
+    // Read back through the *other* binary, which prints the resolved lease
+    // rather than the hash — so this measures the thing the column is for
+    // (a row bound to the lease it describes) rather than that a field is
+    // non-null.
+    const keyedFeedback = await spawnBinary(
+      COMMAND_LINE,
+      [
+        'feedback',
+        '--rating',
+        '5',
+        '--category',
+        'worked-well',
+        '--note',
+        'submitted while holding the lease this check granted',
+        '--lease-key',
+        granted?.value?.key ?? 'no-key-was-granted',
+        '--json',
+      ],
+      { env: environment },
+    );
+    check(
+      'broker feedback accepts a submission carrying a lease key',
+      keyedFeedback.code === 0,
+      `exit ${String(keyedFeedback.code)}; stdout: ${keyedFeedback.stdout.trim()} stderr: ${keyedFeedback.stderr.trim()}`,
+    );
+
+    const feedbackRows = await spawnBinary(COMMAND_LINE, ['feedback'], { env: environment });
+    const keyedLine = feedbackRows.stdout
+      .split('\n')
+      .findIndex((line) => line.includes('submitted while holding the lease this check granted'));
+    const unkeyedLine = feedbackRows.stdout
+      .split('\n')
+      .findIndex((line) =>
+        line.includes('the operations check drove this through the shipped executable'),
+      );
+    const lines = feedbackRows.stdout.split('\n');
+
+    // The context line sits directly above the note in each entry.
+    const keyedContext = keyedLine > 0 ? (lines[keyedLine - 1] ?? '') : '';
+    const unkeyedContext = unkeyedLine > 0 ? (lines[unkeyedLine - 1] ?? '') : '';
+
+    check(
+      'a feedback row submitted with a lease resolves to the lease that granted it',
+      typeof granted?.value?.claimId === 'string' && keyedContext.includes(granted.value.claimId),
+      `the entry read back as ${JSON.stringify(keyedContext)}, expecting lease ${String(granted?.value?.claimId)}`,
+    );
+    check(
+      'a feedback row submitted without a lease is bound to none',
+      unkeyedContext.includes('no context was captured'),
+      `the entry read back as ${JSON.stringify(unkeyedContext)}`,
+    );
+
     // ── The tool shim drives a whole lease, in one session ────────────────
     //
     // The stdio surface is the route a calling agent uses, and it is the one
@@ -326,12 +458,18 @@ export async function runOperationsCheck() {
             lease_key: grant.key,
             url: 'https://example.com/',
           }) +
-          callLine(4, 'browser_tab_replace', { lease_key: grant.key }) +
-          callLine(5, 'browser_release', { lease_key: grant.key }),
+          // `read` and `capture` are the two verbs the silent-acceptance
+          // defect was actually measured on — `read` named an artifact and
+          // `capture` reported an image while the `captures` table stayed
+          // empty — so they are driven here rather than assumed to behave
+          // like `navigate`.
+          callLine(4, 'browser_read', { lease_key: grant.key }) +
+          callLine(5, 'browser_capture', { lease_key: grant.key }) +
+          callLine(6, 'browser_tab_replace', { lease_key: grant.key }),
       });
 
       const messages = parseMessages(second.stdout);
-      const [status, navigate, replace, release] = messages.map((message) => message.result);
+      const [status, navigate, read, capture, replace] = messages.map((message) => message.result);
 
       check(
         'a lease granted by one process is found by the next',
@@ -361,6 +499,57 @@ export async function runOperationsCheck() {
         `navigate answered ${JSON.stringify(navigate)}`,
       );
 
+      // ── The response says whether a page was actually driven ──────────
+      //
+      // The defect this pins was measured exactly here, through exactly this
+      // route: `browser_read` answered `accepted` naming `artifacts:
+      // ["snapshot"]` and `browser_capture` answered `accepted`, while the
+      // `captures` table held zero rows. Both were true statements about the
+      // arbitration half and silent about the half that did not happen, and
+      // `accepted` reads as success.
+      //
+      // This has to be asserted **here** rather than in the suite. Every test
+      // that drives a page verb supplies its own session — correctly, since
+      // that is the seam — and a caller that hands the browser in cannot
+      // notice what a caller who does not hand one in is told. This check
+      // injects nothing and speaks to the binary over a pipe, so it sees the
+      // build a person actually gets.
+      //
+      // The value is asserted `=== false` rather than merely present:
+      // this build attaches no session source, so `false` is the true
+      // answer, and a check satisfied by either value would pass just as
+      // happily against a field wired to a constant.
+      check(
+        'a page verb tells the caller no browser was driven',
+        navigate?.value?.pageDriven === false,
+        `navigate answered ${JSON.stringify(navigate?.value)}`,
+      );
+      check(
+        'tab replace tells the caller no browser was driven',
+        replace?.value?.pageDriven === false,
+        `tab replace answered ${JSON.stringify(replace?.value)}`,
+      );
+
+      // The two the defect was reported against, asserted together with the
+      // thing that made them a lie: `read` still names the artifacts it
+      // *would* collect and `capture` still reports the mode it *would* use,
+      // because both are true statements about what was decided. What they
+      // must not do any more is let a caller read that as a page having been
+      // touched.
+      check(
+        'read still names its artifacts and now says none were collected',
+        read?.outcome === 'accepted' &&
+          Array.isArray(read.value?.artifacts) &&
+          read.value.artifacts.includes('snapshot') &&
+          read.value.pageDriven === false,
+        `read answered ${JSON.stringify(read?.value)}`,
+      );
+      check(
+        'capture reports acceptance and says no image was taken',
+        capture?.outcome === 'accepted' && capture.value?.pageDriven === false,
+        `capture answered ${JSON.stringify(capture?.value)}`,
+      );
+
       // The tab is genuinely exchanged: the replacement is a different
       // identifier, and the one given up is the one the lease held.
       check(
@@ -371,6 +560,34 @@ export async function runOperationsCheck() {
           replace.value.tabId !== grant.tabId,
         `tab replace answered ${JSON.stringify(replace)}`,
       );
+
+      // ── The person-facing surface says it in words ────────────────────
+      //
+      // The boolean is what a program branches on; the default command-line
+      // mode is for a person, and a bare `pageDriven: false` among four
+      // identifiers asks the reader to already know what the field means.
+      // This drives the *other* binary, in its *default* mode, and asserts
+      // the prose — so the two surfaces cannot end up honest on one and
+      // cryptic on the other.
+      const humanCapture = await spawnBinary(COMMAND_LINE, ['capture', '--lease-key', grant.key], {
+        env: environment,
+      });
+      check(
+        'the command line tells a person in words that no page was driven',
+        humanCapture.code === 0 &&
+          humanCapture.stdout.includes('no browser is attached') &&
+          humanCapture.stdout.includes('was not driven'),
+        `exit ${String(humanCapture.code)}; stdout: ${humanCapture.stdout.trim()} stderr: ${humanCapture.stderr.trim()}`,
+      );
+
+      // Released last, in its own exchange, because everything above needs
+      // the lease to still be live — the check caught this itself the first
+      // time it was written the other way round, refusing with `claim.live`.
+      const third = await spawnBinary(TOOL_SHIM, [], {
+        env: environment,
+        input: callLine(8, 'browser_release', { lease_key: grant.key }),
+      });
+      const release = parseMessages(third.stdout)[0]?.result;
 
       check(
         'release gives the tab back',
