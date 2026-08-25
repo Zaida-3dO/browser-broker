@@ -243,7 +243,6 @@ class RealBrowserSession implements BrowserSession {
    * leaking outward by accident.
    */
   readonly #pages = new Map<string, Page>();
-  #nextTabOrdinal = 0;
 
   /**
    * How many artefacts this session has written, used to keep their names
@@ -325,13 +324,91 @@ class RealBrowserSession implements BrowserSession {
     };
   }
 
-  /** Mint a handle for a page and remember the mapping. */
-  #track(page: Page): TabHandle {
-    this.#nextTabOrdinal += 1;
-    const driverTabId = `${this.#browser}-${String(this.#nextTabOrdinal)}`;
+  /**
+   * Mint a handle for a page and remember the mapping.
+   *
+   * ── The identifier is the browser's, and that is the whole point ────────
+   *
+   * `driver_tab_id` is specified as a **physical** identity: the store carries
+   * `CREATE UNIQUE INDEX one_row_per_physical_tab ON tabs (browser_id,
+   * driver_tab_id)`, whose own comment says the rule exists because "across
+   * separate processes this is not one option among several — there is no
+   * shared process to hold a lock in". So the name has to mean the same thing
+   * in every process that connects to one browser.
+   *
+   * **A counter cannot do that.** A per-session ordinal names the first page
+   * this connection happened to see, which is a fact about the connection
+   * rather than about the page: a second process attaching to the same browser
+   * either gives the same page a different name, or gives a *different* page
+   * the same name because it enumerated in a different order. Both are worse
+   * than they sound in a service that is spawned per caller and exits with it
+   * — a fresh process is the ordinary case, not an edge one, so the ordinary
+   * case is a caller unable to address the tab its own lease owns.
+   *
+   * The debugging protocol already assigns every page a stable identifier that
+   * every connection sees identically, so that is what is used. Verified
+   * against a live browser: the same page reports the same identifier from a
+   * second, independent connection, and the keeper reports a different one.
+   *
+   * It stays inside this class exactly as the ordinal did — never returned to
+   * a caller on any surface — so nothing about what is disclosed changes.
+   */
+  async #track(page: Page): Promise<TabHandle> {
+    const driverTabId = await this.#identify(page);
     this.#pages.set(driverTabId, page);
     this.#recordFrom(driverTabId, page);
     return { browser: this.#browser, driverTabId };
+  }
+
+  /**
+   * Ask the browser what it calls this page.
+   *
+   * A short protocol session, opened and detached around the one question. It
+   * is not held open: the identifier does not change, so there is nothing to
+   * keep listening for, and a session per page held for the life of a
+   * connection is a resource this class would have to reason about.
+   */
+  async #identify(page: Page): Promise<string> {
+    const cdp = await this.#context.newCDPSession(page);
+    try {
+      const info = (await cdp.send('Target.getTargetInfo')) as {
+        targetInfo: { targetId: string };
+      };
+      return info.targetInfo.targetId;
+    } finally {
+      // Best effort: a page that closed under us cannot be detached from, and
+      // the session dies with it either way.
+      await cdp.detach().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Find a live page by the browser's own name for it, adopting it if this
+   * session has not seen it before.
+   *
+   * **This is what makes a tab addressable by the process that did not open
+   * it.** Without it, a handle really would be "only valid in the session that
+   * opened it", and a command line that spawns a process per command could
+   * drive a page exactly once — on the call that created it.
+   *
+   * Nothing is trusted from the caller here: the identifier is matched against
+   * pages **the browser reports as open**, so a name that matches nothing
+   * resolves to nothing. The keeper is excluded, so it stays unaddressable
+   * (§3.13) by the same rule that keeps it out of {@link listTabs}.
+   */
+  async #adopt(driverTabId: string): Promise<Page | undefined> {
+    for (const page of this.#context.pages()) {
+      if (page.isClosed() || page === this.#keeper.page) {
+        continue;
+      }
+      if ((await this.#identify(page)) !== driverTabId) {
+        continue;
+      }
+      this.#pages.set(driverTabId, page);
+      this.#recordFrom(driverTabId, page);
+      return page;
+    }
+    return undefined;
   }
 
   /**
@@ -391,14 +468,23 @@ class RealBrowserSession implements BrowserSession {
    * operation that resolves through here is structurally unable to address it
    * — **a caller cannot drive what it cannot name** (§3.13).
    */
-  #page(tab: TabHandle): Page {
-    const page = this.#pages.get(tab.driverTabId);
-    if (page === undefined) {
-      throw new Error(
-        `No page is held for tab ${tab.driverTabId}. A handle is only valid in the session that opened it.`,
-      );
+  async #page(tab: TabHandle): Promise<Page> {
+    const held = this.#pages.get(tab.driverTabId);
+    if (held !== undefined && !held.isClosed()) {
+      return held;
     }
-    return page;
+
+    // Not in this session's map, which is the ordinary state of a process that
+    // did not open the tab. The name is the browser's own (see {@link #track}),
+    // so it can be looked for among the pages the browser reports as open.
+    const adopted = await this.#adopt(tab.driverTabId);
+    if (adopted !== undefined) {
+      return adopted;
+    }
+
+    throw new Error(
+      `No page is open in the ${this.#browser} browser for tab ${tab.driverTabId}. The page it named has closed, or it belongs to a different browser.`,
+    );
   }
 
   async openTab(): Promise<TabHandle> {
@@ -407,16 +493,19 @@ class RealBrowserSession implements BrowserSession {
     // precondition on serving, and this is where serving begins.
     await this.ensureKeeperTab();
     const page = await this.#context.newPage();
-    return this.#track(page);
+    return await this.#track(page);
   }
 
-  // Not `async`, deliberately: the connection already holds the page list, so
-  // this reads it synchronously and hands back a resolved promise. Marking it
-  // `async` for symmetry would claim an await that does not happen.
-  listTabs(): Promise<readonly TabHandle[]> {
-    // Every page open in this browser at the moment it is asked, **including
-    // ones no lease of this service's owns** — row #21's reconciliation needs
-    // to see a page nobody here opened in order to close it.
+  /**
+   * Every page open in this browser at the moment it is asked, **including
+   * ones no lease of this service's owns** — row #21's reconciliation needs to
+   * see a page nobody here opened in order to close it.
+   *
+   * `async` because naming a page means asking the browser what it calls it,
+   * which is a round trip. It reported a resolved promise while the name was a
+   * local counter; the name is now the browser's, and the await is real.
+   */
+  async listTabs(): Promise<readonly TabHandle[]> {
     const handles: TabHandle[] = [];
     for (const page of this.#context.pages()) {
       if (page === this.#keeper.page) {
@@ -428,11 +517,11 @@ class RealBrowserSession implements BrowserSession {
       const existing = [...this.#pages.entries()].find(([, held]) => held === page);
       handles.push(
         existing === undefined
-          ? this.#track(page)
+          ? await this.#track(page)
           : { browser: this.#browser, driverTabId: existing[0] },
       );
     }
-    return Promise.resolve(handles);
+    return handles;
   }
 
   /**
@@ -504,7 +593,7 @@ class RealBrowserSession implements BrowserSession {
    * differ constantly and the caller needs the one it got.
    */
   async navigate(tab: TabHandle, url: string): Promise<NavigationResult> {
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
     const response = await page.goto(url);
     return {
       url: page.url(),
@@ -560,7 +649,7 @@ class RealBrowserSession implements BrowserSession {
    */
   async seedStorage(tab: TabHandle, entries: readonly StorageSeedEntry[]): Promise<void> {
     if (entries.length === 0) return;
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
 
     // Grouped by origin because storage is partitioned by origin: a write has
     // to happen while the page is *at* that origin, so one navigation per
@@ -651,7 +740,7 @@ class RealBrowserSession implements BrowserSession {
    * any validator upstream can know.
    */
   async act(tab: TabHandle, request: ActionRequest): Promise<ArtifactResult> {
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
 
     switch (request.action) {
       case 'click':
@@ -877,7 +966,7 @@ class RealBrowserSession implements BrowserSession {
     tab: TabHandle,
     artifacts: readonly ReadArtifact[],
   ): Promise<readonly ArtifactResult[]> {
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
     const results: ArtifactResult[] = [];
 
     for (const artifact of artifacts) {
@@ -975,7 +1064,7 @@ class RealBrowserSession implements BrowserSession {
    * the row that owns it could argue with it.
    */
   async evaluate(tab: TabHandle, expression: string): Promise<EvaluationResult> {
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
     const value: unknown = await page.evaluate(expression);
 
     // Measured on the serialised form, because that is what a caller would be
@@ -1015,7 +1104,7 @@ class RealBrowserSession implements BrowserSession {
   async cookies(tab: TabHandle): Promise<readonly CookieSummary[]> {
     // Addressed to the tab, so a lease on one page is not a read of the whole
     // profile's jar — even though the tabs in one browser do share it (§1.2).
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
 
     const jar = await this.#context.cookies(page.url());
 
@@ -1054,7 +1143,7 @@ class RealBrowserSession implements BrowserSession {
    * not exist yet when this runs.
    */
   async settlePage(tab: TabHandle): Promise<void> {
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
 
     await page.addStyleTag({
       content: `
@@ -1112,7 +1201,7 @@ class RealBrowserSession implements BrowserSession {
    * afterwards is a mask that was, for one moment, not applied.
    */
   async capture(tab: TabHandle, request: CaptureRequest): Promise<RawCapture> {
-    const page = this.#page(tab);
+    const page = await this.#page(tab);
 
     // Painted **before** the shutter, never after: a mask applied afterwards
     // is a mask that was, for one moment, not applied. The request names
