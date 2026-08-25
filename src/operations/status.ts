@@ -31,10 +31,22 @@ import { countByGuard, readLedger, type GuardCount, type LedgerEntry } from './l
  * which is the entire point of §2.4's standing rule.
  *
  * It is arguably better that generating a report does not expire anybody's
- * lease as a side effect — but that is a consequence and not the reason, and
- * the honest statement is that **when the status operation lands, this module
- * should become a call to it.** Everything below `at` and the shapes it
- * returns would survive that substitution unchanged.
+ * lease as a side effect — but that is a consequence rather than the reason.
+ *
+ * **Do not expect this module to collapse into the agent surface's status
+ * operation.** That operation is `browser_status` (§3.3), and it is the wrong
+ * shape in three separate ways at once: it takes a lease key and answers for
+ * **one** caller, it is authenticated against that key, and **polling it
+ * renews the lease** — it mutates. The snapshot needs an installation-wide
+ * read of every lease, the queue, the leaked tabs and the ledger, from a
+ * process holding nobody's key, and it must renew nothing. A substitution
+ * would hand the document one caller's own lease and extend it for looking.
+ *
+ * So what this module is a stand-in for is **not** an operation that exists:
+ * it is an installation-wide read that nothing has built. Until something
+ * does, deriving here is the design rather than a shortcut, and the property
+ * the document actually depends on — that a lapsed lease is reported as
+ * expired — is guaranteed above regardless of what else lands.
  *
  * ── Nothing here is written, and nothing here does browser work ─────────
  *

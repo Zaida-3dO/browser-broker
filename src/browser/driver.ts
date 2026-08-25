@@ -167,6 +167,16 @@ export interface NavigationResult {
  * to add it. `SCHEMA.md` §3.13 keeps `bringToFront` off this list
  * deliberately, and `foreground.never_moved` (§7.3) is the build rule that
  * keeps it off.
+ *
+ * **`fill_form` and `drag` are row #64's, and their measurements are
+ * opposite.** Batch fill was measured at **78 calls across 35 sessions** and
+ * is ordinary; **drag and drop measured zero calls across 2,007 transcripts**
+ * over a month — not "few", none. #64 folds the second in at low priority
+ * with that number recorded rather than splitting it out to hide the
+ * asymmetry, so that if it turns out to matter it arrives with the number to
+ * argue against. `drag` is **in-page, element to element**: it takes two
+ * references from the same snapshot, and there is no file-from-the-desktop
+ * shape here, because a lease is a tab and the desktop is not in it.
  */
 export type PageAction =
   | 'click'
@@ -179,7 +189,9 @@ export type PageAction =
   | 'scroll'
   | 'resize'
   | 'emulate'
-  | 'dialog';
+  | 'dialog'
+  | 'fill_form'
+  | 'drag';
 
 /** Every action, in the order §3.8 lists them, for a refusal that names them all. */
 export const PAGE_ACTIONS: readonly PageAction[] = [
@@ -194,25 +206,274 @@ export const PAGE_ACTIONS: readonly PageAction[] = [
   'resize',
   'emulate',
   'dialog',
+  'fill_form',
+  'drag',
 ];
 
 /**
- * What an action needs. Row #22 decides which fields each verb requires and
- * refuses the combinations that make no sense; the seam only has to carry
- * them.
+ * A viewport, in device-independent pixels (`resize`, #61).
+ *
+ * **Two numbers rather than a string, and that is the whole reason this type
+ * exists.** The obvious alternative is to carry the size in the generic
+ * `value` field as something like `"1280x720"` — and it would work, and it
+ * would move the parse into every implementation of this seam, each free to
+ * disagree about the separator, about whitespace, and about what a negative
+ * number means. A viewport is two integers; carrying it as two integers means
+ * a driver receives what the caller meant rather than a string it has to
+ * re-derive. **The bounds are still row #61's** — a type says these are
+ * numbers, not that they are sane ones.
  */
-export interface ActionRequest {
-  readonly action: PageAction;
-  /**
-   * An element reference taken from a snapshot, for the verbs that address an
-   * element. Absent for the ones that do not (`resize`, `emulate`, `dialog`).
-   */
-  readonly ref?: string;
-  readonly value?: string;
+export interface Viewport {
+  readonly width: number;
+  readonly height: number;
 }
+
+/**
+ * The media preferences a page renders against (`emulate`, #62).
+ *
+ * `SCHEMA.md` §3.8's table, one field each, **and every one is optional
+ * independently** — a caller switching to dark mode is not thereby saying
+ * anything about motion or contrast, and a shape that made it say something
+ * would silently reset a preference the caller had set on a previous call.
+ * Row #62 refuses the empty case, because an emulate that names no preference
+ * is a call that means nothing.
+ *
+ * These are properties of the **browsing context**, not of anything reachable
+ * from inside the page (§3.8, §3.10) — which is the same gap `resize` has and
+ * the reason 19 measured calls are enough. An expression can read which
+ * preferences are in force and cannot set one; a page's own theme switch
+ * exercises **the page's state rather than what the browser reports**, and
+ * what the browser reports is precisely the code path a dark-mode review
+ * exists to check.
+ */
+export interface MediaPreferences {
+  /** `light`, `dark`, or the no-preference state. */
+  readonly colourScheme?: 'light' | 'dark' | 'no-preference';
+  /** Whether the page is told a person prefers less animation. */
+  readonly reducedMotion?: 'reduce' | 'no-preference';
+  /** Whether a high-contrast colour override is in force. */
+  readonly forcedColours?: 'active' | 'none';
+}
+
+/**
+ * How to answer a native dialog (`dialog`, #63).
+ *
+ * **Here on consequence rather than frequency.** Measured at 8 calls, which
+ * on frequency alone earns nothing — but a native dialog **blocks the tab it
+ * belongs to**, and nothing else in that tab answers while it is up: not a
+ * navigation, not an action, not a capture, not an evaluation. So a caller
+ * that trips one holds a lease it cannot use and pays for it until the
+ * lifetime expires, and its only exit is to burn the lease. That is a
+ * capacity failure wearing a convenience failure's clothes (§3.8).
+ */
+export interface DialogResponse {
+  /** Accept it, or dismiss it. */
+  readonly accept: boolean;
+  /**
+   * What to type into a prompt before accepting. Meaningless on a dialog that
+   * takes no text, and row #63 refuses it alongside a dismissal — supplying
+   * text and then dismissing describes two different intentions at once.
+   */
+  readonly promptText?: string;
+}
+
+/** One field and what to put in it (`fill_form`, #64). */
+export interface FormField {
+  /** An element reference taken from a snapshot. */
+  readonly ref: string;
+  readonly value: string;
+}
+
+/**
+ * What an action needs, **as a discriminated union over the verb**.
+ *
+ * ── Why this is a union rather than one interface of optional fields ────
+ *
+ * A single flat interface carrying `ref?` and `value?` for every verb would
+ * leave *"which fields does this verb require"* entirely to a run-time guard.
+ * The verbs are what make that the wrong trade: `resize` needs two numbers,
+ * `emulate` needs three independent enums, `dialog` needs a boolean and a
+ * string, `fill_form` needs a list and `drag` needs a **second** reference.
+ * One flat interface holding all of that gives every verb eight optional
+ * fields and makes *"which of these matter for this verb"* a thing to look up
+ * rather than a thing to read.
+ *
+ * **So the compiler refuses the nonsense combinations, and row #22's guard
+ * refuses the ones it cannot see.** Those are different sets and the
+ * difference is worth stating rather than implying:
+ *
+ * - **Structural.** A `resize` carrying an element reference does not
+ *   type-check; nor does a `click` carrying a viewport, a `dialog` carrying a
+ *   list of fields, or a `drag` with only one end. The member for each verb
+ *   names exactly its own arguments and no others.
+ * - **Conventional, and left to the guard.** Nothing here stops a width of
+ *   zero, a negative height, an empty reference string, an `emulate` naming
+ *   no preference, an empty field list or a `drag` whose two references are
+ *   the same element. **Every one of those type-checks**, and every one is a
+ *   refusal row #22 or the row that owns the verb owes. A type says what
+ *   shape a value has; it does not say the value is sensible, and reading the
+ *   absence of these checks here as their absence everywhere is the mistake
+ *   this paragraph exists to prevent.
+ *
+ * **Anything arriving from outside the process is `unknown` until a guard has
+ * looked at it.** A caller's arguments reach this type by being validated
+ * into it, never by being asserted into it — a cast at the boundary makes the
+ * whole union decorative, because the compiler is then checking a claim the
+ * boundary made up rather than a fact anybody established.
+ */
+export type ActionRequest =
+  | {
+      /**
+       * The verbs that address one element and take no value: `SCHEMA.md`
+       * §3.8's ordinary page verbs, minus the ones that need something typed.
+       */
+      readonly action: 'click' | 'hover' | 'check';
+      /** An element reference taken from a snapshot. */
+      readonly ref: string;
+    }
+  | {
+      /** The verbs that address one element **and** need a value. */
+      readonly action: 'type' | 'fill' | 'select';
+      readonly ref: string;
+      readonly value: string;
+    }
+  | {
+      /**
+       * A key press. Addresses an element optionally — a press with no
+       * reference goes to whatever the page has focused, which is the
+       * ordinary way a caller sends a key to a page rather than to a field.
+       */
+      readonly action: 'press';
+      readonly ref?: string;
+      /** The key's name. */
+      readonly value: string;
+    }
+  | {
+      /**
+       * Scroll. The reference is optional for the same reason `press`'s is:
+       * with one, the named element is scrolled into view; without one, the
+       * page is.
+       */
+      readonly action: 'scroll';
+      readonly ref?: string;
+    }
+  | {
+      /** #61. Set the tab's viewport. Addresses no element — it is not in the page. */
+      readonly action: 'resize';
+      readonly viewport: Viewport;
+    }
+  | {
+      /** #62. Set media preferences. Addresses no element, for the same reason. */
+      readonly action: 'emulate';
+      readonly preferences: MediaPreferences;
+    }
+  | {
+      /** #63. Answer or dismiss a native dialog. Addresses no element — it is not in the page either. */
+      readonly action: 'dialog';
+      readonly response: DialogResponse;
+    }
+  | {
+      /** #64. Several fields in one call, measured at 78 calls across 35 sessions. */
+      readonly action: 'fill_form';
+      readonly fields: readonly FormField[];
+    }
+  | {
+      /**
+       * #64. Element to element, in the page. **Measured at zero calls**, and
+       * folded in at low priority with that number recorded.
+       */
+      readonly action: 'drag';
+      /** What is being dragged. */
+      readonly ref: string;
+      /** Where it is being dragged to. Both come from the same snapshot. */
+      readonly targetRef: string;
+    };
 
 /** The kinds of artefact a read can ask for (`SCHEMA.md` §3.9). */
 export type ReadArtifact = 'snapshot' | 'console' | 'network' | 'cookies';
+
+/**
+ * Every artefact a read can ask for, for a caller that has to enumerate them.
+ *
+ * Snapshot first because it is the default and the only load-bearing one
+ * (`SCHEMA.md` §3.9): every element reference `browser_act` takes comes from
+ * it, so a read that omitted it would be useless in the ordinary case.
+ */
+export const READ_ARTIFACTS: readonly ReadArtifact[] = [
+  'snapshot',
+  'console',
+  'network',
+  'cookies',
+];
+
+/**
+ * How an artefact comes to be, which decides what asking for it costs.
+ *
+ * **This is the fact `SCHEMA.md` §3.9 asks to be understood rather than
+ * merely obeyed**, so it is on the seam as data instead of in a comment
+ * somebody has to find:
+ *
+ * - **`accumulated`** — the browsing context has been recording it since the
+ *   moment it existed, whether or not anybody intends to ask. Console output
+ *   and network activity, and **only** those two. There is no request that
+ *   starts or stops the collection, so the default's filter is on *what gets
+ *   written to disk*, not on what gets collected, and **the cost of not
+ *   asking is zero**: a caller that realises afterwards that it wanted the
+ *   console asks on its next read and gets the accumulated history, not a
+ *   recording that started when it asked. That is what makes a narrow default
+ *   cheap rather than a trap, and it is why there is **no console-listener
+ *   action** on `browser_act` and no hole where one would go — *arm, act,
+ *   collect* is served by *act, then read*.
+ * - **`live`** — answered at the moment of asking, against the context, with
+ *   no accumulated log behind it. **Cookies, and cookies alone.** Asking is a
+ *   real operation with a real cost — small, but not zero — and the answer is
+ *   a snapshot of that instant rather than a history. So this one is off by
+ *   default for a second reason on top of the obvious one.
+ * - **`generated`** — produced on request from the page as it is now. The
+ *   snapshot.
+ */
+export type ArtifactCollection = 'accumulated' | 'live' | 'generated';
+
+/**
+ * Which artefacts are which. Written down so *"is this already being
+ * collected"* has a stable answer per artefact rather than being something to
+ * reason out each time somebody reads the default.
+ */
+export const ARTIFACT_COLLECTION: Readonly<Record<ReadArtifact, ArtifactCollection>> = {
+  snapshot: 'generated',
+  console: 'accumulated',
+  network: 'accumulated',
+  cookies: 'live',
+};
+
+/**
+ * One cookie, as a summary — **and there is no field here for its value.**
+ *
+ * `SCHEMA.md` §3.9 and §7.1 `read.cookies_no_values`: a cookie read returns
+ * names, domains, paths, expiries and flags. **Not truncated, not masked: the
+ * field is absent.** A service handing over cookie values is a
+ * credential-export feature whatever else it is called, and §3.13 refuses the
+ * write side for the same reason.
+ *
+ * **The absence is expressed as a type rather than as a redaction step**, and
+ * that is the point of putting it on the seam. A shape with a `value` field
+ * that something later blanks has a moment in which the value is in this
+ * process's memory and one forgotten path away from a file; a shape with no
+ * such field has nowhere to put one. Row #23 owes the test that seeds a
+ * cookie with a known string and asserts the string appears nowhere in the
+ * response **or in the file** — because a type stops this process holding a
+ * value, and cannot stop a driver writing one into a file it names.
+ */
+export interface CookieSummary {
+  readonly name: string;
+  readonly domain: string;
+  readonly path: string;
+  /** When it expires, or null for a session cookie. */
+  readonly expires: string | null;
+  readonly httpOnly: boolean;
+  readonly secure: boolean;
+  readonly sameSite: 'Strict' | 'Lax' | 'None' | null;
+}
 
 /**
  * A read's result, per artefact.
@@ -228,6 +489,83 @@ export interface ArtifactResult {
   readonly path: string;
   readonly bytes: number;
   readonly truncated: boolean;
+}
+
+/**
+ * A rectangle to paint over before a picture is taken (`SCHEMA.md` §3.11's
+ * `mask`).
+ *
+ * **Masking before the pixels exist beats filtering afterwards**, because a
+ * region that was never captured cannot be reported as changed. That is why
+ * this is on the seam rather than something the pipeline does to the image it
+ * got back: a mask applied after the shutter is a mask that was, for one
+ * moment, not applied.
+ */
+export interface CaptureMask {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * What a driver is asked for when a picture is wanted.
+ *
+ * **No tier and no resolution.** The driver takes the picture the page can
+ * give; deciding which rung it is shrunk to, and doing the shrinking, is the
+ * pipeline's (#31) — see {@link RawCapture} for why that split is where it is.
+ */
+export interface CaptureRequest {
+  /** `viewport` unless the caller asked otherwise; `element` names a selector. */
+  readonly fullPage: boolean;
+  readonly selector?: string;
+  /** Areas painted over **before** the shutter, never after. */
+  readonly mask?: readonly CaptureMask[];
+}
+
+/**
+ * A picture, as the browser produced it, **in memory**.
+ *
+ * ── Why the driver returns bytes and not a path ─────────────────────────
+ *
+ * Every other artefact on this seam comes back as a path
+ * ({@link ArtifactResult}) because a snapshot or a network log entering a
+ * conversation is paid for on every later turn. A capture is different in one
+ * specific way and identical in every other: the image still never reaches a
+ * caller — §3.11 is explicit that what comes back is *"a path, the dimensions
+ * … **never the image**"* — but between the shutter and the file there is a
+ * **downscale**, and the thing that downscales is the pipeline rather than the
+ * browser.
+ *
+ * So the choice is between a driver that writes a file the pipeline
+ * immediately rewrites, and a driver that hands over bytes the pipeline writes
+ * once. The second is chosen, and the deciding argument is not the extra
+ * write: it is **`SCHEMA.md` §1.7a's "the service decides where the file may
+ * go"**. A driver that picked a path would be a second thing choosing
+ * locations under the artifact root, and rule two of `artifacts/store.ts` —
+ * nothing lands outside the tree — would then hold in one place and be a
+ * convention in another.
+ *
+ * The cost is stated rather than hidden: **a full-page capture of a long page
+ * is held in memory in full.** That is bounded by what a browser was willing
+ * to produce in one image, and it is the same bound a downscaler would face on
+ * reading the file back.
+ */
+export interface RawCapture {
+  /** The encoded image. PNG, which is what every driver here produces. */
+  readonly image: Uint8Array;
+  /** What the browser produced, before any shrinking (`captures.source_*`). */
+  readonly width: number;
+  readonly height: number;
+  /**
+   * The viewport width the picture was taken at — **the breakpoint**
+   * (`captures.viewport_width`, §1.7). Read from the page rather than from
+   * whatever the caller last asked to resize to, because those disagree
+   * whenever a resize did not take.
+   */
+  readonly viewportWidth: number;
+  /** Where the tab actually is, for `captures.url` (§1.7). */
+  readonly url: string;
 }
 
 /** What evaluating an expression produced (`SCHEMA.md` §3.10). */
@@ -290,8 +628,63 @@ export interface TabOperations {
     artifacts: readonly ReadArtifact[],
   ) => Promise<readonly ArtifactResult[]>;
 
+  /**
+   * The cookie summary as data — **names, domains, paths, expiries and flags,
+   * and structurally no values** ({@link CookieSummary}).
+   *
+   * Separate from {@link TabOperations.read} rather than folded into it, and
+   * the reason is the rule rather than convenience. §7.1
+   * `read.cookies_no_values` is a **shape**, not a refusal: the way to make a
+   * shape true is for the value to have nowhere to live. A driver that
+   * serialised cookies to a file itself would put the only place the
+   * redaction could be checked inside the module that has the values, where
+   * this repository's own test could observe the file and never the step. By
+   * handing back {@link CookieSummary} — a type with no value field — the
+   * redaction happens at the seam, and what row #23 writes to disk is
+   * something that never had a value in it.
+   *
+   * **A live query** ({@link ARTIFACT_COLLECTION}), so calling this costs
+   * something and the answer describes that instant rather than a history.
+   */
+  readonly cookies: (tab: TabHandle) => Promise<readonly CookieSummary[]>;
+
   /** Evaluate an expression in the page (`SCHEMA.md` §3.10). */
   readonly evaluate: (tab: TabHandle, expression: string) => Promise<EvaluationResult>;
+
+  /**
+   * Stop the page moving: animations and transitions stopped, the text caret
+   * hidden, web fonts waited for (`SCHEMA.md` §3.11).
+   *
+   * **Separate from {@link TabOperations.capture} rather than folded into
+   * it**, and the separation is the whole reason it is testable. §3.11 calls
+   * settling *"the highest-value line in the whole comparison feature"*,
+   * because without it **the same page produces different pixels run to run** —
+   * a fading banner, a transition mid-flight, a blinking caret, a spinner, an
+   * image that arrived one frame later. No threshold fixes any of that: a
+   * colour tolerance is a per-pixel comparison and has nothing to say about
+   * something that moved.
+   *
+   * A driver that settled inside its own capture would make *"every capture
+   * settles first"* an implementation detail of whichever driver is installed,
+   * provable only by inspecting it. As two calls, the ordering is the
+   * pipeline's, it is one assertion on the fake's call log, and a driver that
+   * forgot to settle cannot hide the omission.
+   */
+  readonly settlePage: (tab: TabHandle) => Promise<void>;
+
+  /**
+   * Take a picture and hand back the pixels.
+   *
+   * **The correct-surface setting is not a parameter here, and that is
+   * deliberate.** `capture.surface_required` (§7.3) says no capture is ever
+   * taken with it disabled — in a windowed browser it returns another tab's
+   * pixels, with no error, *a wrong answer that looks exactly like a right
+   * one*. A parameter would be a way to disable it, so there is none: it is a
+   * property of an implementation of this seam, owed by row #20, and a build
+   * rule rather than a run-time check because the correct behaviour is that the
+   * call never happens.
+   */
+  readonly capture: (tab: TabHandle, request: CaptureRequest) => Promise<RawCapture>;
 }
 
 /**

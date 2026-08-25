@@ -5,7 +5,10 @@ import { describe, it } from 'node:test';
 
 import Database from 'better-sqlite3';
 
-import { UNREACHABLE, type AddressSource } from '../../src/operations/addresses.ts';
+// `UNREACHABLE` is deliberately NOT imported here — see the note in
+// `document.test.ts`: the guard must not be written in terms of the thing it
+// guards.
+import type { AddressSource } from '../../src/operations/addresses.ts';
 import { writeSnapshot } from '../../src/report/snapshot.ts';
 import { seedClaim, seedTab } from '../helpers/seed.ts';
 import { makeTempStore, withSteppedStore } from '../helpers/temp-store.ts';
@@ -95,7 +98,10 @@ describe('generating the snapshot', () => {
         const result = await writeSnapshot(store.db, { outputPath: target, now });
         const html = fs.readFileSync(target, 'utf8');
 
-        assert.ok(html.includes(UNREACHABLE));
+        // The rendered cell, not the whole file: the document explains the
+        // word in prose too, so matching the file would be satisfied by the
+        // explanation even when no cell carries it.
+        assert.match(html, /<span class="unreachable"[^>]*>unreachable<\/span>/);
         assert.equal(result.tabsAsked, 0);
         assert.equal(result.tabsUnreachable, 1);
         // The note that says it was one cause rather than fifteen failures.
@@ -219,7 +225,10 @@ describe('generating the snapshot', () => {
         });
 
         const html = fs.readFileSync(target, 'utf8');
-        assert.ok(html.includes(UNREACHABLE));
+        // The rendered cell, not the whole file: the document explains the
+        // word in prose too, so matching the file would be satisfied by the
+        // explanation even when no cell carries it.
+        assert.match(html, /<span class="unreachable"[^>]*>unreachable<\/span>/);
         assert.equal(result.tabsUnreachable, 1);
       } finally {
         temp.remove();

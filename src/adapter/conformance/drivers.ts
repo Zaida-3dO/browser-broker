@@ -1,4 +1,5 @@
 import { cliConformanceDriver } from '../../cli/conformance-driver.ts';
+import { toolStdioConformanceDriver } from '../../tool/conformance-driver.ts';
 import type { ConformanceDrivers } from './driver.ts';
 
 /**
@@ -32,5 +33,6 @@ import type { ConformanceDrivers } from './driver.ts';
  * matrix, which is the failure this file exists to prevent.
  */
 export const CONFORMANCE_DRIVERS: ConformanceDrivers = {
+  'tool-stdio': toolStdioConformanceDriver,
   cli: cliConformanceDriver,
 };

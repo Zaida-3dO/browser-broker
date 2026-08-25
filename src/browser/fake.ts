@@ -1,7 +1,10 @@
+import { solidPng } from '../capture/image.ts';
 import { BROWSER_IDS, type ActionRequest } from './driver.ts';
 import type {
   ArtifactResult,
+  CaptureRequest,
   BrowserDescription,
+  CookieSummary,
   BrowserDriver,
   BrowserId,
   BrowserMode,
@@ -10,6 +13,7 @@ import type {
   DiscoveryRecord,
   EvaluationResult,
   NavigationResult,
+  RawCapture,
   ReadArtifact,
   TabHandle,
 } from './driver.ts';
@@ -70,7 +74,10 @@ export type DriverCallName =
   | 'navigate'
   | 'act'
   | 'read'
+  | 'cookies'
   | 'evaluate'
+  | 'settlePage'
+  | 'capture'
   | 'detach';
 
 /**
@@ -113,10 +120,36 @@ export interface FakeBrowserOptions {
   readonly pid?: number;
 }
 
+/**
+ * What the fake's shutter produces, when a test needs a particular picture.
+ *
+ * **This is canned geometry, never a rendering.** The fake does not simulate a
+ * browser (see this file's header), so a test that sets `width` here is
+ * stating what it wants the pipeline to have been handed — which is exactly
+ * the input a downscale test needs and exactly the wrong thing to read as
+ * evidence that a browser would have produced it.
+ */
+export interface FakeCaptureOptions {
+  readonly width?: number;
+  readonly height?: number;
+  readonly viewportWidth?: number;
+  readonly url?: string;
+  /**
+   * The encoded bytes handed back.
+   *
+   * Defaults to a real, decodable one-pixel image rather than arbitrary
+   * bytes, because a pipeline that decodes what it was given must be given
+   * something decodable — and a fake that handed back nonsense would make
+   * every downscale test a test of the decoder's error path.
+   */
+  readonly image?: Uint8Array;
+}
+
 /** Where the fake's canned answers come from, when a test needs a particular one. */
 export interface FakeDriverOptions {
   readonly regular?: FakeBrowserOptions;
   readonly private?: FakeBrowserOptions;
+  readonly capture?: FakeCaptureOptions;
 }
 
 const DEFAULT_MODE: Readonly<Record<BrowserId, BrowserMode>> = {
@@ -130,6 +163,40 @@ const DEFAULT_PID: Readonly<Record<BrowserId, number>> = {
   regular: 4001,
   private: 4002,
 };
+
+/**
+ * What a tab's cookies look like when a test has not said otherwise.
+ *
+ * Two entries rather than none, and it matters: a redaction test that asserts
+ * a secret appears nowhere in the output is trivially satisfied by output
+ * with nothing in it, and would stay green with the redaction deleted. Two
+ * cookies with flags that differ also mean a test asserting the flags survive
+ * cannot pass by returning one shape for everything.
+ *
+ * **No value field appears here because {@link CookieSummary} has none.** The
+ * seeding lever is what carries a secret value — see
+ * {@link FakeBrowserDriver.seedCookies}.
+ */
+const DEFAULT_COOKIES: readonly CookieSummary[] = [
+  {
+    name: 'session',
+    domain: 'example.com',
+    path: '/',
+    expires: null,
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Lax',
+  },
+  {
+    name: 'preference',
+    domain: 'example.com',
+    path: '/settings',
+    expires: '2027-01-01T00:00:00.000Z',
+    httpOnly: false,
+    secure: false,
+    sameSite: 'Strict',
+  },
+];
 
 /** A seeded failure: the next call to this operation throws instead of answering. */
 interface SeededFailure {
@@ -149,6 +216,7 @@ export class FakeBrowserDriver implements BrowserDriver {
   readonly #options: FakeDriverOptions;
   readonly #openTabs = new Map<BrowserId, Set<string>>();
   readonly #keeperTabs = new Map<BrowserId, string>();
+  readonly #cookies = new Map<string, readonly CookieSummary[]>();
   readonly #failures: SeededFailure[] = [];
   #nextTabNumber = 1;
 
@@ -227,6 +295,27 @@ export class FakeBrowserDriver implements BrowserDriver {
     error: Error = new Error(`the fake was told to fail ${name}`),
   ): void {
     this.#failures.push({ name, error });
+  }
+
+  /**
+   * Give a tab a particular set of cookies.
+   *
+   * **The lever a redaction test needs, and the shape of it is the point.**
+   * A test proving `read.cookies_no_values` (§7.1) seeds a cookie whose
+   * *value* is a known secret and then asserts that string appears nowhere in
+   * the response or in the file. This method takes {@link CookieSummary}
+   * entries, which have no value field — so the secret is supplied to the
+   * test's own driver-level fixture rather than through here, and this method
+   * exists to control the **names and flags** that do come back.
+   *
+   * That asymmetry is deliberate and it is the honest position: this fake
+   * cannot demonstrate that a value was dropped, because at this seam there
+   * was never a value to drop. What it can demonstrate is that everything
+   * else survives, which is the half of §3.9 a redaction is most likely to
+   * break by over-reaching.
+   */
+  seedCookies(tab: TabHandle, cookies: readonly CookieSummary[]): void {
+    this.#cookies.set(tab.driverTabId, [...cookies]);
   }
 
   attach(browser: BrowserId, record: DiscoveryRecord): Promise<BrowserSession> {
@@ -368,7 +457,15 @@ export class FakeBrowserDriver implements BrowserDriver {
           name: 'act',
           browser,
           tab,
-          detail: { action: request.action, ref: request.ref, value: request.value },
+          // The whole request, not a hand-picked few of its fields.
+          // `ActionRequest` is a union over the verb, so each member carries
+          // different arguments — a `resize` has a viewport and no reference,
+          // a `drag` has two references. Copying named fields would silently
+          // drop every argument belonging to a verb added after the copy was
+          // written, and a test asserting "it was asked to resize to 375
+          // wide" would then pass against a driver asked to resize to
+          // anything at all.
+          detail: { ...request },
         });
         if (failure) return Promise.reject(failure);
         // A fresh snapshot after every change (`SCHEMA.md` §3.8). No file is
@@ -402,10 +499,63 @@ export class FakeBrowserDriver implements BrowserDriver {
         );
       },
 
+      cookies: (tab: TabHandle): Promise<readonly CookieSummary[]> => {
+        const failure = this.#enter({ name: 'cookies', browser, tab });
+        if (failure) return Promise.reject(failure);
+        // A canned pair rather than an empty list, because a redaction test
+        // asserting "no value appeared" against nothing at all is the
+        // assertion-over-an-empty-set this repository has already been caught
+        // by: it stays green when the redaction is deleted. `CookieSummary`
+        // has no value field, so there is nothing here to redact — which is
+        // the property #23's test exists to pin, not something this fake
+        // performs.
+        return Promise.resolve([...(this.#cookies.get(tab.driverTabId) ?? DEFAULT_COOKIES)]);
+      },
+
       evaluate: (tab: TabHandle, expression: string): Promise<EvaluationResult> => {
         const failure = this.#enter({ name: 'evaluate', browser, tab, detail: { expression } });
         if (failure) return Promise.reject(failure);
         return Promise.resolve({ value: null, bytes: 0 });
+      },
+
+      settlePage: (tab: TabHandle): Promise<void> => {
+        const failure = this.#enter({ name: 'settlePage', browser, tab });
+        if (failure) return Promise.reject(failure);
+        // Nothing to settle — the fake has no timing at all (see this file's
+        // header). What the entry in the log proves is that the pipeline
+        // asked, and *when* it asked relative to the shutter, which is the
+        // whole of what `SCHEMA.md` §3.11's "every capture settles the page
+        // first" is checkable as from outside a real browser.
+        return Promise.resolve();
+      },
+
+      capture: (tab: TabHandle, request: CaptureRequest): Promise<RawCapture> => {
+        const canned = this.#options.capture;
+        const failure = this.#enter({
+          name: 'capture',
+          browser,
+          tab,
+          // The mask is recorded as a count and as the rectangles themselves:
+          // "a mask was passed to the driver" and "it was *this* mask" are
+          // different assertions, and §3.11's masking-before-the-shutter
+          // property needs the second.
+          detail: {
+            fullPage: request.fullPage,
+            selector: request.selector,
+            mask: request.mask ? [...request.mask] : undefined,
+          },
+        });
+        if (failure) return Promise.reject(failure);
+        const width = canned?.width ?? 1280;
+        const height = canned?.height ?? 720;
+        return Promise.resolve({
+          // A real, decodable picture by default — see `FakeCaptureOptions`.
+          image: canned?.image ?? solidPng(width, height),
+          width,
+          height,
+          viewportWidth: canned?.viewportWidth ?? width,
+          url: canned?.url ?? 'https://example.com/',
+        });
       },
 
       detach: () => {

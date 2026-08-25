@@ -6,7 +6,15 @@ import { readEnvironment, type Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
 import { openStore, type StoreHandle } from '../store/open.ts';
 import { stepSchema } from '../store/schema/step.ts';
-import { cliAdapter, EXIT, withoutSecrets } from './adapter.ts';
+import {
+  DEFAULT_LIMIT,
+  readFeedback,
+  refuseFilters,
+  renderFeedback,
+  type FeedbackFilters,
+} from '../feedback/read.ts';
+import { isFeedbackCategory } from '../feedback/record.ts';
+import { cliAdapter, EXIT, parseArguments, withoutSecrets } from './adapter.ts';
 import { OPERATION_COMMANDS, parseCommand, STANDALONE_COMMANDS } from './commands.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
 
@@ -145,6 +153,14 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
     const parsed = parseCommand(argv);
 
     if (parsed.kind === 'operation') {
+      // `broker feedback` carries **both halves** (§5.3): it writes a row with
+      // the same arguments the tool takes, and **with no writing arguments it
+      // reads the rows back**. The reading half has no service operation
+      // behind it — a caller writes feedback and a person reads it — so it is
+      // dispatched before the operation path rather than through it.
+      if (parsed.command.operation === 'feedback' && isReadingFeedback(parsed.rest)) {
+        return readFeedbackCommand(parsed.rest, { streams, json, options });
+      }
       return runOperation(parsed.command.operation, parsed.rest, { streams, json, options });
     }
 
@@ -376,6 +392,87 @@ async function runOperationsCommand(
     if (error instanceof BrokerError) {
       streams.err(`refused (${error.rule}): ${error.message}`);
       return EXIT.refused;
+    }
+    throw error;
+  } finally {
+    store?.close();
+  }
+}
+
+/**
+ * Whether this invocation is the reading half.
+ *
+ * **Reading is the default and writing is the flagged case**, which is the
+ * way round §5.3 describes: "with no arguments it reads the rows back". A
+ * submission is recognised by carrying `--rating`, which is required on every
+ * write — so a caller that meant to write and mistyped the flag gets a
+ * listing rather than a row it did not intend, and a caller that meant to
+ * read never accidentally writes.
+ */
+export function isReadingFeedback(rest: readonly string[]): boolean {
+  return !rest.some((word) => word === '--rating' || word.startsWith('--rating='));
+}
+
+/**
+ * `broker feedback` — read the rows back, most recent first (#68).
+ *
+ * It opens the store and reads one table. **That is not a route reaching past
+ * the service layer**, and the distinction is worth stating rather than
+ * assuming: the reader rule (§2.4, §5.2) exists because a command that
+ * printed `state` from a table would report leases that do not exist, since
+ * liveness is derived rather than stored. **Feedback has no derived state.**
+ * A row is written once and never changes, no sweep touches it, and nothing
+ * expires — so there is nothing a service call would derive that this read
+ * would miss. Every other command goes through the service because for every
+ * other command that is false.
+ */
+async function readFeedbackCommand(
+  rest: readonly string[],
+  context: OperationContext,
+): Promise<number> {
+  const parsed = parseArguments(rest);
+  const asInteger = (value: unknown): unknown =>
+    typeof value === 'string' && /^-?\d+$/u.test(value) ? Number(value) : value;
+
+  const requested = {
+    ...(parsed['rating'] === undefined ? {} : { rating: asInteger(parsed['rating']) }),
+    ...(parsed['category'] === undefined ? {} : { category: parsed['category'] }),
+    ...(parsed['limit'] === undefined ? {} : { limit: asInteger(parsed['limit']) }),
+  };
+
+  const refusal = refuseFilters(requested);
+  if (refusal !== undefined) {
+    context.streams.err(`refused (${refusal.code}): ${refusal.message}`);
+    return EXIT.malformed;
+  }
+
+  const filters: FeedbackFilters = {
+    ...(typeof requested.rating === 'number' ? { rating: requested.rating } : {}),
+    ...(typeof requested.category === 'string' && isFeedbackCategory(requested.category)
+      ? { category: requested.category }
+      : {}),
+    limit: typeof requested.limit === 'number' ? requested.limit : DEFAULT_LIMIT,
+  };
+
+  let store: StoreHandle | undefined;
+  try {
+    const environment = readEnvironment({ env: context.options.env });
+    store = openStore(environment);
+    await stepSchema(store.db);
+
+    const rows = readFeedback(store.db, filters);
+    const narrowed = filters.rating !== undefined || filters.category !== undefined;
+
+    if (context.json) {
+      context.streams.out(JSON.stringify({ outcome: 'accepted', value: { feedback: rows } }));
+    } else {
+      context.streams.out(renderFeedback(rows, narrowed));
+    }
+    return EXIT.accepted;
+  } catch (error) {
+    if (error instanceof BrokerError) {
+      context.streams.err(`refused (${error.rule}): ${error.message}`);
+      return EXIT.notConfigured;
     }
     throw error;
   } finally {

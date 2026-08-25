@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { UNREACHABLE, type TabAddress } from '../../src/operations/addresses.ts';
+// `UNREACHABLE` is deliberately NOT imported here: these tests assert the
+// literal word as rendered, because a test that guards a constant using that
+// same constant cannot fail when the constant is emptied.
+import type { TabAddress } from '../../src/operations/addresses.ts';
 import { readOperationsStatus } from '../../src/operations/status.ts';
 import { humaniseSeconds, renderDocument } from '../../src/report/document.ts';
 import { seedClaim, seedEvent, seedFeedback, seedTab } from '../helpers/seed.ts';
@@ -182,7 +185,20 @@ describe('addresses in the document', () => {
         ]),
       });
 
-      assert.ok(html.includes(UNREACHABLE), 'the explicit word is missing from the document');
+      // **Asserted against the rendered cell, not against the whole file.**
+      // The document also *explains* what the word means in prose, so a
+      // bare `includes('unreachable')` is satisfied by that paragraph even
+      // when no cell carries the word — which is how an earlier version of
+      // this test survived the mutation that empties the constant. Matching
+      // the cell's own markup pins the word where the guarantee actually
+      // lives: in the place an address would otherwise sit.
+      const cell = '<span class="unreachable"';
+      assert.ok(html.includes(cell), 'no cell rendered the explicit word');
+      assert.match(
+        html,
+        /<span class="unreachable"[^>]*>unreachable<\/span>/,
+        'the cell is present but does not carry the explicit word',
+      );
       await Promise.resolve();
     });
   });
@@ -198,7 +214,9 @@ describe('addresses in the document', () => {
       const status = readOperationsStatus(store.db, { now });
       const html = renderDocument({ status, addresses: new Map() });
 
-      assert.ok(html.includes(UNREACHABLE));
+      // The omitted case, pinned against the rendered cell for the same
+      // reason as above: the explanatory prose is not the guarantee.
+      assert.match(html, /<span class="unreachable"[^>]*>unreachable<\/span>/);
       await Promise.resolve();
     });
   });
