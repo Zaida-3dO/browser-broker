@@ -15,6 +15,7 @@ import type {
   NavigationResult,
   RawCapture,
   ReadArtifact,
+  StorageSeedArea,
   StorageSeedEntry,
   TabHandle,
 } from './driver.ts';
@@ -147,11 +148,53 @@ export interface FakeCaptureOptions {
   readonly image?: Uint8Array;
 }
 
+/**
+ * What an evaluation hands back, when a test needs a particular value.
+ *
+ * **Canned, never computed.** The fake does not evaluate the expression — see
+ * this file's header — so this states what the page is to be *treated as*
+ * having produced. It is the input a spill test needs (a value past the
+ * inline cap) and exactly the wrong thing to read as evidence that any real
+ * page would produce it.
+ */
+export interface FakeEvaluationOptions {
+  /** Handed back verbatim to whatever asked. Serialised by the service, not here. */
+  readonly value: unknown;
+}
+
 /** Where the fake's canned answers come from, when a test needs a particular one. */
 export interface FakeDriverOptions {
   readonly regular?: FakeBrowserOptions;
   readonly private?: FakeBrowserOptions;
   readonly capture?: FakeCaptureOptions;
+  readonly evaluate?: FakeEvaluationOptions;
+}
+
+/**
+ * The one expression shape {@link FakeBrowserDriver} answers from storage.
+ *
+ * Anchored at both ends and exact about the punctuation, so it matches the
+ * form a test writes and nothing that merely resembles it. Deliberately
+ * narrow: widening this is the first step toward the interpreter the fake
+ * must not become.
+ */
+const STORAGE_READ_EXPRESSION =
+  /^__seeded\((?<area>local|session),\s*(?<origin>[^,)]+),\s*(?<key>[^)]+)\)$/u;
+
+/**
+ * How one storage entry is addressed: the tab, the origin, the area, the key.
+ *
+ * All four, because all four partition storage in a real browser. A key built
+ * from fewer would let a seed written for one origin read back under another
+ * — which would make a test pass for a service that seeded the wrong place.
+ */
+function storageKey(
+  driverTabId: string,
+  origin: string,
+  area: StorageSeedArea,
+  key: string,
+): string {
+  return `${driverTabId}|${origin}|${area}|${key}`;
 }
 
 const DEFAULT_MODE: Readonly<Record<BrowserId, BrowserMode>> = {
@@ -219,6 +262,34 @@ export class FakeBrowserDriver implements BrowserDriver {
   readonly #openTabs = new Map<BrowserId, Set<string>>();
   readonly #keeperTabs = new Map<BrowserId, string>();
   readonly #cookies = new Map<string, readonly CookieSummary[]>();
+  /**
+   * Per-tab storage, keyed `<driverTabId>|<origin>|<area>` — the partitioning
+   * a real browser enforces, modelled just far enough to be readable back.
+   *
+   * ── Why the fake holds state here at all ────────────────────────────────
+   *
+   * This file's header is firm that the fake does not simulate a browser, and
+   * this does not walk that back: nothing here renders, lays out or executes.
+   * What it does is make **the one property `storage_seed` exists for**
+   * observable — that a value written before a tab's first navigation is
+   * there when the page looks. A fake whose `seedStorage` only logged could
+   * not tell a wired seed from an unwired one, because a page reading storage
+   * would answer nothing in both cases. That is the coinciding fixture this
+   * repository has been caught by six times, and it is exactly the shape it
+   * takes here: **the seed test would pass against a service that never
+   * called `seedStorage` at all.**
+   *
+   * So the seed writes and {@link FakeBrowserDriver.storedValue} reads, and
+   * the evaluation lever below reads through the same map — which is what
+   * makes "the page can see what was seeded for it" a real assertion rather
+   * than a restatement of the call log.
+   *
+   * Keyed by origin **and** area because both partition real storage: the
+   * same key in `local` and in `session`, or under two origins, are different
+   * entries, and a fake that collapsed them would let a seed land in the
+   * wrong place and still read back.
+   */
+  readonly #storage = new Map<string, string>();
   readonly #failures: SeededFailure[] = [];
   #nextTabNumber = 1;
 
@@ -318,6 +389,24 @@ export class FakeBrowserDriver implements BrowserDriver {
    */
   seedCookies(tab: TabHandle, cookies: readonly CookieSummary[]): void {
     this.#cookies.set(tab.driverTabId, [...cookies]);
+  }
+
+  /**
+   * What a tab's storage holds for one origin and area, or nothing.
+   *
+   * **Read by a test the way a page would read it**, so an assertion built on
+   * this fails when the seed did not happen. Absent rather than empty-string
+   * for a key never written, because "seeded with the empty string" and
+   * "never seeded" are different facts and a test distinguishing them is the
+   * one that catches a seed that silently did nothing.
+   */
+  storedValue(
+    tab: TabHandle,
+    origin: string,
+    area: StorageSeedArea,
+    key: string,
+  ): string | undefined {
+    return this.#storage.get(storageKey(tab.driverTabId, origin, area, key));
   }
 
   attach(browser: BrowserId, record: DiscoveryRecord): Promise<BrowserSession> {
@@ -472,6 +561,16 @@ export class FakeBrowserDriver implements BrowserDriver {
           detail: { entries: entries.map((entry) => ({ ...entry })) },
         });
         if (failure) return Promise.reject(failure);
+        // Written **after** the failure check, so a seeded failure leaves the
+        // storage untouched — the same discipline `closeTab` keeps above, and
+        // for the same reason: a driver that half-performed a rejected call
+        // would let a test assert an effect the real driver never produced.
+        for (const entry of entries) {
+          this.#storage.set(
+            storageKey(tab.driverTabId, entry.origin, entry.area, entry.key),
+            entry.value,
+          );
+        }
         return Promise.resolve();
       },
 
@@ -538,6 +637,42 @@ export class FakeBrowserDriver implements BrowserDriver {
       evaluate: (tab: TabHandle, expression: string): Promise<EvaluationResult> => {
         const failure = this.#enter({ name: 'evaluate', browser, tab, detail: { expression } });
         if (failure) return Promise.reject(failure);
+
+        // ── The one expression this fake understands ────────────────────────
+        //
+        // **It is not an interpreter and must never become one.** It matches
+        // one fixed, exact form — a storage read, spelled out below — and
+        // answers it from the same map `seedStorage` writes. Everything else
+        // gets the canned `null` it always got.
+        //
+        // The reason it understands even this much: the property row #65 owes
+        // is *the page can see what was seeded before it loaded*, and "the
+        // page" reaches storage by evaluating. Without this, a test could
+        // only assert that `seedStorage` was called — which is the call log
+        // restated, and stays green against a driver whose seed writes
+        // nothing.
+        //
+        // A general evaluator here would be a worse fake, not a better one:
+        // it would make every evaluation test a test of this file's
+        // interpreter rather than of the service, and this file's header is
+        // explicit that the fake does not simulate a browser.
+        const read = STORAGE_READ_EXPRESSION.exec(expression);
+        if (read !== null) {
+          const [, area, origin, key] = read;
+          const value = this.#storage.get(
+            storageKey(tab.driverTabId, origin as string, area as StorageSeedArea, key as string),
+          );
+          // `null` and not `undefined` for a key that is not there, because
+          // that is what a real `getItem` answers for a missing key — and a
+          // test distinguishing "seeded" from "not seeded" reads the same
+          // shape either way.
+          return Promise.resolve({ value: value ?? null, bytes: 0 });
+        }
+
+        const canned = this.#options.evaluate;
+        if (canned !== undefined && Object.hasOwn(canned, 'value')) {
+          return Promise.resolve({ value: canned.value, bytes: 0 });
+        }
         return Promise.resolve({ value: null, bytes: 0 });
       },
 

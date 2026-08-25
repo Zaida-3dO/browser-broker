@@ -4,6 +4,7 @@ import type { StoreHandle } from '../store/open.ts';
 import { runArbitration, type CloseOrphanedTab } from './arbitration.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
 import type { EventAdapter } from './events.ts';
+import { createPendingSeeds } from './pending-seeds.ts';
 import type { ArbitrationSettings, ClaimInput, ClaimResult } from './operations/claim.ts';
 import type { ReleaseInput, ReleaseResult } from './operations/give-back.ts';
 import type {
@@ -168,11 +169,39 @@ export function createBroker(options: BrokerOptions): Broker {
    * actually did while agreeing on what they returned — the exact failure
    * §8's parity assertion exists to catch.
    */
+  /**
+   * Seeds a granted claim asked for, waiting for its tab's first open.
+   *
+   * **One store per broker, which is one per process** (§1.0 — the service is
+   * spawned by its caller and exits with it). The values are credentials and
+   * are deliberately never written to the store; `pending-seeds.ts` sets out
+   * why, and what a lease granted in one process and driven from another
+   * therefore does not get.
+   */
+  const pendingSeeds = createPendingSeeds();
+
   const withBrowser = <T>(input: T): T => ({
     ...input,
     ...(options.session === undefined ? {} : { session: options.session }),
+    // Handed to every tab verb rather than only to the one that opens the
+    // page, because **which verb opens the page is not knowable here**: a
+    // lease's first call may be a navigate, a read, a capture or any other,
+    // and `pageFor` is what discovers it is the first. Supplying it only to
+    // one would make seeding depend on which verb a caller happened to reach
+    // for — the same class of defect as a rule holding on one route.
+    pendingSeeds,
   });
 
+  /**
+   * The browser connection **and** somewhere to write, for the two verbs that
+   * produce a file: a capture always, and an evaluation whose result is past
+   * the inline cap (§3.10).
+   *
+   * Added here for the same reason {@link withBrowser} is: which store an
+   * artefact lands in is not an argument a caller passes, and a surface that
+   * could omit it would be a surface on which a large evaluation silently
+   * had nowhere to go.
+   */
   const withBrowserAndArtifacts = <T>(input: T): T => ({
     ...withBrowser(input),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
@@ -184,11 +213,23 @@ export function createBroker(options: BrokerOptions): Broker {
   });
 
   return {
-    claim: (input) =>
-      run<ClaimInput & { settings: ArbitrationSettings }, ClaimResult>('claim', {
-        ...input,
-        settings,
-      }),
+    claim: async (input) => {
+      const result = await run<ClaimInput & { settings: ArbitrationSettings }, ClaimResult>(
+        'claim',
+        { ...input, settings },
+      );
+      // **After the call returns, so only a committed grant holds a seed.**
+      // A refused claim throws before reaching here and a queued one carries
+      // no entries (`claim.ts`: a queue placement has no tab to seed and the
+      // entries are deliberately dropped rather than held across an
+      // unbounded wait). So nothing is retained for a lease that does not
+      // exist, and a caller cannot leave values in this process by being
+      // refused repeatedly.
+      if (result.outcome === 'granted') {
+        pendingSeeds.put(result.claimId, result.storageSeed);
+      }
+      return result;
+    },
     status: (input) => run<StatusInput, StatusResult>('status', input),
     release: (input) =>
       run<ReleaseInput & { settings: ArbitrationSettings }, ReleaseResult>('release', {
@@ -198,7 +239,14 @@ export function createBroker(options: BrokerOptions): Broker {
     navigate: (input) => run<NavigateInput, NavigateResult>('navigate', withBrowser(input)),
     act: (input) => run<ActInput, ActResult>('act', withBrowser(input)),
     read: (input) => run<ReadInput, ReadResult>('read', withBrowser(input)),
-    evaluate: (input) => run<EvaluateInput, EvaluateResult>('evaluate', withBrowser(input)),
+    evaluate: (input) =>
+      run<EvaluateInput, EvaluateResult>('evaluate', {
+        ...withBrowser(input),
+        // The artifact store, and deliberately **not** `diffSettings`: an
+        // evaluation never diffs, and handing it a setting it cannot use
+        // would be the surface declaring an argument that does nothing.
+        ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+      }),
     capture: (input) => run<CaptureInput, CaptureResult>('capture', withBrowserAndArtifacts(input)),
     tab_replace: (input) =>
       run<TabReplaceInput, TabReplaceResult>('tab_replace', withBrowser(input)),

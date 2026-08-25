@@ -12,14 +12,18 @@ import { extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
 import { resolveOwnedTabOrRefuse } from '../ownership.ts';
 import {
   disposeEvaluationResult,
+  MAX_INLINE_RESULT_BYTES,
   resolveReadArtifacts,
   validateAction,
   validateExpression,
   validateNavigationTarget,
 } from '../pages.ts';
 import { recordTabOpened, reserveTab } from '../tabs.ts';
+import type { PendingSeeds } from '../pending-seeds.ts';
+import { seedRecord } from '../storage-seed.ts';
 import { BrokerError } from '../../errors.ts';
 import type { ArtifactStore } from '../../artifacts/store.ts';
+import { sanitiseLabel, stampFromInstant } from '../../artifacts/names.ts';
 import { takeCapture } from '../../capture/pipeline.ts';
 import { capturesTakenBy, recordCapture } from '../capture-store.ts';
 import { captureSource } from '../capture-seam.ts';
@@ -124,6 +128,20 @@ export interface TabOperationInput {
    * ledger still records the call.
    */
   readonly session?: SessionSource;
+  /**
+   * Seeds waiting to be written into this tab before it is first navigated
+   * (§3.2, row #65).
+   *
+   * **Optional and supplied by the caller that owns the process**, exactly as
+   * {@link TabOperationInput.session} is: a build with no browser has no page
+   * to seed, and every guard here is testable without one. Omitting it means
+   * nothing is seeded and nothing claims to have been — the ledger records
+   * what was written, so silence here is silence there.
+   *
+   * See `pending-seeds.ts` for why the entries are held in memory rather than
+   * in the store, and what that costs.
+   */
+  readonly pendingSeeds?: PendingSeeds;
 }
 
 /**
@@ -288,6 +306,8 @@ async function pageFor(
   scope: ArbitrationScope,
   session: BrowserSession,
   tab: ResolvedTab,
+  input: TabOperationInput,
+  claimId: string,
 ): Promise<TabHandle> {
   if (tab.driverTabId !== null) {
     return { browser: tab.browserId as TabHandle['browser'], driverTabId: tab.driverTabId };
@@ -295,7 +315,84 @@ async function pageFor(
 
   const opened = await session.openTab();
   recordTabOpened(scope.db, tab.tabId, opened.driverTabId);
+
+  // ── The seed, here and nowhere else (§3.2, row #65) ───────────────────
+  //
+  // **This is the only moment that satisfies "before the tab's first
+  // navigation".** The page has just been created and no caller has
+  // addressed it yet — the verb that triggered this open has not run its own
+  // work, because `pageFor` is awaited first. A seed written any later would
+  // be written after the load it exists to precede, which is the whole
+  // feature; a seed written any earlier has no page to write into.
+  //
+  // It is also correctly outside the arbitration transaction: this runs
+  // inside an after-commit closure (§2.4b), which is why `openTab` above is
+  // allowed to be here at all.
+  await applyPendingSeed(scope, session, opened, tab, input, claimId);
   return opened;
+}
+
+/**
+ * Write a granted lease's seed into its brand-new page, and record what was
+ * actually written.
+ *
+ * ── Why the ledger row is written here rather than at claim time ────────
+ *
+ * The claim appends a `storage_seeded` row saying a seed was **requested**,
+ * which is the whole of what is true at that point: the claim is decided
+ * inside the arbitration transaction, and §2.4b keeps browser work outside
+ * it, so the tab is a row with no page behind it. This row says what was
+ * **applied**, and the distinction is the point: §3.2 wants *"which leases
+ * started life already holding a credential"* answerable, and a request is
+ * not an answer to that. A ledger that recorded the ask and not the act
+ * overstates, and a security question answered by an overstatement is read as
+ * an all-clear.
+ *
+ * **Origins and keys, never values**, through `seedRecord` — the same
+ * structural redaction the claim's row uses, so neither call site can leak a
+ * value by being written carelessly.
+ *
+ * ── A seed that fails is a seed that is not recorded ────────────────────
+ *
+ * The throw propagates. It is not caught here, and that is deliberate: the
+ * caller is `pageFor`, inside the after-commit closure `afterCommitWork`
+ * built, whose `catch` records the reason and rethrows for the runner to
+ * swallow (§2.4b). So a browser that refuses the write leaves the lease real,
+ * the decision committed, `pageDriven: false`, a reason the caller can read —
+ * **and no `applied` row**, because the row is written after the write
+ * returns. A caller told its page was not driven has been told its seed did
+ * not land.
+ */
+async function applyPendingSeed(
+  scope: ArbitrationScope,
+  session: BrowserSession,
+  page: TabHandle,
+  tab: ResolvedTab,
+  input: TabOperationInput,
+  claimId: string,
+): Promise<void> {
+  const entries = input.pendingSeeds?.take(claimId) ?? [];
+  if (entries.length === 0) {
+    return;
+  }
+
+  // **The driver seam, with the entries as data.** `seedStorage` takes a list
+  // of origin/area/key/string — there is no position in that signature in
+  // which a caller's bytes could be read as a program, which is the entire
+  // safety argument for this feature. Nothing here builds an init script, a
+  // template or any other source text out of an entry, and doing so would
+  // rebuild the interpreting position §3.2 exists to avoid.
+  await session.seedStorage(page, entries);
+
+  append(scope.db, {
+    kind: 'storage_seeded',
+    outcome: 'allow',
+    adapter: scope.adapter,
+    claimId,
+    tabId: tab.tabId,
+    browserId: tab.browserId,
+    detail: { entries: seedRecord(entries), seed: 'applied' },
+  });
 }
 
 /**
@@ -367,6 +464,7 @@ function afterCommitWork(
   input: TabOperationInput,
   tab: ResolvedTab,
   work: (session: BrowserSession, page: TabHandle) => Promise<unknown>,
+  claimId: string,
 ): ScheduledWork {
   const source = input.session;
   if (source === undefined) {
@@ -403,7 +501,7 @@ function afterCommitWork(
       async () => {
         try {
           const session = await source(tab.browserId as BrowserId);
-          await work(session, await pageFor(scope, session, tab));
+          await work(session, await pageFor(scope, session, tab, input, claimId));
           // **Last, deliberately.** Anything above this that throws leaves the
           // flag false, which is what makes a browser failing mid-operation
           // report as the page not having been driven rather than as success.
@@ -504,7 +602,13 @@ export function decideNavigate(
     detail: { url },
   });
 
-  const work = afterCommitWork(scope, input, tab, (session, page) => session.navigate(page, url));
+  const work = afterCommitWork(
+    scope,
+    input,
+    tab,
+    (session, page) => session.navigate(page, url),
+    lease.claimId,
+  );
   return {
     value: withPageDriven({ claimId: lease.claimId, tabId: tab.tabId, expiresAt, url }, work),
     afterCommit: work.afterCommit,
@@ -542,7 +646,13 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
     detail: { action: request.action },
   });
 
-  const work = afterCommitWork(scope, input, tab, (session, page) => session.act(page, request));
+  const work = afterCommitWork(
+    scope,
+    input,
+    tab,
+    (session, page) => session.act(page, request),
+    lease.claimId,
+  );
   return {
     value: withPageDriven(
       { claimId: lease.claimId, tabId: tab.tabId, expiresAt, action: request.action },
@@ -588,7 +698,13 @@ export function decideRead(
     detail: { artifacts: [...artifacts] },
   });
 
-  const work = afterCommitWork(scope, input, tab, (session, page) => session.read(page, artifacts));
+  const work = afterCommitWork(
+    scope,
+    input,
+    tab,
+    (session, page) => session.read(page, artifacts),
+    lease.claimId,
+  );
   return {
     value: withPageDriven({ claimId: lease.claimId, tabId: tab.tabId, expiresAt, artifacts }, work),
     afterCommit: work.afterCommit,
@@ -597,11 +713,60 @@ export function decideRead(
 
 export interface EvaluateInput extends TabOperationInput {
   readonly expression: unknown;
+  /**
+   * Where a result too large to return inline is written (§3.10).
+   *
+   * **Optional for the same reason {@link CaptureInput.artifacts} is**: a
+   * caller with no browser has no result to spill, and every guard in this
+   * handler is testable without either. A caller that supplies a session and
+   * no store can still evaluate — a small result comes back inline, which is
+   * the overwhelmingly common case — and only a result past the cap has
+   * nowhere to go. That case says so rather than being silently dropped; see
+   * {@link decideEvaluate}.
+   */
+  readonly artifacts?: ArtifactStore;
 }
 
 export interface EvaluateResult extends TabOperationResult {
   /** How many bytes the expression itself was, having passed the bound. */
   readonly expressionBytes: number;
+  /**
+   * What the expression evaluated to, and where it ended up (§3.10 — "returns
+   * the value inline when it is small, and a path when it is not").
+   *
+   * **Absent when the page was not driven**, which is the same discipline
+   * {@link CaptureResult.capture} keeps: a caller that reached no page should
+   * find no field rather than a `null` it has to tell apart from an
+   * expression that genuinely evaluated to one. `pageDriven` is the field
+   * that says which happened.
+   */
+  readonly result?: EvaluationOutcome;
+}
+
+/**
+ * An evaluation's value, in whichever of the two places §3.10 puts it.
+ *
+ * **The two are a union rather than two optional fields on one object**, so
+ * there is no shape in which both are present and no shape in which neither
+ * is. A caller branches on `spilled`, which is the same question the cap
+ * asks, rather than on which field happens to be defined.
+ */
+export type EvaluationOutcome = InlineEvaluation | SpilledEvaluation;
+
+/** Small enough to come back inline. */
+export interface InlineEvaluation {
+  readonly spilled: false;
+  /** The serialised value, as JSON text. */
+  readonly value: string;
+  readonly bytes: number;
+}
+
+/** Past the inline cap, so it went to a file (§3.10). */
+export interface SpilledEvaluation {
+  readonly spilled: true;
+  /** **Relative to the artifact root** (§1.7a), which is the only form stored. */
+  readonly path: string;
+  readonly bytes: number;
 }
 
 /**
@@ -634,21 +799,96 @@ export function decideEvaluate(
     detail: { expressionBytes },
   });
 
-  const work = afterCommitWork(scope, input, tab, async (session, page) => {
-    const result = await session.evaluate(page, expression);
-    // The spill decision is made against the result the page actually
-    // produced, which is only knowable here. `disposeEvaluationResult` is
-    // what decides it, and it is the same function the seam's own tests
-    // measure — joining the two is row #24's missing half.
-    return disposeEvaluationResult(result.value);
-  });
+  // Set inside the after-commit closure and read by the getter below — the
+  // arrangement `decideCapture` uses for `written`, and for the same reason:
+  // the value does not exist until the work has run, so a copy taken here
+  // would always be absent. **This is row #24's missing half.** The
+  // evaluation already happened in after-commit, correctly (§2.4b); what was
+  // absent was any path by which its value reached the caller.
+  let evaluated: EvaluationOutcome | undefined;
+  const artifacts = input.artifacts;
+
+  const work = afterCommitWork(
+    scope,
+    input,
+    tab,
+    async (session, page) => {
+      const result = await session.evaluate(page, expression);
+      // The spill decision is made against the result the page actually
+      // produced, which is only knowable here. `disposeEvaluationResult` is
+      // what decides it, and it is the same function the seam's own tests
+      // measure.
+      const disposition = disposeEvaluationResult(result.value);
+
+      if (!disposition.spill) {
+        evaluated = { spilled: false, value: disposition.serialised, bytes: disposition.bytes };
+        return;
+      }
+
+      // ── Past the cap, and nowhere to put it ──────────────────────────────
+      //
+      // **Thrown rather than returned**, for the reason `decideCapture` gives
+      // where it is handed a browser and no store: running to completion here
+      // would report `pageDriven: true` for a call whose value the caller
+      // cannot reach, in either place §3.10 says it may be. Throwing takes the
+      // ordinary after-commit failure path — swallowed by the runner, ledger
+      // row and decision still committed — so the caller is told plainly, and
+      // `notDrivenReason` carries which of the two it was.
+      if (artifacts === undefined) {
+        throw new BrokerError(
+          'evaluate.result_serialisable',
+          `That expression produced ${String(disposition.bytes)} bytes, past the ${String(MAX_INLINE_RESULT_BYTES)}-byte inline limit, and this call supplied no artifact store to spill it into. Nothing was returned.`,
+        );
+      }
+
+      // The same store, the same refusal and the same relative-path form every
+      // other artefact uses (§1.7a). Written through `ArtifactStore.write` and
+      // not `writeFileSync`, because that method is the single implementation
+      // that refuses a name resolving outside the root.
+      const stored = artifacts.write(
+        lease.claimId,
+        'snapshots',
+        evaluationFileName(new Date(), lease.claimId),
+        Buffer.from(disposition.serialised, 'utf8'),
+      );
+      evaluated = { spilled: true, path: stored.relativePath, bytes: disposition.bytes };
+    },
+    lease.claimId,
+  );
+
   return {
     value: withPageDriven(
-      { claimId: lease.claimId, tabId: tab.tabId, expiresAt, expressionBytes },
+      {
+        claimId: lease.claimId,
+        tabId: tab.tabId,
+        expiresAt,
+        expressionBytes,
+        // A getter for the same reason `pageDriven` is one — see
+        // {@link withPageDriven}. Read eagerly it would always be absent.
+        get result() {
+          return evaluated;
+        },
+      },
       work,
     ),
     afterCommit: work.afterCommit,
   };
+}
+
+/**
+ * What a spilled evaluation is called on disk.
+ *
+ * Every part is derived rather than supplied: an instant and the claim, both
+ * of which this service generates. **Nothing a caller sent reaches the name**
+ * — not the expression, not the value — which is `names.ts`'s rule one
+ * (a file name travels further than a column does) applied to the one
+ * artefact whose contents are entirely the caller's.
+ *
+ * `.json` because the contents are exactly what `JSON.stringify` produced,
+ * and a reader opening the file should be able to tell.
+ */
+function evaluationFileName(when: Date, claimId: string): string {
+  return `evaluation-${stampFromInstant(when)}-${sanitiseLabel(claimId)}.json`;
 }
 
 export interface CaptureInput extends TabOperationInput {
@@ -773,112 +1013,118 @@ export function decideCapture(
   const artifacts = input.artifacts;
   const compareTo = input.compareTo;
 
-  const work = afterCommitWork(scope, input, tab, async (session, page) => {
-    if (artifacts === undefined) {
-      // A browser but nowhere to put the picture. Taking one and dropping it
-      // is precisely the behaviour this handler exists to stop, so the shutter
-      // is not pressed at all.
-      //
-      // **Thrown rather than returned**, and the difference is the honesty of
-      // the answer. Returning would leave the closure to run to completion and
-      // report `pageDriven: true` — for a call that reached no page, wrote no
-      // file and left `captures` empty, which is the precise combination this
-      // field exists to make impossible. Throwing takes the same path a
-      // browser failure takes: swallowed by the runner (§2.4b), the decision
-      // and its ledger row still committed, and the caller told plainly that
-      // nothing was driven.
-      throw new BrokerError(
-        'capture.arguments_consistent',
-        'A capture needs somewhere to write the image, and this call supplied a browser without one. No picture was taken.',
+  const work = afterCommitWork(
+    scope,
+    input,
+    tab,
+    async (session, page) => {
+      if (artifacts === undefined) {
+        // A browser but nowhere to put the picture. Taking one and dropping it
+        // is precisely the behaviour this handler exists to stop, so the shutter
+        // is not pressed at all.
+        //
+        // **Thrown rather than returned**, and the difference is the honesty of
+        // the answer. Returning would leave the closure to run to completion and
+        // report `pageDriven: true` — for a call that reached no page, wrote no
+        // file and left `captures` empty, which is the precise combination this
+        // field exists to make impossible. Throwing takes the same path a
+        // browser failure takes: swallowed by the runner (§2.4b), the decision
+        // and its ledger row still committed, and the caller told plainly that
+        // nothing was driven.
+        throw new BrokerError(
+          'capture.arguments_consistent',
+          'A capture needs somewhere to write the image, and this call supplied a browser without one. No picture was taken.',
+        );
+      }
+
+      // **The pipeline, not `session.capture` directly.** Reaching the seam here
+      // was the defect: it skipped the settle, the downscale to the requested
+      // rung, and the write through the artifact store — the only thing that
+      // decides where a file may go — and then discarded the bytes. Everything
+      // the `captures` row needs comes back as telemetry.
+      const taken = await takeCapture(
+        { tabs: session, artifacts },
+        lease.claimId,
+        page,
+        {
+          fullPage,
+          ...(request.selector === undefined ? {} : { selector: request.selector }),
+        },
+        takenBefore,
       );
-    }
 
-    // **The pipeline, not `session.capture` directly.** Reaching the seam here
-    // was the defect: it skipped the settle, the downscale to the requested
-    // rung, and the write through the artifact store — the only thing that
-    // decides where a file may go — and then discarded the bytes. Everything
-    // the `captures` row needs comes back as telemetry.
-    const taken = await takeCapture(
-      { tabs: session, artifacts },
-      lease.claimId,
-      page,
-      {
-        fullPage,
-        ...(request.selector === undefined ? {} : { selector: request.selector }),
-      },
-      takenBefore,
-    );
+      // The row last, describing a file that is already on disk. See
+      // `capture-store.ts` for why that order is the rule and not a preference.
+      recordCapture(scope.db, lease.claimId, tab.tabId, taken.telemetry);
 
-    // The row last, describing a file that is already on disk. See
-    // `capture-store.ts` for why that order is the rule and not a preference.
-    recordCapture(scope.db, lease.claimId, tab.tabId, taken.telemetry);
-
-    written = {
-      captureId: taken.captureId,
-      path: taken.path,
-      width: taken.width,
-      height: taken.height,
-      bytes: taken.bytes,
-    };
-
-    // ── The diff, when one was asked for (§3.11, §1.9) ──────────────────
-    //
-    // **Here, and not one line earlier.** Three separate rules put it at this
-    // exact point and they agree:
-    //
-    // 1. §2.4b — never browser I/O inside the arbitration transaction. This
-    //    whole closure is after-commit, so the shutter above already obeyed
-    //    that. The comparison itself is arithmetic over two decoded images
-    //    and some file writes: no browser, no seam method, nothing that could
-    //    reintroduce the thing that rule forbids.
-    // 2. §1.7 order — the `captures` row is written above, *before* this
-    //    runs, because the comparison names that capture as its source and a
-    //    row referencing one that does not exist yet is a foreign key waiting
-    //    to fail.
-    // 3. `capture.no_diff_dependency` (§7.3) — the direction still runs one
-    //    way. This module reads the diff feature; the diff feature does not
-    //    read this. `takeCapture` was handed no comparison argument and
-    //    returned before any of this was considered, so the pipeline remains
-    //    a module that could be built with the diff feature deleted.
-    //
-    // **Nothing here can fail the capture.** `runComparison` throws only on a
-    // programming mistake and returns an explanation for every caller-caused
-    // failure, so a diff that cannot run leaves `written` exactly as it is
-    // above and the caller still gets its picture — which is §3.11's rule that
-    // an optional argument may not withhold the thing it is optional on.
-    if (compareTo !== undefined) {
-      const source = captureSource(scope.db, artifacts);
-      const justTaken = {
-        id: taken.captureId,
-        claimId: lease.claimId,
+      written = {
+        captureId: taken.captureId,
         path: taken.path,
-        kind: taken.telemetry.kind,
         width: taken.width,
         height: taken.height,
+        bytes: taken.bytes,
       };
-      compared = await runComparison({
-        capture: justTaken,
-        // **Read back through the seam rather than kept from the pipeline.**
-        // `takeCapture` returns `bytes` as a *file size*, not the image, and
-        // deliberately so — §3.11 is emphatic that a capture result carries
-        // "a path, the dimensions … **Never the image**", and `CaptureResult`
-        // has no field that could hold pixels. So the bytes are read from the
-        // file just written, through `ArtifactStore.resolve` — the single
-        // implementation that refuses a path escaping the root in either
-        // namespace. Reading the file directly would have meant a second
-        // resolver, and the second one is the one missing a case.
-        captureBytes: await source.readBytes(justTaken),
-        targetCaptureId: compareTo,
-        source,
-        settings: input.diffSettings ?? DEFAULT_DIFF_SETTINGS,
-        artifacts,
-        // The row is written through the same handle every other write in
-        // this closure uses, so a comparison and the capture it describes
-        // cannot end up in different states of the store.
-        writeRow: (row) => insertComparison(scope.db, row),
-      });
-    }
-  });
+
+      // ── The diff, when one was asked for (§3.11, §1.9) ──────────────────
+      //
+      // **Here, and not one line earlier.** Three separate rules put it at this
+      // exact point and they agree:
+      //
+      // 1. §2.4b — never browser I/O inside the arbitration transaction. This
+      //    whole closure is after-commit, so the shutter above already obeyed
+      //    that. The comparison itself is arithmetic over two decoded images
+      //    and some file writes: no browser, no seam method, nothing that could
+      //    reintroduce the thing that rule forbids.
+      // 2. §1.7 order — the `captures` row is written above, *before* this
+      //    runs, because the comparison names that capture as its source and a
+      //    row referencing one that does not exist yet is a foreign key waiting
+      //    to fail.
+      // 3. `capture.no_diff_dependency` (§7.3) — the direction still runs one
+      //    way. This module reads the diff feature; the diff feature does not
+      //    read this. `takeCapture` was handed no comparison argument and
+      //    returned before any of this was considered, so the pipeline remains
+      //    a module that could be built with the diff feature deleted.
+      //
+      // **Nothing here can fail the capture.** `runComparison` throws only on a
+      // programming mistake and returns an explanation for every caller-caused
+      // failure, so a diff that cannot run leaves `written` exactly as it is
+      // above and the caller still gets its picture — which is §3.11's rule that
+      // an optional argument may not withhold the thing it is optional on.
+      if (compareTo !== undefined) {
+        const source = captureSource(scope.db, artifacts);
+        const justTaken = {
+          id: taken.captureId,
+          claimId: lease.claimId,
+          path: taken.path,
+          kind: taken.telemetry.kind,
+          width: taken.width,
+          height: taken.height,
+        };
+        compared = await runComparison({
+          capture: justTaken,
+          // **Read back through the seam rather than kept from the pipeline.**
+          // `takeCapture` returns `bytes` as a *file size*, not the image, and
+          // deliberately so — §3.11 is emphatic that a capture result carries
+          // "a path, the dimensions … **Never the image**", and `CaptureResult`
+          // has no field that could hold pixels. So the bytes are read from the
+          // file just written, through `ArtifactStore.resolve` — the single
+          // implementation that refuses a path escaping the root in either
+          // namespace. Reading the file directly would have meant a second
+          // resolver, and the second one is the one missing a case.
+          captureBytes: await source.readBytes(justTaken),
+          targetCaptureId: compareTo,
+          source,
+          settings: input.diffSettings ?? DEFAULT_DIFF_SETTINGS,
+          artifacts,
+          // The row is written through the same handle every other write in
+          // this closure uses, so a comparison and the capture it describes
+          // cannot end up in different states of the store.
+          writeRow: (row) => insertComparison(scope.db, row),
+        });
+      }
+    },
+    lease.claimId,
+  );
 
   return {
     value: withPageDriven(
