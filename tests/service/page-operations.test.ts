@@ -6,6 +6,7 @@ import type {
   BrowserSession,
   CaptureRequest,
   ReadArtifact,
+  StorageSeedEntry,
   TabHandle,
 } from '../../src/browser/driver.ts';
 import { ARBITRATION_NAMES } from '../../src/service/arbitration.ts';
@@ -94,6 +95,10 @@ function recordingSession(): DriverLog {
       );
     },
     cookies: async () => await Promise.resolve([]),
+    seedStorage: async (tab: TabHandle, entries: readonly StorageSeedEntry[]) => {
+      calls.push(`seedStorage:${String(entries.length)}`);
+      await Promise.resolve();
+    },
     evaluate: async (tab: TabHandle, expression: string) => {
       calls.push(`evaluate:${expression}`);
       return await Promise.resolve({ value: { ok: true }, bytes: 13 });

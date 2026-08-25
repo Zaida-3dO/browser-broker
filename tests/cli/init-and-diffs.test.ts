@@ -55,7 +55,20 @@ test('broker init runs the handshake: the schema, the two browsers, and a profil
     // is satisfied by any two lines.
     assert.match(output, /regular/u, 'the regular browser is missing from the report');
     assert.match(output, /private/u, 'the private browser is missing from the report');
-    assert.match(output, /schema: version 4/u, 'the schema version was not reported');
+    // The version the store was actually stepped to, read back off the file
+    // rather than compared against the build's own constant. Asserting against
+    // the imported constant would be the tautology it always is: the number
+    // would agree with itself whether or not a single step ran.
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(temp.environment.databasePath, { readonly: true });
+    const stepped = db.pragma('user_version', { simple: true }) as number;
+    db.close();
+    assert.ok(stepped > 0, 'the store was never stepped, so the handshake read nothing');
+    assert.match(
+      output,
+      new RegExp(String.raw`schema: version ${String(stepped)}` + '$', 'mu'),
+      'the reported version is not the one the store is actually at',
+    );
 
     // The directories genuinely exist on disk. The report saying so is not
     // the same claim as it having happened.
