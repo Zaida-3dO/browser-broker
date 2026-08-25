@@ -8,11 +8,25 @@
 // spawned by this service, detached and by path (§1.2a), so the package that
 // downloads and manages browsers would be adding a lifecycle this design
 // deliberately does not have.
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type ConsoleMessage,
+  type Dialog,
+  type Page,
+  type Request,
+} from 'playwright-core';
+
+import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
 import { StartupRefusal } from '../errors.ts';
 import { readDiscoveryRecord, verifyDiscoveryRecord } from './discovery.ts';
 import type {
+  ActionRequest,
   ArtifactResult,
   BrowserDescription,
   BrowserDriver,
@@ -26,6 +40,7 @@ import type {
   EvaluationResult,
   NavigationResult,
   RawCapture,
+  ReadArtifact,
   StorageSeedEntry,
   TabHandle,
 } from './driver.ts';
@@ -55,12 +70,19 @@ import { coldStartDetached, type LaunchOptions } from './launch.ts';
  *
  * ── The operations that are declared and not implemented ────────────────
  *
- * The seam declares the whole tab surface; the rows that own the page verbs
- * are #21 through #24. Rather than half-implement them, the ones this row
- * does not own throw a refusal naming the row that brings them. That is
- * deliberate over returning a plausible empty value: a navigate that silently
- * did nothing and reported success is exactly the shape `DECISIONS.md` §5
- * calls worse than no guard.
+ * **There are none left.** The seam declares the whole tab surface and every
+ * member of it is implemented here against the automation library. Rows #21
+ * through #24 owned the page verbs; the last two to land were {@link
+ * RealBrowserSession.act} (#22, with #61–#64) and {@link
+ * RealBrowserSession.read} (#23), which until then threw a refusal naming the
+ * row that would bring them rather than returning a plausible empty value — a
+ * verb that silently did nothing and reported success being exactly the shape
+ * `DECISIONS.md` §5 calls worse than no guard.
+ *
+ * **What is still not decided here is where the files go.** `act` and `read`
+ * hand back paths, so this file writes files; the directory it writes them
+ * into is supplied from outside and never chosen here. See
+ * {@link RealDriverOptions.outputDirectory}.
  */
 
 /**
@@ -101,16 +123,6 @@ function readPngDimensions(image: Uint8Array): { width: number; height: number }
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
-/** Thrown for a seam operation whose row has not landed. */
-class NotYetImplemented extends Error {
-  constructor(operation: string, row: string) {
-    super(
-      `The driver operation ${operation} is declared on the seam but is not implemented yet; row ${row} brings it. It refuses rather than reporting success for work it did not do.`,
-    );
-    this.name = 'NotYetImplemented';
-  }
-}
-
 /**
  * The blank address the keeper tab sits on.
  *
@@ -130,6 +142,82 @@ export const KEEPER_TAB_URL = 'about:blank';
  */
 interface KeeperState {
   page: Page | undefined;
+}
+
+/**
+ * What the browsing context has been recording about one page since the moment
+ * that page existed.
+ *
+ * ── Why this is accumulated rather than fetched ─────────────────────────
+ *
+ * `SCHEMA.md` §3.9 asks for this to be **understood rather than merely
+ * obeyed**, and {@link ARTIFACT_COLLECTION} puts it on the seam as data:
+ * console output and network activity are recorded continuously by the
+ * browsing context, whether or not anybody intends to ask. There is no request
+ * that starts or stops the collection.
+ *
+ * **So `read`'s filter is a write-time filter and not a fetch-time one.** The
+ * question a caller's artefact list answers is *do we serialise this into a
+ * file and hand back a path*, not *do we start collecting*. That is the whole
+ * reason **the cost of not asking is zero**: a caller that realises afterwards
+ * that it wanted the console asks on its next read and gets the accumulated
+ * history from the start of the context, not a recording that began at the
+ * moment of asking.
+ *
+ * Which is also why there is **no console-listener action on `browser_act`**
+ * and no hole where one would go: *arm, act, collect* is served by *act, then
+ * read*. The listeners here are attached when the page is first tracked —
+ * before any lease could have asked for anything — which is what makes that
+ * claim true rather than aspirational.
+ *
+ * **Cookies are deliberately not in here.** They are the one live query
+ * ({@link ARTIFACT_COLLECTION}), answered against the context at the moment of
+ * asking, and they are served by {@link RealBrowserSession.cookies} — which
+ * returns a shape with no value field. Accumulating them here would mean this
+ * process held cookie values, which is the thing §7.1 `read.cookies_no_values`
+ * exists to prevent.
+ */
+interface PageRecording {
+  readonly console: string[];
+  readonly network: string[];
+}
+
+/**
+ * How the next native dialog on a page will be answered.
+ *
+ * ── Why this is a standing disposition and not "answer the dialog up now" ──
+ *
+ * **Measured while building this row, and it decides the shape of the whole
+ * verb.** A native dialog blocks its tab (§3.8) — and the blocking is more
+ * total than that description suggests: it blocks *the very action that raised
+ * it*. With a dialog held unanswered, the `click` that triggered it never
+ * returns and fails on its own timeout:
+ *
+ * ```
+ * CLICK FAILED: page.click: Timeout 2000ms exceeded.
+ * ```
+ *
+ * So a `dialog` action meaning *"answer the dialog already on screen"* is
+ * unimplementable in principle rather than merely awkward: by the time a
+ * caller could send it, the {@link RealBrowserSession.act} call that raised
+ * the dialog has already hung and taken the lease with it. That is exactly the
+ * capacity failure §3.8 puts this verb here for, and an implementation that
+ * answered late would be one that never runs.
+ *
+ * Hence: `dialog` records **how the next one will be answered**, and the
+ * caller arms it before the action that trips it. Measured working on both
+ * paths — an armed accept makes the page's `confirm()` return `true`, an armed
+ * dismissal makes it return `false`, and an armed accept with prompt text puts
+ * that text into the page's `prompt()` result.
+ *
+ * **A page with no disposition set is left to the automation library's own
+ * default, which dismisses.** That default is why an unhandled dialog does not
+ * strand a tab in practice, and it is stated here so the absence of a handler
+ * reads as a decision rather than an oversight.
+ */
+interface DialogDisposition {
+  readonly accept: boolean;
+  readonly promptText?: string;
 }
 
 /**
@@ -157,6 +245,52 @@ class RealBrowserSession implements BrowserSession {
   readonly #pages = new Map<string, Page>();
   #nextTabOrdinal = 0;
 
+  /**
+   * How many artefacts this session has written, used to keep their names
+   * apart.
+   *
+   * ── Why a counter is needed on top of the timestamp ─────────────────────
+   *
+   * **Measured, driving the real browser through every verb: without this,
+   * roughly twenty writes produced four files.** The stamp `names.ts` supplies
+   * is second-granular, and every other part of an artefact's name — the
+   * address slug, which artefact it is, the tab it came from — is identical
+   * for two actions against one tab. So a run of actions inside one second all
+   * assembled the *same* name and silently overwrote each other.
+   *
+   * That is not a tidiness problem. {@link RealBrowserSession.act} promises a
+   * **fresh snapshot after every change**, and the promise is worthless if the
+   * path it hands back has been overwritten by the next action before the
+   * caller reads it: two results would name one file, and the earlier state
+   * would be gone with nothing reporting that it had been.
+   *
+   * A monotonic counter rather than a random identifier, which is where this
+   * departs from `captureFileName`'s fifth part: captures are written by many
+   * processes into one lease's directory and need uniqueness *without
+   * coordination*, whereas these are written by one session that can simply
+   * count. Counting also leaves a directory listing in the order the actions
+   * happened, which is what makes a sequence of snapshots readable as a
+   * sequence.
+   */
+  #artifactsWritten = 0;
+
+  /**
+   * What the context has recorded for each page it handed out, keyed by the
+   * driver's own name for that page.
+   *
+   * Keyed by the handle rather than held on the page so that a page closing
+   * does not take its own history with it: a caller may read the console of a
+   * tab whose last action closed something, and the accumulated log is the
+   * only place that history exists.
+   */
+  readonly #recordings = new Map<string, PageRecording>();
+
+  /** How the next dialog on each page will be answered. See {@link DialogDisposition}. */
+  readonly #dialogs = new Map<string, DialogDisposition>();
+
+  /** Where this session writes the files `act` and `read` hand back paths to. */
+  readonly #outputDirectory: string;
+
   constructor(options: {
     browser: BrowserId;
     mode: BrowserMode;
@@ -164,6 +298,7 @@ class RealBrowserSession implements BrowserSession {
     record: DiscoveryRecord;
     connection: Browser;
     context: BrowserContext;
+    outputDirectory?: string;
   }) {
     this.#browser = options.browser;
     this.#mode = options.mode;
@@ -171,6 +306,14 @@ class RealBrowserSession implements BrowserSession {
     this.#record = options.record;
     this.#connection = options.connection;
     this.#context = options.context;
+    // Defaulted to a directory of this session's own rather than to the
+    // artifact tree, because **this module does not know where the artifact
+    // tree is and must not**: §1.7a puts "the service decides where the file
+    // may go" in `artifacts/store.ts`, and a driver that reached for that
+    // store would be a second thing choosing locations under the root. The
+    // caller supplies a directory; this file only ever fills in a leaf.
+    this.#outputDirectory =
+      options.outputDirectory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'broker-artifacts-'));
   }
 
   describe(): BrowserDescription {
@@ -187,7 +330,58 @@ class RealBrowserSession implements BrowserSession {
     this.#nextTabOrdinal += 1;
     const driverTabId = `${this.#browser}-${String(this.#nextTabOrdinal)}`;
     this.#pages.set(driverTabId, page);
+    this.#recordFrom(driverTabId, page);
     return { browser: this.#browser, driverTabId };
+  }
+
+  /**
+   * Begin accumulating this page's console and network activity.
+   *
+   * **Attached here — at the moment the page is first named — rather than when
+   * a read asks for it**, and that ordering is the whole of §3.9's "the cost of
+   * not asking is zero". A listener attached on demand would collect from the
+   * moment of asking, which is precisely the *arm, act, collect* shape §3.9
+   * says is not needed and deliberately does not offer. See
+   * {@link PageRecording}.
+   *
+   * The entries are text rather than structures because what leaves this
+   * module is a **file**, and a file is text. Shaping them here keeps the
+   * serialisation in one place rather than splitting the format between the
+   * collector and the writer.
+   */
+  #recordFrom(driverTabId: string, page: Page): void {
+    if (this.#recordings.has(driverTabId)) return;
+    const recording: PageRecording = { console: [], network: [] };
+    this.#recordings.set(driverTabId, recording);
+
+    page.on('console', (message: ConsoleMessage) => {
+      recording.console.push(`${message.type()}: ${message.text()}`);
+    });
+    page.on('request', (request: Request) => {
+      recording.network.push(`${request.method()} ${request.url()}`);
+    });
+
+    // A dialog blocks its tab until something answers it, so a page with no
+    // handler at all would hand that decision to the automation library's
+    // default. The handler is installed once, here, and consults the standing
+    // disposition — which is what makes the `dialog` verb able to be armed
+    // *before* the action that trips one. See {@link DialogDisposition}.
+    page.on('dialog', (dialog: Dialog) => {
+      const disposition = this.#dialogs.get(driverTabId);
+      // Consumed rather than left in place: a disposition is an answer to the
+      // next dialog, not a standing policy for the tab. Leaving it set would
+      // make one armed accept silently answer every later dialog, including
+      // ones a caller never anticipated.
+      this.#dialogs.delete(driverTabId);
+
+      // Answering is best effort: a dialog whose page has already gone rejects
+      // here, and there is nobody left for that to be an error to.
+      if (disposition === undefined || !disposition.accept) {
+        void dialog.dismiss().catch(() => undefined);
+        return;
+      }
+      void dialog.accept(disposition.promptText).catch(() => undefined);
+    });
   }
 
   /**
@@ -412,12 +606,363 @@ class RealBrowserSession implements BrowserSession {
     }
   }
 
-  act(): Promise<ArtifactResult> {
-    throw new NotYetImplemented('act', '#22');
+  /**
+   * Perform one page verb, and hand back **a fresh snapshot of the page as it
+   * now is** (`SCHEMA.md` §3.8, rows #22, #61, #62, #63, #64).
+   *
+   * ── Why the snapshot comes back from an action at all ───────────────────
+   *
+   * Every element reference a caller can use comes from a snapshot, so a
+   * caller acting twice against one snapshot is acting against a page that no
+   * longer matches it — and §3.8 names a stale reference as **the most common
+   * cause of an action landing on the wrong element**. Returning the page as
+   * it is now is what makes the next action addressable, which is why it is
+   * not an option and not an artefact list: an action returns one snapshot.
+   *
+   * ── Why this switches on the verb rather than reading optional fields ────
+   *
+   * {@link ActionRequest} is a **discriminated union over the verb**, and the
+   * union exists because the verbs need genuinely different arguments: a
+   * resize takes two integers and addresses no element, an emulate takes three
+   * independent enums, a dialog a boolean and a string, a `fill_form` a list,
+   * a `drag` a **second** reference. A flat read of `ref?` and `value?` would
+   * be the shape the seam's own note rejects — it would make *"which fields
+   * does this verb require"* a run-time question in every implementation, and
+   * it would silently drop every argument belonging to a verb added later.
+   *
+   * So the switch below is exhaustive over the discriminant, and the compiler
+   * is what keeps it exhaustive: a verb added to the union without a case here
+   * fails the type check rather than falling through to a default that did
+   * something plausible.
+   *
+   * ── What this method does NOT refuse, stated because the absence matters ─
+   *
+   * **The conventional refusals are not here, and their absence is not an
+   * oversight.** A zero width, a negative height, an empty reference, an
+   * emulate naming no preference, prompt text accompanying a dismissal, an
+   * over-long field list — every one of those is refused by `validateAction`
+   * in the service layer, before a request is ever shaped into this union. The
+   * seam's own note draws that line: the compiler owns the structural set, the
+   * guard owns the conventional set. Re-checking them here would put the same
+   * rule in two places and let them disagree.
+   *
+   * What *is* owed here is the refusal for **a reference that does not
+   * resolve** (§3.8), because whether an element is on the page is not a fact
+   * any validator upstream can know.
+   */
+  async act(tab: TabHandle, request: ActionRequest): Promise<ArtifactResult> {
+    const page = this.#page(tab);
+
+    switch (request.action) {
+      case 'click':
+        await this.#locate(page, request.ref).click();
+        break;
+
+      case 'hover':
+        await this.#locate(page, request.ref).hover();
+        break;
+
+      case 'check':
+        // `check` rather than `click`: it asserts the box ends up checked and
+        // is a no-op on one already checked, where a click would toggle it
+        // off. A caller asking for `check` twice means the box is checked.
+        await this.#locate(page, request.ref).check();
+        break;
+
+      case 'type':
+        // Keystroke by keystroke, which is what distinguishes it from `fill`:
+        // a field that reacts to each key — a combo box filtering as it goes,
+        // a validator running per character — sees the keys it would see from
+        // a person.
+        await this.#locate(page, request.ref).pressSequentially(request.value);
+        break;
+
+      case 'fill':
+        // Sets the value in one step. The ordinary way to put text in a field.
+        await this.#locate(page, request.ref).fill(request.value);
+        break;
+
+      case 'select':
+        await this.#locate(page, request.ref).selectOption(request.value);
+        break;
+
+      case 'press':
+        // The reference is optional, and the two branches are different acts
+        // rather than one with a default: with a reference the key goes to
+        // that element, without one it goes to whatever the page has focused,
+        // which is how a caller sends a key to a page rather than to a field.
+        if (request.ref === undefined) {
+          await page.keyboard.press(request.value);
+        } else {
+          await this.#locate(page, request.ref).press(request.value);
+        }
+        break;
+
+      case 'scroll':
+        if (request.ref === undefined) {
+          // The page. A fixed expression with nothing interpolated into it —
+          // the same convention `seedStorage` and `settlePage` use, and for
+          // the same reason: it runs in the page, so the compiler here has no
+          // reason to know those names.
+          await page.evaluate(() => {
+            const scope = globalThis as unknown as {
+              scrollBy: (x: number, y: number) => void;
+              innerHeight: number;
+            };
+            scope.scrollBy(0, scope.innerHeight);
+          });
+        } else {
+          await this.#locate(page, request.ref).scrollIntoViewIfNeeded();
+        }
+        break;
+
+      case 'resize':
+        // #61, and **the measured reason this verb is on the list**: 578 calls
+        // across 140 sessions, 58% of every session that drove a browser at
+        // all. A viewport is a property of the browsing context rather than of
+        // anything in the page, so `browser_evaluate` cannot reach it — an
+        // expression can read the dimensions and cannot change the window they
+        // describe. Without this call the measured dominant loop (resize →
+        // navigate → evaluate → capture, once per breakpoint) is not merely
+        // awkward: responsive review is **inexpressible**.
+        //
+        // The bounds are the service's (`MAX_VIEWPORT_SIDE`), already applied.
+        await page.setViewportSize({
+          width: request.viewport.width,
+          height: request.viewport.height,
+        });
+        break;
+
+      case 'emulate':
+        // #62. Each preference is set only when the caller named it, because
+        // they are independent: a caller switching to dark mode is not saying
+        // anything about motion or contrast, and passing `undefined` for the
+        // two it did not mention is what leaves them as they were rather than
+        // resetting them.
+        await page.emulateMedia({
+          ...(request.preferences.colourScheme === undefined
+            ? {}
+            : { colorScheme: request.preferences.colourScheme }),
+          ...(request.preferences.reducedMotion === undefined
+            ? {}
+            : { reducedMotion: request.preferences.reducedMotion }),
+          ...(request.preferences.forcedColours === undefined
+            ? {}
+            : { forcedColors: request.preferences.forcedColours }),
+        });
+        break;
+
+      case 'dialog':
+        // #63. **Arms the answer for the next dialog; it does not answer one
+        // already up** — which is not a shortcut but the only implementable
+        // reading, because an unanswered dialog blocks the very action that
+        // raised it. See {@link DialogDisposition} for the measurement.
+        this.#dialogs.set(tab.driverTabId, {
+          accept: request.response.accept,
+          ...(request.response.promptText === undefined
+            ? {}
+            : { promptText: request.response.promptText }),
+        });
+        break;
+
+      case 'fill_form': {
+        // #64, measured at 78 calls across 35 sessions — the ordinary half of
+        // this row. Sequential rather than concurrent, deliberately: fields
+        // routinely depend on each other (a second field that only appears
+        // once the first is filled, a form that revalidates on every change),
+        // and filling them in parallel would race against the page's own
+        // reaction to the previous field.
+        for (const field of request.fields) {
+          await this.#locate(page, field.ref).fill(field.value);
+        }
+        break;
+      }
+
+      case 'drag':
+        // #64, and **measured at zero calls across 2,007 transcripts in a
+        // month** — not "few", none. Implemented so the number that justified
+        // its low priority can be argued with rather than defended, and
+        // deliberately given no more machinery than the one call it needs.
+        //
+        // **In-page, element to element.** Both references come from the same
+        // snapshot; there is no file-from-the-desktop shape here, because a
+        // lease is a tab and the desktop is not in it.
+        await this.#locate(page, request.ref).dragTo(this.#locate(page, request.targetRef));
+        break;
+    }
+
+    // A fresh snapshot **after** the change, for the reason at the top of this
+    // method. It is taken for every verb including the ones that address no
+    // element: a resize reflows the page and an emulate can change what it
+    // renders outright, so the references a caller holds are exactly as stale
+    // after those two as after a click. §3.8 says so of `emulate` explicitly.
+    return this.#writeSnapshot(tab, page);
   }
 
-  read(): Promise<readonly ArtifactResult[]> {
-    throw new NotYetImplemented('read', '#23');
+  /**
+   * The element a reference names, or a refusal that says where it should have
+   * come from.
+   *
+   * ── Why the reference is resolved rather than interpreted ───────────────
+   *
+   * A reference is a name the **snapshot** minted (`[ref=e12]`), and it is
+   * looked up through the automation library's own reference engine. That is
+   * the point: this file never turns a caller's bytes into a selector it then
+   * evaluates. A caller's reference is matched against references the browser
+   * itself handed out, so a reference that names nothing resolves to nothing
+   * rather than to whatever a hand-built selector would have matched.
+   */
+  #locate(page: Page, ref: string): ReturnType<Page['locator']> {
+    // `aria-ref` is the engine that resolves the identifiers an AI-mode aria
+    // snapshot mints, which is the same snapshot {@link #writeSnapshot}
+    // writes and hands a path to. The two halves are deliberately the same
+    // mechanism: a reference a caller read out of our snapshot file is a
+    // reference this resolves, and there is no translation step in between to
+    // get wrong.
+    return page.locator(`aria-ref=${ref}`);
+  }
+
+  /**
+   * Write the page's accessibility tree and report where it went.
+   *
+   * **The AI mode is what mints the element references** (`[ref=e12]`), and
+   * that is why it is used rather than the plain rendering: §3.9 calls the
+   * snapshot the only load-bearing artefact precisely because every reference
+   * `browser_act` takes comes from it. A snapshot without references would be
+   * readable and useless.
+   */
+  async #writeSnapshot(tab: TabHandle, page: Page): Promise<ArtifactResult> {
+    const snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
+    return this.#write(tab, 'snapshot', page.url(), snapshot);
+  }
+
+  /**
+   * Write the requested artefacts to disk and report where each went
+   * (`SCHEMA.md` §3.9, row #23).
+   *
+   * ── The snapshot is the default because it is the only load-bearing one ──
+   *
+   * Console output, network activity and the cookie summary answer questions a
+   * caller has sometimes and most callers never have at all. The snapshot is
+   * what a caller needs in order to act at all. Which artefacts arrive here is
+   * the service's decision (`resolveReadArtifacts` always includes the
+   * snapshot); what this does is honour the list it is given, in the order it
+   * is given, so that a caller's result lines up with its request.
+   *
+   * ── Why asking for the console is free, which is the part worth knowing ──
+   *
+   * **Console and network are accumulated continuously by the browsing
+   * context** ({@link PageRecording}), from before the lease existed. So the
+   * list below is a filter on **what gets written to disk**, not on what gets
+   * collected — nothing is avoided by not asking, because nothing was being
+   * done on demand. A caller that only afterwards realises it wanted the
+   * console asks on its next read and gets the whole history, not a recording
+   * that started when it asked.
+   *
+   * **Cookies are the exception and are a live query.** They are answered
+   * against the context at the moment of asking, so that one *does* cost
+   * something.
+   *
+   * ── Cookie values are structurally absent, not redacted ─────────────────
+   *
+   * The cookie file is written from {@link RealBrowserSession.cookies}, which
+   * returns {@link CookieSummary} — **a type with no value field**. This
+   * method never sees a cookie value, so there is no redaction step here for
+   * anybody to forget and no branch on which one could survive. That is the
+   * shape §7.1 `read.cookies_no_values` asks for: serialising the jar directly
+   * here would have put the only checkable point inside the module that holds
+   * the values.
+   */
+  async read(
+    tab: TabHandle,
+    artifacts: readonly ReadArtifact[],
+  ): Promise<readonly ArtifactResult[]> {
+    const page = this.#page(tab);
+    const results: ArtifactResult[] = [];
+
+    for (const artifact of artifacts) {
+      switch (artifact) {
+        case 'snapshot':
+          results.push(await this.#writeSnapshot(tab, page));
+          break;
+
+        case 'console':
+          results.push(
+            this.#write(tab, 'console', page.url(), this.#recording(tab).console.join('\n')),
+          );
+          break;
+
+        case 'network':
+          results.push(
+            this.#write(tab, 'network', page.url(), this.#recording(tab).network.join('\n')),
+          );
+          break;
+
+        case 'cookies': {
+          // Through the seam's own cookie member, never by serialising the
+          // jar here — see this method's note on why that is the whole
+          // mechanism rather than a preference.
+          const summaries = await this.cookies(tab);
+          results.push(this.#write(tab, 'cookies', page.url(), JSON.stringify(summaries, null, 2)));
+          break;
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /** What has accumulated for a tab, or an empty history for one that has none. */
+  #recording(tab: TabHandle): PageRecording {
+    return this.#recordings.get(tab.driverTabId) ?? { console: [], network: [] };
+  }
+
+  /**
+   * Write one artefact into this session's output directory.
+   *
+   * ── What this does and does not decide ──────────────────────────────────
+   *
+   * **It fills in a leaf; it does not choose a location.** The directory
+   * arrives from outside (see the constructor), and every name assembled here
+   * is built from parts run through `names.ts` — the same rules §1.7a applies
+   * to a capture's file name, and for the same reason: a file name travels
+   * further than a database column does, so the address a name is derived from
+   * has its query string stripped before anything else.
+   *
+   * `truncated` is reported as `false` and that is honest rather than
+   * placeholder: nothing here truncates. **The cap that would make it
+   * sometimes true is the service's**, in the same way §3.10's inline cap is,
+   * and inventing a byte count in this file would be a policy nobody agreed
+   * applied before the row that owns it could argue with it.
+   */
+  #write(tab: TabHandle, artifact: ReadArtifact, url: string, contents: string): ArtifactResult {
+    fs.mkdirSync(this.#outputDirectory, { recursive: true });
+
+    // The address's slug first so a listing groups a page's artefacts
+    // together, then what kind it is, then the instant — the same ordering
+    // §1.7a chooses for a capture, and readable for the same reason.
+    const fileName = [
+      slugFromUrl(url),
+      artifact,
+      stampFromInstant(new Date()),
+      // The driver's own name for the tab, which is unique within this session
+      // and is what keeps two tabs of one page from writing the same file.
+      // It never leaves this process on any surface — a caller holds the
+      // opaque lease identifier — so using it here names a file without
+      // widening what is disclosed.
+      tab.driverTabId,
+      // Last, and load-bearing: the stamp above is only second-granular, so
+      // without this every artefact written inside one second collides. See
+      // {@link #artifactsWritten} for the measurement that caught it.
+      String(this.#artifactsWritten),
+    ].join('-');
+    this.#artifactsWritten += 1;
+
+    const destination = path.join(this.#outputDirectory, `${fileName}.txt`);
+    const bytes = Buffer.byteLength(contents, 'utf8');
+    fs.writeFileSync(destination, contents, 'utf8');
+
+    return { artifact, path: destination, bytes, truncated: false };
   }
 
   /**
@@ -685,6 +1230,34 @@ export interface RealDriverOptions {
   readonly executablePath?: string;
   readonly launch?: LaunchOptions;
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Where {@link TabOperations.act} and {@link TabOperations.read} write the
+   * artefacts they hand back paths to.
+   *
+   * ── Why this is a parameter rather than something this module works out ──
+   *
+   * `SCHEMA.md` §1.7a puts *"the service decides where the file may go"* in
+   * `artifacts/store.ts`, and the seam's own note on {@link RawCapture}
+   * explains why `capture` therefore returns **bytes** rather than a path: a
+   * driver that picked a path would be *"a second thing choosing locations
+   * under the artifact root"*, and the rule that nothing lands outside the
+   * tree would then hold in one place and be a convention in another.
+   *
+   * `act` and `read` are declared as returning a path, so this file cannot
+   * take the same way out. What it does instead is refuse to choose a
+   * **location** while still choosing a **name**: the directory arrives here,
+   * opaque, and every file written into it is named from parts run through
+   * `names.ts`. The store keeps deciding the tree; this fills in a leaf.
+   *
+   * **The seam this leaves, described honestly:** nothing structurally stops a
+   * caller passing a directory outside the artifact root, because this module
+   * has no way to know where that root is — which is the same fact that makes
+   * the arrangement correct. What closes it is the wiring row handing over
+   * `store.directoryFor(claimId, …)` and nothing else. Until then the default
+   * is a temporary directory of this session's own, so an unwired driver
+   * writes somewhere harmless rather than somewhere surprising.
+   */
+  readonly outputDirectory?: string;
 }
 
 /** The browser modes, fixed by which browser it is (§1.2, §3.15). */
@@ -705,6 +1278,7 @@ async function connect(options: {
   browser: BrowserId;
   record: DiscoveryRecord;
   pid: number;
+  outputDirectory?: string;
 }): Promise<BrowserSession> {
   const connection = await chromium.connectOverCDP(options.record.endpoint);
   const [context] = connection.contexts();
@@ -723,6 +1297,7 @@ async function connect(options: {
     record: options.record,
     connection,
     context,
+    ...(options.outputDirectory === undefined ? {} : { outputDirectory: options.outputDirectory }),
   });
 
   // `keeper.present` (§7.2): each browser has its keeper tab open **before
@@ -788,6 +1363,9 @@ export class RealBrowserDriver implements BrowserDriver {
     return connect({
       browser,
       record: outcome.record,
+      ...(this.#options.outputDirectory === undefined
+        ? {}
+        : { outputDirectory: this.#options.outputDirectory }),
       // The process is not this one's child — the browser was adopted, not
       // owned — so the identifier comes from the store's record of it rather
       // than from a handle this process holds.
@@ -816,6 +1394,9 @@ export class RealBrowserDriver implements BrowserDriver {
       browser: request.browser,
       record: outcome.record,
       pid: outcome.pid,
+      ...(this.#options.outputDirectory === undefined
+        ? {}
+        : { outputDirectory: this.#options.outputDirectory }),
     });
   }
 }

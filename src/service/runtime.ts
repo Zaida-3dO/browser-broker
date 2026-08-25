@@ -69,12 +69,14 @@ export interface RuntimeOptions {
  * **Why not attach the real driver here.** Two reasons, both checkable rather
  * than cautious:
  *
- *  1. `real.ts` throws `NotYetImplemented` for `act` (row #22) and `read`
- *     (row #23). Two of the six page verbs are genuinely not built on the
- *     real driver, so attaching it would make those two fail *after* their
- *     transaction had committed — the after-commit path swallows every
- *     failure by design, so the caller would be told the operation was
- *     accepted and no page would move. That is worse than the honest absence.
+ *  1. ~~`real.ts` throws `NotYetImplemented` for `act` and `read`.~~ **No
+ *     longer true: rows #22 and #23 have landed, and every member of the seam
+ *     is implemented on the real driver.** What remains is that `act` and
+ *     `read` write their artefacts into a directory the session is
+ *     constructed with, and nothing here yet hands them the per-lease
+ *     directory `artifacts/store.ts` owns — so wiring the real driver in means
+ *     deciding that, not just passing it. Reason 2 is unchanged and is on its
+ *     own sufficient.
  *  2. Attaching means deciding attach-against-launch, and `decideAdoption`'s
  *     `wait` branch is written down as an open question: "what the loser
  *     waits for, and for how long, is row #55's open question... this
