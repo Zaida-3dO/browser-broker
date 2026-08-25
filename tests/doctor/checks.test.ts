@@ -40,6 +40,11 @@ describe('the store’s location', () => {
         configuredDatabasePath: local,
         artifactsRoot: local,
         profileRoot: local,
+        // The declared defaults (SCHEMA 6.2). These checks are about path
+        // resolution; the numbers are here to complete the shape.
+        tabBudget: 15,
+        leaseSeconds: 600,
+        queueSeconds: 600,
       },
       checksReporting({}),
     );
@@ -60,6 +65,11 @@ describe('the store’s location', () => {
         configuredDatabasePath: share,
         artifactsRoot: share,
         profileRoot: share,
+        // The declared defaults (SCHEMA 6.2). These checks are about path
+        // resolution; the numbers are here to complete the shape.
+        tabBudget: 15,
+        leaseSeconds: 600,
+        queueSeconds: 600,
       },
       checksReporting({}),
     );
@@ -80,6 +90,11 @@ describe('the store’s location', () => {
         configuredDatabasePath: mapped,
         artifactsRoot: mapped,
         profileRoot: mapped,
+        // The declared defaults (SCHEMA 6.2). These checks are about path
+        // resolution; the numbers are here to complete the shape.
+        tabBudget: 15,
+        leaseSeconds: 600,
+        queueSeconds: 600,
       },
       checksReporting({
         mappings: { [mapped]: sharePath('fileserver', 'store', 'broker.db') },
@@ -99,6 +114,11 @@ describe('the store’s location', () => {
         configuredDatabasePath: share,
         artifactsRoot: share,
         profileRoot: share,
+        // The declared defaults (SCHEMA 6.2). These checks are about path
+        // resolution; the numbers are here to complete the shape.
+        tabBudget: 15,
+        leaseSeconds: 600,
+        queueSeconds: 600,
       },
       checksReporting({}),
     );
