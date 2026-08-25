@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { serviceUnavailable } from '../cli/index.ts';
+import { BrokerError } from '../errors.ts';
+import { createRuntime } from '../service/runtime.ts';
 import { linesFrom, serveSession } from '../tool/session.ts';
 
 /**
@@ -20,20 +22,43 @@ import { linesFrom, serveSession } from '../tool/session.ts';
  *
  * ── The service it serves ───────────────────────────────────────────────
  *
- * The service layer is row #10 onward and is not built. Rather than pretend,
- * this shim serves {@link serviceUnavailable}, which refuses every operation
- * by name — so a caller that spawns this gets an honest refusal with a rule
- * attached, and the whole wire path is real. When the service lands,
- * this line is the substitution and nothing else here changes.
+ * The real one, built the same way the command line builds its own
+ * (`service/runtime.ts`), differing only in the adapter it records — §1.6
+ * keeps one row per decision and one column saying which door it came in
+ * through, and this door is `tool-stdio`.
+ *
+ * {@link serviceUnavailable} covers the one case where a service cannot be
+ * built at all: opening the store is what can fail, and it fails with a rule
+ * attached. Refusing every operation by name is the right answer there — a
+ * caller that spawned this gets an honest refusal and the whole wire path
+ * stays real — and it is reached only in that case, because a surface that
+ * refused everything unconditionally would be unusable rather than degraded.
  *
  * **Human text never goes to standard output**, because standard output is
  * the protocol stream and one stray line would corrupt the framing for every
- * message after it.
+ * message after it. The startup refusal below therefore goes to the error
+ * stream, and the session still serves — a caller mid-conversation gets
+ * refusals it can read rather than a process that vanished.
  */
-await serveSession(linesFrom(process.stdin), {
-  service: serviceUnavailable(),
-  streams: {
-    write: (line) => process.stdout.write(`${line}\n`),
-    log: (line) => process.stderr.write(`${line}\n`),
-  },
-});
+
+let runtime;
+try {
+  runtime = await createRuntime({ adapter: 'tool-stdio' });
+} catch (error) {
+  if (!(error instanceof BrokerError)) {
+    throw error;
+  }
+  process.stderr.write(`refused (${error.rule}): ${error.message}\n`);
+}
+
+try {
+  await serveSession(linesFrom(process.stdin), {
+    service: runtime?.service ?? serviceUnavailable(),
+    streams: {
+      write: (line) => process.stdout.write(`${line}\n`),
+      log: (line) => process.stderr.write(`${line}\n`),
+    },
+  });
+} finally {
+  runtime?.close();
+}

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -38,23 +40,44 @@ interface Spawned {
   readonly err: string;
 }
 
-/** Spawn the shim, write the given lines, close the pipe, collect the result. */
+/**
+ * Spawn the shim, write the given lines, close the pipe, collect the result.
+ *
+ * **Each spawn gets its own store**, in a directory that does not exist until
+ * the spawn creates it. The shim builds a real service, and a real service
+ * opens a real store — so without this every run of this file would write
+ * into whichever store the machine's configuration names, which on a
+ * developer's machine is the one they are actually using.
+ */
 async function spawnSession(lines: readonly string[]): Promise<Spawned> {
-  return new Promise<Spawned>((resolve, reject) => {
-    const child = spawn(process.execPath, [shim], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
-    child.stderr.on('data', (chunk: Buffer) => (err += chunk.toString('utf8')));
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, out, err }));
+  const root = mkdtempSync(path.join(tmpdir(), 'broker-spawned-'));
+  try {
+    return await new Promise<Spawned>((resolve, reject) => {
+      const child = spawn(process.execPath, [shim], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          BROKER_DB: path.join(root, 'broker.db'),
+          BROKER_ARTIFACTS_ROOT: path.join(root, 'artefacts'),
+          BROKER_PROFILE_ROOT: path.join(root, 'profiles'),
+        },
+      });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
+      child.stderr.on('data', (chunk: Buffer) => (err += chunk.toString('utf8')));
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, out, err }));
 
-    for (const line of lines) {
-      child.stdin.write(`${line}\n`);
-    }
-    // Closing the pipe is the caller going away. The session must end.
-    child.stdin.end();
-  });
+      for (const line of lines) {
+        child.stdin.write(`${line}\n`);
+      }
+      // Closing the pipe is the caller going away. The session must end.
+      child.stdin.end();
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 test('a SPAWNED session serves its caller and EXITS WHEN THE INPUT ENDS', async () => {
@@ -111,16 +134,27 @@ test('a spawned session answers several messages in order, one line each', async
   const ids = lines.map((line) => (JSON.parse(line) as { id: string }).id);
   assert.deepEqual(ids, ['a', 'b', 'c'], 'responses did not correlate in order');
 
-  // The middle one is a real call. The service layer is not built, so it is
-  // refused by name — and that refusal arrives as a RESULT, not as a protocol
-  // error, over the real wire.
+  // The middle one is a real call, and the key it carries names no lease in
+  // this spawn's fresh store — so a rule refuses it, and that refusal arrives
+  // as a RESULT, not as a protocol error, over the real wire.
+  //
+  // **The rule named is the point of the assertion.** `key.valid` is a rule
+  // that only the arbitration core can produce: reaching it means the shim
+  // built a service, opened a store, hashed the key and looked for a claim.
+  // A shim that served a stand-in would refuse this same call — which is why
+  // asserting only `outcome: refused` would pass either way — but it would
+  // refuse it by a different rule, because it has no store to have looked in.
   const call = JSON.parse(lines[1] ?? '') as {
     result?: { outcome: string; rule: string };
     error?: unknown;
   };
   assert.equal(call.error, undefined, 'a refusal came back as a protocol error');
   assert.equal(call.result?.outcome, 'refused');
-  assert.equal(call.result?.rule, 'service.not_built');
+  assert.equal(
+    call.result?.rule,
+    'key.valid',
+    'the spawned shim did not reach the arbitration core',
+  );
 
   // The last one is an unknown method, which IS a protocol error.
   const unknown = JSON.parse(lines[2] ?? '') as { error?: { code: string } };
