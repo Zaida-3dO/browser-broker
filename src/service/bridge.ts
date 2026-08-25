@@ -248,12 +248,25 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         const key = keyFrom(args);
         const fullPage = argument(args, 'full_page', 'fullPage');
         const selector = argument(args, 'selector');
+        // The tool surface spells it `compare_to` and the command line
+        // `--compare-to`, which `parseArguments` normalises to `compare_to`
+        // by turning dashes into underscores — so both surfaces arrive at
+        // the same key and the command line needs no entry of its own. The
+        // camel spelling is accepted too, for a caller driving the dispatcher
+        // in process with the service's own vocabulary.
+        // Read here, beside the two arguments that were already
+        // being carried, because a surface that declares an argument and
+        // drops it is worse than one that never offered it: the caller is
+        // told the diff is available, passes it, and gets a capture with no
+        // comparison and nothing saying why.
+        const compareTo = argument(args, 'compare_to', 'compareTo');
         return {
           ...(await broker.capture({
             key,
             tabId: tabForKey(db, key),
             ...(fullPage === undefined ? {} : { fullPage: asBoolean(fullPage) }),
             ...(typeof selector === 'string' ? { selector } : {}),
+            ...(typeof compareTo === 'string' && compareTo.length > 0 ? { compareTo } : {}),
           })),
         };
       }

@@ -1,4 +1,5 @@
 import type { Environment } from '../config/environment.ts';
+import { readDiffSettings, type DiffSettings } from '../diff/settings.ts';
 import type { StoreHandle } from '../store/open.ts';
 import { runArbitration, type CloseOrphanedTab } from './arbitration.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
@@ -113,6 +114,17 @@ export interface BrokerOptions {
    * drops it, which is the behaviour `decideCapture` was fixed to stop.
    */
   readonly artifacts?: ArtifactStore;
+  /**
+   * The five numbers that decide a diff's output (§6.2).
+   *
+   * **Optional, and omitting it reads them from the environment**, which is
+   * the same one-snapshot-per-process rule the arbitration settings beside it
+   * follow (§6.3). Present as an option only so a test can pin the numbers
+   * without setting environment variables on the process — the tuning
+   * behaviour §1.9 records on every row is otherwise unobservable from a test
+   * that cannot vary them.
+   */
+  readonly diffSettings?: DiffSettings;
 }
 
 /**
@@ -130,6 +142,11 @@ export function createBroker(options: BrokerOptions): Broker {
     leaseSeconds: options.environment.leaseSeconds,
     queueSeconds: options.environment.queueSeconds,
   };
+
+  // The same one-per-process snapshot the arbitration settings are, taken
+  // here for the same reason (§6.3). A bad value refuses the spawn rather
+  // than one capture, which is `readDiffSettings`'s own documented split.
+  const diffSettings: DiffSettings = options.diffSettings ?? readDiffSettings();
 
   const run = <Input, Output>(name: string, input: Input): Promise<Output> =>
     runArbitration<Input, Output>({
@@ -159,6 +176,11 @@ export function createBroker(options: BrokerOptions): Broker {
   const withBrowserAndArtifacts = <T>(input: T): T => ({
     ...withBrowser(input),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+    // Read once, above, and handed to every capture — never read inside the
+    // handler, for the reason this function's own header gives about the
+    // arbitration settings: a second snapshot taken at a different instant
+    // would let two rules inside one operation see two configurations.
+    diffSettings,
   });
 
   return {

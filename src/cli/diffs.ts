@@ -23,19 +23,20 @@ import { type ComparisonQuery, listComparisons } from '../service/comparison-sto
  * So this command is not a convenience on top of the feature. It is the half of
  * the feature that makes the other half worth storing.
  *
- * ── NOT YET REACHABLE FROM THE COMMAND LINE, AND THAT IS DELIBERATE ────
+ * ── REACHABLE FROM THE COMMAND LINE ────────────────────────────────────
  *
- * `runDiffs` below is complete and tested, but **nothing dispatches the word
- * `diffs` to it yet.** The command table (`src/cli/commands.ts`) separates
- * commands that have a service operation behind them from the fixed set of
- * standalone ones, and registering a fifth standalone command whose dispatch
- * path only reports "not built yet" would either misdescribe this one or
- * require reworking that dispatch — both of which belong to the row that owns
- * the command surface rather than to this one.
+ * `broker diffs` is registered in {@link STANDALONE_COMMANDS} and dispatched
+ * to {@link runDiffs} by `src/cli/index.ts`, which passes the stepped store's
+ * handle and the streams. It takes no lease, because it decides nothing — it
+ * is a read of what has already been recorded, the same reason `events` is
+ * not an operation either.
  *
- * So the noun is left unregistered rather than half-registered. Wiring it is
- * one entry in that table plus one branch, and it is named in this milestone's
- * handoff instead of being left for somebody to discover.
+ * **A comment asserting that this command is unreachable would be false**, and
+ * worth guarding against specifically: prose describing an absence stops being
+ * true the moment the absence is filled, and nothing type-checks a paragraph.
+ * The dispatch is one branch in `src/cli/index.ts` and one entry in
+ * {@link STANDALONE_COMMANDS}; a reader doubting either can follow both in a
+ * single hop, which is the only durable answer to a stale sentence.
  *
  * ── What it shows, and why those columns ────────────────────────────────
  *
