@@ -225,13 +225,78 @@ export async function runOperationsCheck() {
       `the grant was ${JSON.stringify(granted?.value)}`,
     );
 
-    // §5.6, asserted against the real path rather than against a stub: the
-    // key is absent rather than masked, in the machine-readable mode.
+    // §5.6, asserted against the real path rather than against a stub.
+    //
+    // The grant is the one named exception to "the lease key is never
+    // printed": without it this command spent real tab budget on a lease
+    // nobody could then address, because §2.2 returns a key once and makes it
+    // unrecoverable. So the assertion here is that the key **is** returned,
+    // and the assertions further down are that it is returned by nothing
+    // else — a hole this narrow is only worth having if its edges are pinned.
     check(
-      'the command line does not print the lease key it just issued',
-      granted?.value !== undefined && !('key' in granted.value),
+      'the command line returns the key for the lease it just granted',
+      typeof granted?.value?.key === 'string' && granted.value.key.length > 0,
       `the grant carried ${JSON.stringify(Object.keys(granted?.value ?? {}))}`,
     );
+
+    // ── The lease the command line granted can actually be driven ────────
+    //
+    // This is the point of the exception above, and it is asserted rather
+    // than argued: the key the grant returned is carried back to two other
+    // commands, in two further processes, and the lease is ended through the
+    // same surface that started it. Before the exception, `claim` succeeded
+    // here and the lease was unreachable from every one of these — it held a
+    // tab against the capacity budget until its lifetime elapsed.
+    if (typeof granted?.value?.key === 'string') {
+      const cliKey = granted.value.key;
+
+      const cliStatus = await spawnBinary(
+        COMMAND_LINE,
+        ['status', '--lease-key', cliKey, '--json'],
+        { env: environment },
+      );
+      let statusAnswer;
+      try {
+        statusAnswer = JSON.parse(cliStatus.stdout.trim());
+      } catch {
+        statusAnswer = undefined;
+      }
+      check(
+        'the key the command line issued addresses the lease it granted',
+        statusAnswer?.outcome === 'accepted' &&
+          statusAnswer.value?.claimId === granted.value.claimId &&
+          statusAnswer.value.state === 'active',
+        `status answered ${cliStatus.stdout.trim()} ${cliStatus.stderr.trim()}`,
+      );
+
+      // The narrowness of the hole, asserted on a command that is *not* the
+      // grant but does carry a key in. A surface that stripped on the way out
+      // by operation name rather than by field would leak here.
+      check(
+        'no command other than the grant prints a key back',
+        statusAnswer?.value !== undefined && !('key' in statusAnswer.value),
+        `status carried ${JSON.stringify(Object.keys(statusAnswer?.value ?? {}))}`,
+      );
+
+      const cliRelease = await spawnBinary(
+        COMMAND_LINE,
+        ['release', '--lease-key', cliKey, '--json'],
+        { env: environment },
+      );
+      let releaseAnswer;
+      try {
+        releaseAnswer = JSON.parse(cliRelease.stdout.trim());
+      } catch {
+        releaseAnswer = undefined;
+      }
+      check(
+        'the command line can give back the tab budget its own claim spent',
+        releaseAnswer?.outcome === 'accepted' &&
+          releaseAnswer.value?.released === 'tab' &&
+          releaseAnswer.value.alreadyEnded === false,
+        `release answered ${cliRelease.stdout.trim()} ${cliRelease.stderr.trim()}`,
+      );
+    }
 
     // ── Every keyed operation reaches a rule, not a missing service ───────
     //

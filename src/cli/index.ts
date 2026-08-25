@@ -282,7 +282,37 @@ async function runOperation(
     // §5.6: a machine-readable mode produces one document per call and puts
     // all human text on the error stream, "so a caller that did not ask for
     // prose gets none".
-    const value = withoutSecrets(outcome.value);
+    //
+    // ── The one command that keeps its key, and why ───────────────────────
+    //
+    // §5.6's rule is that the lease key is never printed, and it is
+    // load-bearing: "absent rather than masked" is the specification, because
+    // a masked field advertises that a secret exists and is one format change
+    // from being the real one. That rule is kept everywhere here except the
+    // grant, which is the single named hole — spelled exactly as the tool
+    // surface spells its own in `tool/session.ts`, so the two surfaces state
+    // one rule rather than two.
+    //
+    // Without the hole, `broker claim` was a command that **succeeded and
+    // could not be used**. It takes real capacity — §2.3 makes grants and
+    // tabs the same integer — mints a lease, and then withheld the only thing
+    // that can address it. §2.2 returns a key once and makes it unrecoverable
+    // by construction, so there was no second way to learn it: the lease sat
+    // holding a tab until its lifetime elapsed, and every one of the nine
+    // keyed commands on this surface was unreachable for it. A command that
+    // silently spends bounded capacity on an unusable lease is worse than one
+    // that refuses.
+    //
+    // Removing `claim` from this surface was the alternative and is the wrong
+    // one: `commands.ts` exists so that "every §3 operation has a command, so
+    // parity is real rather than claimed", and dropping one would make that
+    // sentence false to buy a secrecy the tool surface does not keep either.
+    //
+    // The exception is as narrow as it can be. It is keyed on the operation
+    // being `claim`, so it cannot widen to a command added later; every other
+    // command, and every refusal on every command including this one, still
+    // goes through `withoutSecrets`.
+    const value = operation === 'claim' ? outcome.value : withoutSecrets(outcome.value);
     if (context.json) {
       context.streams.out(JSON.stringify({ outcome: 'accepted', value }));
     } else {

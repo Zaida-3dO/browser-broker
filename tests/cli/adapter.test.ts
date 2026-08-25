@@ -253,10 +253,14 @@ test('the machine-readable mode produces ONE document per call', async () => {
 
 // ── The lease key is never printed (§5.6) ───────────────────────────────
 
-test('the lease key is NEVER printed — absent rather than masked', async () => {
-  // §5.6: "The lease key is never printed by any command, including in error
+test('the lease key is NEVER printed - absent rather than masked', async () => {
+  // 5.6: "The lease key is never printed by any command, including in error
   // output and in the machine-readable mode, where the field is absent rather
   // than masked."
+  //
+  // Driven through `status` rather than `claim`. The grant is 5.6's one named
+  // exception and is asserted separately below; every other command, which is
+  // to say this rule's whole domain, is asserted here.
   const leaks: BrokerService = {
     perform: () =>
       Promise.resolve({
@@ -265,8 +269,8 @@ test('the lease key is NEVER printed — absent rather than masked', async () =>
       }),
   };
 
-  const json = await drive(['claim', '--browser', 'regular', '--json'], { service: leaks });
-  const human = await drive(['claim', '--browser', 'regular'], { service: leaks });
+  const json = await drive(['status', '--lease-key', 'k', '--json'], { service: leaks });
+  const human = await drive(['status', '--lease-key', 'k'], { service: leaks });
 
   for (const stream of [json.out, json.err, human.out, human.err]) {
     assert.equal(
@@ -280,6 +284,55 @@ test('the lease key is NEVER printed — absent rather than masked', async () =>
   const document = JSON.parse(json.out.join('\n')) as { value: Record<string, unknown> };
   assert.equal('lease_key' in document.value, false, 'the field was masked rather than removed');
   assert.equal(document.value['state'], 'active', 'the rest of the result was lost');
+});
+
+test('the grant is the ONE command that returns the key, and only on the grant', async () => {
+  // 5.6's named exception. Asserted as a pair with the test above, because
+  // either half alone is satisfiable by the wrong thing: strip everywhere and
+  // `claim` mints leases nobody can address; strip nowhere and the rule is
+  // gone. Both are what the surface must do, so both are pinned.
+  const grants: BrokerService = {
+    perform: () =>
+      Promise.resolve({
+        outcome: 'accepted',
+        value: { outcome: 'granted', claimId: 'a-claim', key: 'the-secret-key' },
+      }),
+  };
+
+  const granted = await drive(['claim', '--browser', 'regular', '--json'], { service: grants });
+  const document = JSON.parse(granted.out.join('\n')) as { value: Record<string, unknown> };
+  assert.equal(
+    document.value['key'],
+    'the-secret-key',
+    'the grant withheld the key, so the lease it just took capacity for is unreachable',
+  );
+
+  // The edge of the hole: the same shape from any other command is stripped.
+  // A surface that opened the exception by result shape rather than by
+  // operation would leak here.
+  const status = await drive(['status', '--lease-key', 'k', '--json'], { service: grants });
+  const other = JSON.parse(status.out.join('\n')) as { value: Record<string, unknown> };
+  assert.equal('key' in other.value, false, 'a command that is not the grant returned a key');
+
+  // And the exception does not extend to a refusal of the grant itself.
+  const refusesGrant: BrokerService = {
+    perform: () =>
+      Promise.resolve({
+        outcome: 'refused',
+        code: 'unknown_browser',
+        rule: 'claim.browser_known',
+        message: 'There is no browser by that name.',
+        details: { key: 'the-secret-key' },
+      }),
+  };
+  const refused = await drive(['claim', '--browser', 'nope', '--json'], { service: refusesGrant });
+  for (const stream of [refused.out, refused.err]) {
+    assert.equal(
+      stream.join('\n').includes('the-secret-key'),
+      false,
+      'a refused grant leaked a key',
+    );
+  }
 });
 
 test('the lease key is stripped at every depth, and from refusal details too', () => {
