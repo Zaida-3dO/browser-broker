@@ -84,19 +84,28 @@ test('a command noun this build does not define is refused rather than guessed a
   assert.match(result.err.join('\n'), /Unrecognised command/);
 });
 
-test('a command that is still owed is named, and says it is not built', async () => {
-  // The other half of the change above: `login` is refused, but for its own
-  // reason rather than as an unknown word. A command that silently did
-  // nothing, or that reported success, would be worse than either.
+test('login without a service refuses for its own reason, not as an unknown word', async () => {
+  // **This assertion changed shape when `login` was built, and the reason is
+  // worth keeping.** It used to assert that `login` reported itself "not
+  // built yet" — the honest answer while nothing implemented it. Every
+  // standalone command is now implemented, so there is no owed command left
+  // to point it at, and re-pointing it at a working one would have made it
+  // pass for the wrong reason.
   //
-  // **`login` rather than `init`**, because `init` now runs the setup
-  // handshake. This assertion needs a command the build genuinely does not
-  // have; pointing it at one that works would make it pass for the wrong
-  // reason and stop testing anything.
+  // What it asserts instead is the property that actually matters and that
+  // survived the change: a command driven **without a service** refuses,
+  // names why, and is not mistaken for an unknown word. For `login`
+  // specifically that refusal is load-bearing rather than incidental —
+  // signing in claims the browser through the service so that a person is
+  // never handed a window a caller is using, and a route that opened one
+  // anyway when it could not claim it would defeat the whole of §5.5.1's
+  // first step.
   const result = await drive(['login'], {});
   assert.notEqual(result.code, 0);
   assert.doesNotMatch(result.err.join('\n'), /Unrecognised command/);
-  assert.match(result.err.join('\n'), /not built yet/);
+  assert.match(result.err.join('\n'), /service\.not_built/);
+  // And it says what it would have risked, rather than only that it failed.
+  assert.match(result.err.join('\n'), /window/);
 });
 
 test('a refusal exits non-zero and names the rule on the error stream', async () => {

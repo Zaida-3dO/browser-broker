@@ -1,10 +1,12 @@
 import type { Database } from 'better-sqlite3';
 
 import { BROWSER_IDS } from '../browser/driver.ts';
+import { SIGNABLE_BROWSER } from '../service/operations/sign-in.ts';
 import type { Environment } from '../config/environment.ts';
 import { readTabBudget } from '../operations/status.ts';
 import type { NetworkPathChecks } from '../store/network-path.ts';
 import { readStoreVersion } from '../store/schema/step.ts';
+import { inspectProfileSession, type CookieStoreReader } from './session.ts';
 import {
   checkAutomation,
   checkCaptureSurface,
@@ -12,6 +14,7 @@ import {
   checkKeeperTab,
   checkRootWritable,
   checkSchemaVersion,
+  checkSignInSession,
   checkStoreLocation,
   checkStorePresent,
   checkTabBudget,
@@ -60,6 +63,13 @@ export interface DoctorProbes {
   /** The tab budget this process's environment declares, once one is read. */
   readonly configuredTabBudget?: number;
   readonly networkChecks?: NetworkPathChecks;
+  /**
+   * How the cookie store is read, for the sign-in check.
+   *
+   * Injected like every other probe here, so the branches that report an
+   * unreadable store are reachable by a test. Absent means the real reader.
+   */
+  readonly cookieReader?: CookieStoreReader;
 }
 
 export interface DoctorReport {
@@ -115,6 +125,28 @@ export function runDoctor(
   for (const browser of BROWSER_IDS) {
     checks.push(checkKeeperTab(browser, probes.keeperTabs?.[browser]));
   }
+
+  // The sign-in check, for the one browser that has a profile to sign into.
+  // Not run for the private browser: its profile is ephemeral, so the
+  // question does not apply and an entry saying `unknown` about a browser
+  // that can never be signed in would read as a gap rather than as a
+  // non-question.
+  //
+  // **Whether a browser is running changes what a zero count means**, so the
+  // discovery probe's answer is passed through rather than re-derived. See
+  // `session.ts`: a live browser has not necessarily flushed its cookies.
+  const signInBrowser = SIGNABLE_BROWSER;
+  const discoveryProbe = probes.discovery?.[signInBrowser];
+  const browserRunning = discoveryProbe?.recorded === true && discoveryProbe.answered === true;
+  checks.push(
+    checkSignInSession(
+      signInBrowser,
+      inspectProfileSession(environment.profileRoot, signInBrowser, {
+        ...(probes.cookieReader === undefined ? {} : { reader: probes.cookieReader }),
+        browserRunning,
+      }),
+    ),
+  );
 
   checks.push(checkTabBudget(storedBudget, probes.configuredTabBudget ?? null));
 

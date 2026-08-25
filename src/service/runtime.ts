@@ -4,7 +4,7 @@ import { readEnvironment, type Environment } from '../config/environment.ts';
 import { openStore, type StoreHandle } from '../store/open.ts';
 import { stepSchema } from '../store/schema/step.ts';
 import { serviceFor } from './bridge.ts';
-import { createBroker } from './broker.ts';
+import { createBroker, type Broker } from './broker.ts';
 
 /**
  * What a shipped executable does to get a service: open the store, step it,
@@ -32,6 +32,18 @@ import { createBroker } from './broker.ts';
  */
 export interface Runtime {
   readonly service: BrokerService;
+  /**
+   * The typed service, for the operations that are not on the agent surface.
+   *
+   * `service` above is the ten-operation seam every adapter drives, and it is
+   * deliberately flat: a caller names an operation and passes arguments.
+   * **Signing in is not one of the ten** — it is performed by a person, takes
+   * no lease and no tab budget — so it is reached here rather than by
+   * widening the surface agents can call. §5.4's rule about the
+   * administrative operations is the same one: *"They are not on the agent
+   * surface and adding them there fails the build."*
+   */
+  readonly broker: Broker;
   readonly store: StoreHandle;
   readonly environment: Environment;
   /** Release the store. Safe to call more than once. */
@@ -110,6 +122,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
   let closed = false;
   return {
     service: serviceFor({ broker, db: store.db }),
+    broker,
     store,
     environment,
     close: () => {

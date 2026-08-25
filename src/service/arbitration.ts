@@ -37,6 +37,14 @@ import {
   type TabReplaceInput,
   type TabReplaceResult,
 } from './operations/pages.ts';
+import {
+  decideBeginSignIn,
+  decideEndSignIn,
+  type BeginSignInInput,
+  type BeginSignInResult,
+  type EndSignInInput,
+  type EndSignInResult,
+} from './operations/sign-in.ts';
 import { decideStatus, type StatusInput, type StatusResult } from './operations/status.ts';
 import { CallRefusal } from './refusals.ts';
 
@@ -283,6 +291,30 @@ function releaseHandler(
 }
 
 /**
+ * The two sign-in handlers (SCHEMA.md 5.5.1).
+ *
+ * **Neither takes settings, and neither is keyed.** They are the one pair of
+ * operations a *person* performs rather than a caller: there is no lease to
+ * renew, no duration to report and no key to carry, because a person at a
+ * keyboard is not a caller and takes no tab budget. What they need from the
+ * transaction is the reconciled lease state the sweep produces, which every
+ * handler gets for free.
+ */
+function beginSignInHandler(
+  scope: ArbitrationScope,
+  input: BeginSignInInput,
+): ArbitrationOutcome<BeginSignInResult> {
+  return decideBeginSignIn(scope, input);
+}
+
+function endSignInHandler(
+  scope: ArbitrationScope,
+  input: EndSignInInput,
+): ArbitrationOutcome<EndSignInResult> {
+  return decideEndSignIn(scope, input);
+}
+
+/**
  * The six tab-addressed handlers.
  *
  * **None of them takes settings**, for the reason `decideStatus` gives about
@@ -399,6 +431,17 @@ export const ARBITRATION_OPERATIONS = {
     kind: 'capture',
     summary: 'Take an image of an owned tab, of the viewport or of the whole page.',
     handler: captureHandler,
+  },
+  begin_sign_in: {
+    kind: 'browser_signin_began',
+    summary: 'Claim the signed-in browser for a person, refusing if any live lease holds a tab.',
+    handler: beginSignInHandler,
+  },
+  end_sign_in: {
+    kind: 'browser_signin_ended',
+    summary:
+      'Give the browser back after a person has signed in; queued callers kept their places.',
+    handler: endSignInHandler,
   },
   tab_replace: {
     kind: 'tab_closing',

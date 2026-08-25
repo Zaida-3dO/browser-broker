@@ -6,6 +6,7 @@ import type { Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
 import { refuseNetworkLocation, type NetworkPathChecks } from '../store/network-path.ts';
 import { EXPECTED_VERSION } from '../store/schema/steps.ts';
+import type { SessionProbe } from './session.ts';
 
 /**
  * `broker doctor` — every precondition, reported separately (`MILESTONES.md`
@@ -127,6 +128,15 @@ export const DOCTOR_EXIT = {
   keeper: 15,
   /** The stored tab budget disagrees with this process's environment. */
   budget: 16,
+  /**
+   * The sign-in state of the persistent profile.
+   *
+   * It has a group so the report can carry it, and it is **the one group no
+   * check ever fails into**: a profile without a session is the ordinary
+   * state of a fresh install rather than a fault. The code exists so the
+   * grouping is total rather than because anything returns it.
+   */
+  session: 17,
 } as const;
 
 /** Which exit code a failing check contributes. */
@@ -591,5 +601,82 @@ export function checkTabBudget(stored: number | null, configured: number | null)
     title,
     status: 'ok',
     detail: `Both say ${String(stored)}.`,
+  };
+}
+
+/**
+ * **Whether the signed-in browser's profile looks signed in** (§5.5.1).
+ *
+ * ── Why this check exists, and why it never fails ───────────────────────
+ *
+ * Signing in is the one step a person performs by hand, and until this check
+ * existed there was **no way to confirm it worked** short of opening a
+ * browser and looking — which is the one thing this command may not do.
+ *
+ * **It reports and never fails**, which is a deliberate choice rather than an
+ * omission. A profile with no session in it is not a broken installation: it
+ * is every installation, up until the moment somebody signs in. Failing here
+ * would make `broker doctor` exit non-zero on a correct fresh install, and a
+ * readiness check that cannot go green on a working machine is one people
+ * learn to ignore. What it does instead is **say which of the two states it
+ * found**, which is the question being asked.
+ *
+ * ── Why a zero count is not reported as "not signed in" ─────────────────
+ *
+ * `session.ts` carries the measurements; the part that matters here is that
+ * the evidence is **positive-only**. Stored cookies mean a session was
+ * written down. No stored cookies mean no evidence was found — which is also
+ * what a site keeping its session in local storage looks like, and what a
+ * profile whose browser has not flushed yet looks like. So those come back as
+ * `unknown` **with the reason**, never as a confident negative.
+ */
+export function checkSignInSession(browser: BrowserId, probe: SessionProbe): GroupedCheck {
+  const id = `browser.${browser}.session`;
+  const title = `The ${browser} browser’s profile carries a sign-in`;
+
+  if (probe.evidence === 'session-present') {
+    return {
+      group: 'session',
+      id,
+      title,
+      status: 'ok',
+      detail: `The profile holds ${String(probe.cookieCount ?? 0)} stored cookie(s), so a session was established and written down.`,
+    };
+  }
+
+  if (probe.evidence === 'no-profile') {
+    return {
+      group: 'session',
+      id,
+      title,
+      status: 'unknown',
+      detail:
+        probe.reason ??
+        'There is no profile directory yet, so there is nothing to look for a session in.',
+    };
+  }
+
+  if (probe.evidence === 'undetermined') {
+    return {
+      group: 'session',
+      id,
+      title,
+      status: 'unknown',
+      detail: probe.reason ?? 'The profile could not be inspected, so nothing is concluded.',
+    };
+  }
+
+  // `no-session-found`. Reported as unknown rather than failed, and the
+  // detail says exactly how strong the evidence is — the absence of a stored
+  // cookie is not proof that nobody is signed in.
+  return {
+    group: 'session',
+    id,
+    title,
+    status: 'unknown',
+    detail:
+      probe.reason ??
+      'No stored cookies were found in the profile, which is what a profile nobody has signed into looks like.',
+    remedy: `Run \`broker login\` to sign in to the ${browser} browser by hand. It is the one step a person performs, and it happens once.`,
   };
 }
