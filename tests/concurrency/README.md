@@ -24,7 +24,7 @@ stronger of the two.
 
 | File | Property |
 |---|---|
-| `transaction-mode.test.ts` | 30 processes on `BEGIN IMMEDIATE` all commit, and no two read the same value. **25 on `BEGIN DEFERRED` with a widened read-then-write window are asserted to FAIL**, with a busy-snapshot error the busy timeout cannot retry |
+| `transaction-mode.test.ts` | 30 processes on `BEGIN IMMEDIATE` all commit, and no two read the same value. **25 on `BEGIN DEFERRED` with a widened read-then-write window are asserted to FAIL**, with a busy error **the busy timeout demonstrably did not retry** — asserted on the measured wait rather than on the error code, for the reason in [The failing control identifies itself by the wait](#the-failing-control-identifies-itself-by-the-wait) |
 | `arbitration.test.ts` | A budget of K under N racing processes yields exactly K grants and N−K queue placements — never K+1. No tab row is shared between two claims, and every claim a caller was told about is a row that exists |
 | `queue-order.test.ts` | Positions handed out under contention are exactly 1..depth with no repeats. **A position never gets worse when callers share a `created_at`** — with the tie forced rather than raced |
 | `sweep.test.ts` | A lapsed claim belonging to a session that never calls again is reclaimed by strangers, expired **exactly once** however many processes sweep it simultaneously, stamped with the moment it lapsed rather than the moment a sweep noticed, and its capacity is reissued |
@@ -57,6 +57,41 @@ failures** — the repair is to restore the contention.
 
 Without it, the immediate arm going green is equally consistent with the mode mattering and with
 there never having been enough contention to tell.
+
+### The failing control identifies itself by the wait
+
+A tempting way to write this assertion is to require at least one `SQLITE_BUSY_SNAPSHOT` among the
+deferred failures, because that is the error the busy timeout cannot retry — which is what makes
+deferred *unsafe* rather than merely slow. **Requiring that code is not dependable**, and on the
+Windows runner it produces `{"SQLITE_BUSY":24}`: 24 processes fail, none under the demanded code.
+
+Investigated on Windows rather than assumed, and the finding is that the code is the wrong thing to
+check:
+
+- **`SQLITE_BUSY_SNAPSHOT` is reachable on Windows** — 15–20 of 25 in the ordinary case. Nothing here
+  is skipped or weakened for the platform, and the property is not one Windows cannot host.
+- **Which of the two busy codes a child sees is scheduler-dependent**, and noisy at every contention
+  setting. Measured over three runs at each read-then-write window width, deferred failures out of
+  25: at 1 ms, 11–13 snapshot against 6–9 plain; at 5 ms, 15–20 against 1–8; at 20 ms, **4–24 against
+  0–20** — one run reporting 24 snapshots and none plain, another reporting 4 against 20. Widening
+  the window raises the average and guarantees nothing, so tuning contention could only have moved
+  the flake rate rather than removed it.
+
+What the control means to say is that the failure was one the busy timeout **could not retry**, and
+that is measurable directly rather than inferred from a code:
+
+| | Waited | Meaning |
+|---|---|---|
+| A writer queued behind a genuinely held write lock | **5514 ms** against a 5000 ms timeout | Retryable — it waited the whole timeout and would have committed on a retry |
+| Every deferred failure here, **under both codes alike** | **5–23 ms** | Nothing to wait for: the transaction lost the right to upgrade its read snapshot |
+
+So the assertion is on the wait, and a plain `SQLITE_BUSY` arriving in 12 ms is not the retryable
+error its code suggests — it is the same lost-upgrade defect under a different name.
+
+**Asserting the wait is the stronger statement, and deliberately not a broadening.** Demanding one
+snapshot code out of 25 says nothing whatever about the other 24; the wait constrains **every**
+failure in the run, and rejects a run whose failures are merely queued — which a code check passes as
+soon as a single snapshot appears anywhere among them. The mutation table below records that case.
 
 ## What this suite does NOT prove
 
@@ -109,6 +144,8 @@ Reviewers make these by hand. Each was applied to the tree, the suite run, and t
 | Budget refusal disabled, adopting the stored value instead | **Kills** the budget-disagreement test — the "helpful" change the specification names |
 | Queue ordered by `created_at, id` rather than `arrival` | **Kills** the forced-tie test **5 runs out of 5** |
 | `CONTENTION_LEAD_MS` → `0`, removing the start barrier | **Kills the deferred control**, which is the point: the control fails loudly rather than silently passing |
+| The rendezvous turned off **and** the lead set to `0` | **Kills the deferred control.** Failures collapse 22 → 3 and the floor reports it as a run that cannot conclude, rather than as a statement about deferred |
+| Deferred failures swapped for **retryable** ones — children queued behind a genuinely held write lock | **Kills the deferred control.** 20 of 20 failed as `SQLITE_BUSY` having waited 5572–5603ms against a 5000ms timeout, and the wait ceiling rejects the run. A code-based assertion cannot catch this mutation: it passes as soon as one `SQLITE_BUSY_SNAPSHOT` appears among them |
 
 ### One hollow test the sweep caught, and the fix
 
