@@ -1,6 +1,7 @@
 import type { Environment } from '../config/environment.ts';
 import type { StoreHandle } from '../store/open.ts';
 import { runArbitration, type CloseOrphanedTab } from './arbitration.ts';
+import type { ArtifactStore } from '../artifacts/store.ts';
 import type { EventAdapter } from './events.ts';
 import type { ArbitrationSettings, ClaimInput, ClaimResult } from './operations/claim.ts';
 import type { ReleaseInput, ReleaseResult } from './operations/give-back.ts';
@@ -15,6 +16,7 @@ import type {
   NavigateResult,
   ReadInput,
   ReadResult,
+  SessionSource,
   TabReplaceInput,
   TabReplaceResult,
 } from './operations/pages.ts';
@@ -92,6 +94,25 @@ export interface BrokerOptions {
    * regardless.
    */
   readonly closeTab?: CloseOrphanedTab;
+  /**
+   * How a page verb reaches a browser, after the commit.
+   *
+   * **Optional, and omitting it means no page is driven** — the same
+   * documented consequence {@link BrokerOptions.closeTab} carries, and the
+   * state every test that has no browser runs in. Supplied here rather than
+   * on each call so that a route cannot decide, per operation, whether a
+   * browser is reached: which browser a tab lives in is a fact about the
+   * tab's row, and the handler resolves it (see `SessionSource`).
+   */
+  readonly session?: SessionSource;
+  /**
+   * Where a capture is written.
+   *
+   * Travels with {@link BrokerOptions.session} because the two are only
+   * useful together: a browser with nowhere to put a picture takes one and
+   * drops it, which is the behaviour `decideCapture` was fixed to stop.
+   */
+  readonly artifacts?: ArtifactStore;
 }
 
 /**
@@ -119,6 +140,27 @@ export function createBroker(options: BrokerOptions): Broker {
       ...(options.closeTab === undefined ? {} : { closeTab: options.closeTab }),
     });
 
+  /**
+   * The browser connection, added to the six inputs that can use one.
+   *
+   * **Added here rather than by each adapter**, which is the same rule the
+   * bridge holds itself to: a route shapes arguments and names an operation,
+   * and whether a browser is reached is not an argument a caller passes. A
+   * surface that could omit it would be a surface on which a page verb
+   * silently did nothing, and the two surfaces would differ in what they
+   * actually did while agreeing on what they returned — the exact failure
+   * §8's parity assertion exists to catch.
+   */
+  const withBrowser = <T>(input: T): T => ({
+    ...input,
+    ...(options.session === undefined ? {} : { session: options.session }),
+  });
+
+  const withBrowserAndArtifacts = <T>(input: T): T => ({
+    ...withBrowser(input),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+  });
+
   return {
     claim: (input) =>
       run<ClaimInput & { settings: ArbitrationSettings }, ClaimResult>('claim', {
@@ -131,12 +173,13 @@ export function createBroker(options: BrokerOptions): Broker {
         ...input,
         settings,
       }),
-    navigate: (input) => run<NavigateInput, NavigateResult>('navigate', input),
-    act: (input) => run<ActInput, ActResult>('act', input),
-    read: (input) => run<ReadInput, ReadResult>('read', input),
-    evaluate: (input) => run<EvaluateInput, EvaluateResult>('evaluate', input),
-    capture: (input) => run<CaptureInput, CaptureResult>('capture', input),
-    tab_replace: (input) => run<TabReplaceInput, TabReplaceResult>('tab_replace', input),
+    navigate: (input) => run<NavigateInput, NavigateResult>('navigate', withBrowser(input)),
+    act: (input) => run<ActInput, ActResult>('act', withBrowser(input)),
+    read: (input) => run<ReadInput, ReadResult>('read', withBrowser(input)),
+    evaluate: (input) => run<EvaluateInput, EvaluateResult>('evaluate', withBrowser(input)),
+    capture: (input) => run<CaptureInput, CaptureResult>('capture', withBrowserAndArtifacts(input)),
+    tab_replace: (input) =>
+      run<TabReplaceInput, TabReplaceResult>('tab_replace', withBrowser(input)),
     begin_sign_in: (input) => run<BeginSignInInput, BeginSignInResult>('begin_sign_in', input),
     end_sign_in: (input) => run<EndSignInInput, EndSignInResult>('end_sign_in', input),
   };

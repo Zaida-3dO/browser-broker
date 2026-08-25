@@ -37,7 +37,7 @@
  *   node scripts/check-operations.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -53,6 +53,9 @@ export const SPAWN_TIMEOUT_MS = 120_000;
 
 const PASSTHROUGH_KEYS = ['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'TEMP', 'TMP'];
 
+/** Either spelling of a line ending, since the record is written by the browser. */
+const LINE_BREAK = /\r?\n/u;
+
 /**
  * The variables a child needs to start, and nothing that configures this
  * service. Inheriting the whole environment would let a variable set on the
@@ -67,6 +70,44 @@ export function ambientEnvironment(source = process.env) {
     }
   }
   return ambient;
+}
+
+/**
+ * How many images a capture actually wrote, counted on disk.
+ *
+ * ── Why the files and not the `captures` table ──────────────────────────
+ *
+ * The row and the file are written together and the row is the record *that
+ * the file exists*, so either would answer the question. The file is used
+ * because it needs nothing this script does not already have: counting rows
+ * means opening the store, which means this script depending on the database
+ * driver — and the gates that run it do so **with nothing installed**, on
+ * purpose, so that a tree with no dependencies can still be checked.
+ *
+ * It is also the more literal claim. `pageDriven: true` from a capture says a
+ * picture was taken, and a picture that exists is a file.
+ */
+function countCapturedImages(artifactsRoot) {
+  const found = [];
+  const walk = (directory) => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      // Absent is zero: a capture that never happened creates no tree.
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name.endsWith('.png')) {
+        found.push(full);
+      }
+    }
+  };
+  walk(artifactsRoot);
+  return found.length;
 }
 
 /**
@@ -515,39 +556,57 @@ export async function runOperationsCheck() {
       // injects nothing and speaks to the binary over a pipe, so it sees the
       // build a person actually gets.
       //
-      // The value is asserted `=== false` rather than merely present:
-      // this build attaches no session source, so `false` is the true
-      // answer, and a check satisfied by either value would pass just as
-      // happily against a field wired to a constant.
+      // ── Why this asserts a RELATIONSHIP and not a constant ─────────────
+      //
+      // An earlier version asserted `pageDriven === false` outright, on the
+      // stated premise that the build attached no session source. That premise
+      // is gone: the binaries now reach a browser whenever one can be reached,
+      // so the honest answer here depends on the machine — `true` where one is
+      // installed, `false` on a runner with none, and `false` on a machine
+      // where the launch failed.
+      //
+      // Asserting either constant would therefore be wrong somewhere, and
+      // asserting neither would accept a field wired to anything at all. So
+      // what is asserted is the thing that must hold **on every machine**:
+      // that the field and the world agree. `capture` is the verb that makes
+      // this checkable, because its claim leaves a file — a capture reporting
+      // `pageDriven: true` must have written one, and one reporting `false`
+      // must not have. A field wired to a constant fails this on one machine
+      // or the other: `false` wherever a browser exists, `true` wherever none
+      // does.
+      const capturesTaken = countCapturedImages(environment.BROKER_ARTIFACTS_ROOT);
+      const drovePage = capture?.value?.pageDriven === true;
+
       check(
-        'a page verb tells the caller no browser was driven',
-        navigate?.value?.pageDriven === false,
-        `navigate answered ${JSON.stringify(navigate?.value)}`,
-      );
-      check(
-        'tab replace tells the caller no browser was driven',
-        replace?.value?.pageDriven === false,
-        `tab replace answered ${JSON.stringify(replace?.value)}`,
+        'what capture reports about driving a page matches what it actually wrote',
+        capture?.outcome === 'accepted' &&
+          typeof capture.value?.pageDriven === 'boolean' &&
+          capturesTaken === (drovePage ? 1 : 0),
+        `capture answered ${JSON.stringify(capture?.value)} while ${String(capturesTaken)} image(s) were written`,
       );
 
-      // The two the defect was reported against, asserted together with the
-      // thing that made them a lie: `read` still names the artifacts it
-      // *would* collect and `capture` still reports the mode it *would* use,
-      // because both are true statements about what was decided. What they
-      // must not do any more is let a caller read that as a page having been
-      // touched.
+      // The other three answer the same way as `capture` did, because they ran
+      // against the same browser in the same session. A build honest on one
+      // verb and silent on another is the failure the shared field exists to
+      // prevent, and it is only observable by comparing them.
       check(
-        'read still names its artifacts and now says none were collected',
+        'every page verb gives the same answer about the same browser',
+        navigate?.value?.pageDriven === drovePage &&
+          read?.value?.pageDriven === drovePage &&
+          replace?.value?.pageDriven === drovePage,
+        `navigate=${String(navigate?.value?.pageDriven)} read=${String(read?.value?.pageDriven)} replace=${String(replace?.value?.pageDriven)} capture=${String(drovePage)}`,
+      );
+
+      // `read` still names the artifacts it decided on and `capture` still
+      // reports the mode it decided on, whether or not a page moved, because
+      // both are true statements about what was decided. What they must not do
+      // is let a caller read that as a page having been touched.
+      check(
+        'read still names the artifacts it decided on',
         read?.outcome === 'accepted' &&
           Array.isArray(read.value?.artifacts) &&
-          read.value.artifacts.includes('snapshot') &&
-          read.value.pageDriven === false,
+          read.value.artifacts.includes('snapshot'),
         `read answered ${JSON.stringify(read?.value)}`,
-      );
-      check(
-        'capture reports acceptance and says no image was taken',
-        capture?.outcome === 'accepted' && capture.value?.pageDriven === false,
-        `capture answered ${JSON.stringify(capture?.value)}`,
       );
 
       // The tab is genuinely exchanged: the replacement is a different
@@ -572,11 +631,18 @@ export async function runOperationsCheck() {
       const humanCapture = await spawnBinary(COMMAND_LINE, ['capture', '--lease-key', grant.key], {
         env: environment,
       });
+      // Asserted the same way as the boolean above: **the prose and the field
+      // agree**, on whichever machine this runs. A verb that drove a page says
+      // nothing about not driving one, and a verb that did not says it in
+      // words rather than leaving `pageDriven: false` among four identifiers
+      // for the reader to interpret.
+      const humanSaysNotDriven =
+        humanCapture.stdout.includes('no browser was reached') &&
+        humanCapture.stdout.includes('was not driven');
       check(
-        'the command line tells a person in words that no page was driven',
+        'the command line and the field tell a person the same story',
         humanCapture.code === 0 &&
-          humanCapture.stdout.includes('no browser is attached') &&
-          humanCapture.stdout.includes('was not driven'),
+          humanSaysNotDriven === humanCapture.stdout.includes('pageDriven: false'),
         `exit ${String(humanCapture.code)}; stdout: ${humanCapture.stdout.trim()} stderr: ${humanCapture.stderr.trim()}`,
       );
 
@@ -617,10 +683,109 @@ export async function runOperationsCheck() {
       );
     }
   } finally {
-    rmSync(temporaryRoot, { recursive: true, force: true });
+    // ── End the browsers this check started ──────────────────────────────
+    //
+    // A cold start is **detached on purpose**, so a browser this check caused
+    // outlives it — which is right for the product and wrong for a check that
+    // is about to delete the profile directory that browser is holding open.
+    // Without this the removal below fails with a permission error on any
+    // machine that has a browser installed, and it fails *after* every
+    // assertion has passed, which is the most misleading way for a check to go
+    // red.
+    //
+    // This is a **test fixture ending its own fixture**, not the service
+    // ending a browser: the service never does that, which is why there is no
+    // operation for it and why this reads the identifier out of the store
+    // rather than asking the service to help.
+    await endBrowsersStartedBy(temporaryRoot);
+    await removeWhenReleased(temporaryRoot);
   }
 
   return { failures, notes };
+}
+
+/**
+ * End any browser running against a profile under this check's own root.
+ *
+ * ── Only ever this check's own browsers ─────────────────────────────────
+ *
+ * The address comes from the record the browser wrote **inside a profile
+ * directory this check created**, under a temporary root of its own. A browser
+ * somebody else is running lives somewhere else and is never read, never
+ * addressed and never ended. That scoping is the whole safety argument, and it
+ * is why this walks the root rather than looking for browsers by name.
+ *
+ * Asked to close rather than signalled, which is both gentler and simpler:
+ * the record carries an address, not a process identifier, and a browser told
+ * to close releases the directory it is holding — which is the thing standing
+ * between this and a clean removal.
+ *
+ * Every failure is ignored. On the ordinary path — a machine with no browser
+ * installed — nothing was started, no record exists, and this does nothing at
+ * all.
+ */
+async function endBrowsersStartedBy(temporaryRoot) {
+  const profiles = path.join(temporaryRoot, 'profiles');
+  let entries;
+  try {
+    entries = readdirSync(profiles, { withFileTypes: true });
+  } catch {
+    // No profile root means nothing was ever started.
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    let port;
+    try {
+      const contents = readFileSync(path.join(profiles, entry.name, 'DevToolsActivePort'), 'utf8');
+      const firstLine = contents.split(LINE_BREAK)[0];
+      port = Number.parseInt(firstLine ?? '', 10);
+    } catch {
+      // No record: this profile never had a browser, which is the state on
+      // any machine without one installed.
+      continue;
+    }
+    if (!Number.isInteger(port) || port <= 0) continue;
+
+    try {
+      const { chromium } = await import('playwright-core');
+      const connection = await chromium.connectOverCDP(`http://127.0.0.1:${String(port)}`);
+      await connection.close();
+    } catch {
+      // Already gone, never there, or the package is not installed — all of
+      // which mean there is nothing here to end.
+    }
+  }
+}
+
+/**
+ * Remove a directory once whatever was holding it has let go.
+ *
+ * ── Why this retries rather than removing once ──────────────────────────
+ *
+ * A browser holds its profile directory open, and the operating system
+ * releases those handles when the process **finishes** exiting — which is a
+ * moment after the close call returns, not at the same instant. Removing
+ * immediately fails with a permission error on a machine where a browser was
+ * actually started, and it fails *after* every assertion has already passed,
+ * which is the most misleading possible way for a check to go red.
+ *
+ * **Gives up quietly rather than throwing.** A temporary directory that
+ * outlives one run is litter in the platform's own temporary location;
+ * reporting it as a failure would make a green check depend on the operating
+ * system's timing rather than on anything this script is testing.
+ */
+async function removeWhenReleased(directory) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(directory, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 }
 
 const invokedDirectly =

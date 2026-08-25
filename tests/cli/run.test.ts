@@ -185,7 +185,7 @@ test('a page verb that did drive a browser carries no no-browser note', async ()
   assert.equal(result.code, 0);
   const printed = result.out.join('\n');
   assert.ok(printed.includes('pageDriven: true'), printed);
-  assert.ok(!printed.includes('no browser is attached'), printed);
+  assert.ok(!printed.includes('no browser was reached'), printed);
   assert.ok(!printed.includes('was not driven'), printed);
 });
 
@@ -200,6 +200,6 @@ test('a page verb that drove no browser says so in words', async () => {
 
   assert.equal(result.code, 0);
   const printed = result.out.join('\n');
-  assert.ok(printed.includes('no browser is attached'), printed);
+  assert.ok(printed.includes('no browser was reached'), printed);
   assert.ok(printed.includes('was not driven'), printed);
 });

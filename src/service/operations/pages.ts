@@ -1,6 +1,7 @@
 import { updateSweptTabs, type ArbitrationOutcome, type ArbitrationScope } from '../arbitration.ts';
 import type {
   ActionRequest,
+  BrowserId,
   BrowserSession,
   CaptureRequest,
   ReadArtifact,
@@ -17,6 +18,10 @@ import {
   validateNavigationTarget,
 } from '../pages.ts';
 import { recordTabOpened, reserveTab } from '../tabs.ts';
+import { BrokerError } from '../../errors.ts';
+import type { ArtifactStore } from '../../artifacts/store.ts';
+import { takeCapture } from '../../capture/pipeline.ts';
+import { capturesTakenBy, recordCapture } from '../capture-store.ts';
 
 /**
  * The six tab-addressed operations, joined to the arbitration transaction.
@@ -83,8 +88,23 @@ import { recordTabOpened, reserveTab } from '../tabs.ts';
  * A function returning a session rather than a session, so that a caller
  * which has not connected yet is not forced to connect in order to be
  * refused. It is invoked inside `afterCommit` and nowhere else.
+ *
+ * ── Why it is asked which browser, and why the handler is what asks ─────
+ *
+ * There are exactly two browsers and they are not interchangeable: one is
+ * headed and signed in, the other headless and ephemeral (§1.2). A tab lives
+ * in one of them, and **which one is a fact about the tab's row**, resolved
+ * inside the transaction by `resolveOwnedTabOrRefuse` against the lease that
+ * owns it. So the handler is the thing that knows, and it says so on the call
+ * rather than the provider guessing or defaulting.
+ *
+ * A zero-argument source would have to pick a browser some other way, and
+ * every way of picking is wrong: a default sends work for a signed-in page to
+ * the browser that is signed in to nothing, and *"whichever is already
+ * running"* makes the answer depend on what some earlier caller happened to
+ * need.
  */
-export type SessionSource = () => BrowserSession | Promise<BrowserSession>;
+export type SessionSource = (browser: BrowserId) => BrowserSession | Promise<BrowserSession>;
 
 /** What every tab-addressed operation carries. */
 export interface TabOperationInput {
@@ -258,47 +278,117 @@ async function pageFor(
 }
 
 /**
+ * What a scheduled piece of browser work reports about itself.
+ *
+ * `pageDriven` is a **getter, not a boolean**, and that is the whole of this
+ * type's reason to exist — see {@link afterCommitWork}.
+ */
+interface ScheduledWork {
+  readonly afterCommit: readonly (() => Promise<void>)[];
+  /** Whether a browser was genuinely reached. Read **after** the work ran. */
+  readonly pageDriven: boolean;
+}
+
+/**
  * Schedule one piece of browser work, if the caller brought a browser.
  *
  * **Returns the fact alongside the work, because this is the only place that
- * knows it.** `input.session === undefined` is the single expression in the
- * service that distinguishes *a page was driven* from *there was no page*,
- * and it used to answer that question and then throw the answer away, which
- * is exactly how a caller came to be told `accepted` for a capture that wrote
- * no row. Handing back `pageDriven` next to `afterCommit` means the report
- * and the reality are computed once, from the same branch: a build that
- * starts supplying a session reports `true` by construction, and no handler
- * can spell the answer differently from the work it scheduled.
+ * knows it.** Handing `pageDriven` back next to `afterCommit` means the report
+ * and the reality are computed once, from the same place, and no handler can
+ * spell the answer differently from the work it scheduled.
  *
- * **Every failure is swallowed**, matching what the runner already does with
- * the sweep's closes and what §2.4b requires of after-commit work generally:
- * the transaction has committed, the decision stands, and a driver that will
- * not answer cannot be allowed to unmake it. What that costs is visible in
- * the store rather than hidden — a tab whose page could not be opened keeps
- * its `opening` row and no driver name, which is the same thing it said
- * before the attempt.
+ * ── Why this is a getter and not a plain boolean ────────────────────────
+ *
+ * It used to answer `input.session === undefined`, which was exactly right
+ * while nothing ever supplied a session: with no session there is no browser,
+ * and `false` was a fact at the moment it was computed.
+ *
+ * **The moment a session is supplied, that same expression becomes a
+ * prediction rather than a fact** — and predicting `true` before the browser
+ * has been touched reintroduces the precise defect this field was added to
+ * remove, only harder to see. Every failure in after-commit work is swallowed
+ * by design (§2.4b), so a browser that is not installed, refuses to launch,
+ * loses the launch race, or dies mid-operation produces **no error anywhere a
+ * caller can see it**. A caller would be told `accepted` with `pageDriven:
+ * true` for a navigation that never happened. That is the same lie as the
+ * capture that wrote no row, told with more confidence.
+ *
+ * So the answer is not settled until the work has either run or failed. The
+ * runner awaits every after-commit action **before** the value is returned
+ * (`store/transaction.ts`), so by the time any caller can read this field the
+ * work is over — and the field reads a flag the work itself set.
+ *
+ * **Report and reality are still one expression**, which was the property
+ * worth keeping: `driven` is written in exactly one place, the last statement
+ * of the closure that does the driving. It cannot be set by a handler, it
+ * cannot be set on a path that skipped the work, and it cannot be set by the
+ * failure path, because the throw happens first.
+ *
+ * ── Every failure is still swallowed, and now it is also reported ───────
+ *
+ * The swallowing is unchanged and required: the transaction has committed, the
+ * decision stands, capacity was taken, and a driver that will not answer
+ * cannot be allowed to unmake it. What the swallowing does not do is tell the
+ * caller the page moved. It gets `accepted` — because the arbitration half
+ * genuinely happened and is genuinely durable — carrying `pageDriven: false`,
+ * which is the honest description of *your lease is real and your page is
+ * not*. What it costs is visible in the store rather than hidden: a tab whose
+ * page could not be opened keeps its `opening` row and no driver name.
  */
 function afterCommitWork(
   scope: ArbitrationScope,
   input: TabOperationInput,
   tab: ResolvedTab,
   work: (session: BrowserSession, page: TabHandle) => Promise<unknown>,
-): {
-  readonly afterCommit: readonly (() => Promise<void>)[];
-  readonly pageDriven: boolean;
-} {
+): ScheduledWork {
   const source = input.session;
-  if (source === undefined) return { afterCommit: [], pageDriven: false };
+  if (source === undefined) {
+    return { afterCommit: [], pageDriven: false };
+  }
+
+  // The one mutable cell, written by the one statement below and read by the
+  // getter. Not exposed: a handler receives the getter and never this.
+  let driven = false;
 
   return {
     afterCommit: [
       async () => {
-        const session = await source();
+        const session = await source(tab.browserId as BrowserId);
         await work(session, await pageFor(scope, session, tab));
+        // **Last, deliberately.** Anything above this that throws leaves the
+        // flag false, which is what makes a browser failing mid-operation
+        // report as the page not having been driven rather than as success.
+        driven = true;
       },
     ],
-    pageDriven: true,
+    get pageDriven() {
+      return driven;
+    },
   };
+}
+
+/**
+ * Attach the scheduled work's live answer to a result that carries everything
+ * else.
+ *
+ * ── Why a helper and not `pageDriven: work.pageDriven` at each site ─────
+ *
+ * That spelling **reads the getter immediately** and copies the boolean into
+ * the object, which puts the answer back where it was: decided before the
+ * browser was touched. The bug would be invisible — the property is there, it
+ * is the right name, it holds a value from the right place — and it would
+ * report `true` for every failed navigation.
+ *
+ * Composing the getter through instead means the six results share one
+ * definition of the field, so it cannot hold on five verbs and be a stale copy
+ * on the sixth. That is the same reason {@link TabOperationResult} declares it
+ * on the shared base rather than on each verb.
+ */
+function withPageDriven<T>(value: T, work: ScheduledWork): T & { readonly pageDriven: boolean } {
+  return Object.defineProperty(value as T & { pageDriven: boolean }, 'pageDriven', {
+    get: () => work.pageDriven,
+    enumerable: true,
+  });
 }
 
 export interface NavigateInput extends TabOperationInput {
@@ -336,13 +426,7 @@ export function decideNavigate(
 
   const work = afterCommitWork(scope, input, tab, (session, page) => session.navigate(page, url));
   return {
-    value: {
-      claimId: lease.claimId,
-      tabId: tab.tabId,
-      expiresAt,
-      url,
-      pageDriven: work.pageDriven,
-    },
+    value: withPageDriven({ claimId: lease.claimId, tabId: tab.tabId, expiresAt, url }, work),
     afterCommit: work.afterCommit,
   };
 }
@@ -380,13 +464,10 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
 
   const work = afterCommitWork(scope, input, tab, (session, page) => session.act(page, request));
   return {
-    value: {
-      claimId: lease.claimId,
-      tabId: tab.tabId,
-      expiresAt,
-      action: request.action,
-      pageDriven: work.pageDriven,
-    },
+    value: withPageDriven(
+      { claimId: lease.claimId, tabId: tab.tabId, expiresAt, action: request.action },
+      work,
+    ),
     afterCommit: work.afterCommit,
   };
 }
@@ -429,13 +510,7 @@ export function decideRead(
 
   const work = afterCommitWork(scope, input, tab, (session, page) => session.read(page, artifacts));
   return {
-    value: {
-      claimId: lease.claimId,
-      tabId: tab.tabId,
-      expiresAt,
-      artifacts,
-      pageDriven: work.pageDriven,
-    },
+    value: withPageDriven({ claimId: lease.claimId, tabId: tab.tabId, expiresAt, artifacts }, work),
     afterCommit: work.afterCommit,
   };
 }
@@ -488,13 +563,10 @@ export function decideEvaluate(
     return disposeEvaluationResult(result.value);
   });
   return {
-    value: {
-      claimId: lease.claimId,
-      tabId: tab.tabId,
-      expiresAt,
-      expressionBytes,
-      pageDriven: work.pageDriven,
-    },
+    value: withPageDriven(
+      { claimId: lease.claimId, tabId: tab.tabId, expiresAt, expressionBytes },
+      work,
+    ),
     afterCommit: work.afterCommit,
   };
 }
@@ -502,10 +574,34 @@ export function decideEvaluate(
 export interface CaptureInput extends TabOperationInput {
   readonly fullPage?: boolean;
   readonly selector?: string;
+  /**
+   * Where the image is written, supplied by the caller that owns one.
+   *
+   * **Optional for the same reason {@link TabOperationInput.session} is**: a
+   * caller with no browser has no picture to store, and every guard in this
+   * handler is testable without either. Supplying a session without this one
+   * takes the picture and cannot keep it, so the handler treats the pair as a
+   * pair — see {@link decideCapture}.
+   */
+  readonly artifacts?: ArtifactStore;
 }
 
 export interface CaptureResult extends TabOperationResult {
   readonly fullPage: boolean;
+  /**
+   * What was written, **relative to the artifact root** (§1.7a), and absent
+   * when nothing was.
+   *
+   * Absent rather than empty on the no-browser path: a caller that got no
+   * picture should find no field, not a path to a file that is not there.
+   */
+  readonly capture?: {
+    readonly captureId: string;
+    readonly path: string;
+    readonly width: number;
+    readonly height: number;
+    readonly bytes: number;
+  };
 }
 
 /**
@@ -541,17 +637,80 @@ export function decideCapture(
     detail: { fullPage },
   });
 
-  const work = afterCommitWork(scope, input, tab, (session, page) =>
-    session.capture(page, request),
-  );
+  // Read inside the transaction, where every other read this handler makes
+  // happens. It decides the accounting warning only — never a refusal — so
+  // reading it here rather than in the closure costs nothing but keeps the
+  // store access on the transaction's side of §2.4b.
+  const takenBefore = input.artifacts === undefined ? 0 : capturesTakenBy(scope.db, lease.claimId);
+
+  let written: CaptureResult['capture'];
+  const artifacts = input.artifacts;
+
+  const work = afterCommitWork(scope, input, tab, async (session, page) => {
+    if (artifacts === undefined) {
+      // A browser but nowhere to put the picture. Taking one and dropping it
+      // is precisely the behaviour this handler exists to stop, so the shutter
+      // is not pressed at all.
+      //
+      // **Thrown rather than returned**, and the difference is the honesty of
+      // the answer. Returning would leave the closure to run to completion and
+      // report `pageDriven: true` — for a call that reached no page, wrote no
+      // file and left `captures` empty, which is the precise combination this
+      // field exists to make impossible. Throwing takes the same path a
+      // browser failure takes: swallowed by the runner (§2.4b), the decision
+      // and its ledger row still committed, and the caller told plainly that
+      // nothing was driven.
+      throw new BrokerError(
+        'capture.arguments_consistent',
+        'A capture needs somewhere to write the image, and this call supplied a browser without one. No picture was taken.',
+      );
+    }
+
+    // **The pipeline, not `session.capture` directly.** Reaching the seam here
+    // was the defect: it skipped the settle, the downscale to the requested
+    // rung, and the write through the artifact store — the only thing that
+    // decides where a file may go — and then discarded the bytes. Everything
+    // the `captures` row needs comes back as telemetry.
+    const taken = await takeCapture(
+      { tabs: session, artifacts },
+      lease.claimId,
+      page,
+      {
+        fullPage,
+        ...(request.selector === undefined ? {} : { selector: request.selector }),
+      },
+      takenBefore,
+    );
+
+    // The row last, describing a file that is already on disk. See
+    // `capture-store.ts` for why that order is the rule and not a preference.
+    recordCapture(scope.db, lease.claimId, tab.tabId, taken.telemetry);
+
+    written = {
+      captureId: taken.captureId,
+      path: taken.path,
+      width: taken.width,
+      height: taken.height,
+      bytes: taken.bytes,
+    };
+  });
+
   return {
-    value: {
-      claimId: lease.claimId,
-      tabId: tab.tabId,
-      expiresAt,
-      fullPage,
-      pageDriven: work.pageDriven,
-    },
+    value: withPageDriven(
+      {
+        claimId: lease.claimId,
+        tabId: tab.tabId,
+        expiresAt,
+        fullPage,
+        // A getter for the same reason `pageDriven` is one: the value is not
+        // known until the after-commit work has run, and a copy taken here
+        // would always be absent.
+        get capture() {
+          return written;
+        },
+      },
+      work,
+    ),
     afterCommit: work.afterCommit,
   };
 }
@@ -654,20 +813,34 @@ export function decideTabReplace(
 
   const source = input.session;
 
-  return {
-    value: {
-      claimId: lease.claimId,
-      previousTabId: tab.tabId,
-      tabId: replacementId,
-      expiresAt,
-      pageDriven: source !== undefined,
+  // **The same live answer the other five verbs give, not a second spelling of
+  // it.** This handler cannot use `afterCommitWork` — its work closes one page
+  // and opens another rather than driving one, so it does not take that
+  // helper's shape — and the previous arrangement answered `source !==
+  // undefined` here instead. That was a *second* computation of a field whose
+  // whole value is that it is computed once: correct while nothing supplied a
+  // session, and a prediction the moment something did.
+  //
+  // It matters more here than anywhere else, for the reason
+  // {@link TabReplaceResult.pageDriven} gives: this verb exchanges the tab in
+  // the store regardless, so a caller told the swap succeeded believes it holds
+  // a clean page. If the browser could not be reached, it holds a fresh
+  // identifier over a row that is still `opening` with nothing under it.
+  //
+  // So the flag is declared here and written by the closure below, and the
+  // field is composed by {@link withPageDriven} — the same function the other
+  // five go through, which is what stops the two answers drifting.
+  let driven = false;
+  const work: ScheduledWork = {
+    get pageDriven() {
+      return driven;
     },
     afterCommit:
       source === undefined
         ? []
         : [
             async () => {
-              const session = await source();
+              const session = await source(browser);
               // The tab being given up is closed first, and only if a page
               // was ever opened for it. If it will not close it is a leaked
               // tab; the fresh one is owed either way, and making it wait on
@@ -690,7 +863,24 @@ export function decideTabReplace(
               // commit, so it opens its own short write rather than
               // reaching back into a transaction that is gone.
               recordTabOpened(scope.db, replacementId, opened.driverTabId);
+              // Last, for the same reason it is last in `afterCommitWork`: a
+              // throw above leaves this false, so a browser that failed
+              // partway through reports the page as not driven.
+              driven = true;
             },
           ],
+  };
+
+  return {
+    value: withPageDriven(
+      {
+        claimId: lease.claimId,
+        previousTabId: tab.tabId,
+        tabId: replacementId,
+        expiresAt,
+      },
+      work,
+    ),
+    afterCommit: work.afterCommit,
   };
 }
