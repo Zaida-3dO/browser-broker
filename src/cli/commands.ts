@@ -118,6 +118,17 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     summary: 'List the recorded comparisons, filtered by lease, tab or outcome.',
     owedBy: 'the row that builds changed-region review',
   },
+  {
+    // The bytes of one recorded image, named by the identifier of a row.
+    // Standalone for the same reason `diffs` is: it takes no tab budget,
+    // drives no browser and decides nothing — it reads what is already
+    // recorded. §3.1 fixes the agent surface at ten tools and none of them
+    // serves bytes, deliberately: the tools return paths so a caller pays for
+    // the part it opens.
+    words: ['image'],
+    summary: 'Write the bytes of one recorded image — a capture, an overlay or a region crop.',
+    owedBy: 'the row that builds image delivery',
+  },
 ];
 
 /** What a parsed argument vector turned out to be. */

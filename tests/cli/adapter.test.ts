@@ -85,11 +85,19 @@ test('the two-word command resolves to its verb rather than to an unknown noun',
 });
 
 test('the commands with no operation behind them are named, not counted', () => {
-  // §5.5's four, plus `diffs`, which reads the recorded comparisons back and
-  // sits here for the same reason: it decides nothing and takes no lease.
+  // §5.5's four, plus two reads that decide nothing: `diffs`, which lists the
+  // recorded comparisons, and `image`, which serves the bytes of one recorded
+  // image (§1.9). `image` takes a lease key — an artifact belongs to the lease
+  // that took it — but it still drives no browser and takes no tab budget,
+  // which is what puts it here rather than among the ten.
+  //
+  // **Named rather than counted, deliberately**: adding a command has to be a
+  // visible edit in this list, and a length assertion would go green on a
+  // command nobody meant to ship.
   assert.deepEqual(STANDALONE_COMMANDS.map((command) => command.words.join(' ')).sort(), [
     'diffs',
     'doctor',
+    'image',
     'init',
     'login',
     'snapshot',
