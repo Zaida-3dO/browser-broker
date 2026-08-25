@@ -4,10 +4,12 @@ import { BROWSER_IDS } from '../browser/driver.ts';
 import { SIGNABLE_BROWSER } from '../service/operations/sign-in.ts';
 import type { Environment } from '../config/environment.ts';
 import { readTabBudget } from '../operations/status.ts';
+import { classifySignIn, type ProcessLiveness } from '../service/signin-recovery.ts';
 import type { NetworkPathChecks } from '../store/network-path.ts';
 import { readStoreVersion } from '../store/schema/step.ts';
 import { inspectProfileSession, type CookieStoreReader } from './session.ts';
 import {
+  checkAbandonedSignIn,
   checkAutomation,
   checkCaptureSurface,
   checkDiscoveryRecord,
@@ -70,6 +72,11 @@ export interface DoctorProbes {
    * unreadable store are reachable by a test. Absent means the real reader.
    */
   readonly cookieReader?: CookieStoreReader;
+  /**
+   * How a sign-in owner's liveness is asked, injected so the abandoned-sign-in
+   * check is reachable from a test without killing a real process.
+   */
+  readonly processIsRunning?: ProcessLiveness;
 }
 
 export interface DoctorReport {
@@ -148,6 +155,25 @@ export function runDoctor(
     ),
   );
 
+  // **Whether a sign-in has been abandoned**, which is the one thing on this
+  // report that can be actively refusing every caller right now. Read from the
+  // store rather than probed, because the two facts it needs — the state and
+  // the owning process — are both rows.
+  //
+  // A store that is absent, or one written by a build older than the owner
+  // column, yields no row to classify; both come back as *not signing in*,
+  // which is the honest answer when there is nothing recorded to say
+  // otherwise.
+  checks.push(
+    checkAbandonedSignIn(
+      signInBrowser,
+      classifySignIn(
+        db === undefined ? undefined : readSignInOwner(db, signInBrowser),
+        probes.processIsRunning,
+      ),
+    ),
+  );
+
   checks.push(checkTabBudget(storedBudget, probes.configuredTabBudget ?? null));
 
   return {
@@ -179,6 +205,27 @@ export function readDiscoveryRecords(
     records[row.id] = { endpoint: row.endpoint, browserUuid: row.browser_uuid };
   }
   return records;
+}
+
+/**
+ * Read the sign-in state and its owning process for one browser.
+ *
+ * **Tolerant of a store that predates the owner column**, because `doctor` is
+ * the command most likely to be pointed at an old installation — that is
+ * largely what it is for. A store without the column answers as though nothing
+ * is signing in, which is the honest reading: there is no record to conclude
+ * anything from.
+ */
+export function readSignInOwner(
+  db: Database,
+  browser: string,
+): { readonly state: string; readonly signin_owner_pid: number | null } | undefined {
+  try {
+    return db.prepare('SELECT state, signin_owner_pid FROM browsers WHERE id = ?').get(browser) as
+      { state: string; signin_owner_pid: number | null } | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const SYMBOL: Record<string, string> = { ok: 'ok  ', failed: 'FAIL', unknown: '--  ' };

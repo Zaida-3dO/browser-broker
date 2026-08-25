@@ -38,8 +38,13 @@ import {
  *    had not reconciled.
  * 2. **Get them a window**, against the configured profile.
  * 3. **Wait**, while they sign in.
- * 4. **Give the browser back**, whatever happened — including if this process
- *    is interrupted.
+ * 4. **Give the browser back** on every path out of the command, and on an
+ *    interruption — by a signal handler, because a `finally` does not run on
+ *    a signal. What that does and does not cover is stated exactly at step
+ *    four's own comment below; the short version is that a handler covers the
+ *    deaths that let a process run code and nothing else, so the store also
+ *    records who holds a sign-in and a later `broker login` reclaims one whose
+ *    process is gone.
  *
  * ── Why the profile is asserted rather than trusted ─────────────────────
  *
@@ -75,6 +80,94 @@ import {
 /** How the person's window is watched for, and how often. */
 export const CLOSE_POLL_INTERVAL_MS = 1_000;
 
+/**
+ * The signals a person's interruption arrives as.
+ *
+ * `SIGINT` is Ctrl-C, which is the one that matters: it is how anybody stops
+ * a command that is sitting there waiting, and it is the keystroke that used
+ * to strand the browser. `SIGTERM` is the ordinary polite termination — what
+ * a supervisor, a shell logout or a `taskkill` without `/F` sends.
+ *
+ * **`SIGKILL` is deliberately absent and cannot be added.** It is not
+ * deliverable to a handler by design, which is precisely why the recovery
+ * path in `service/signin-recovery.ts` exists rather than this list being
+ * extended until it feels complete.
+ */
+export const INTERRUPT_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+
+export type InterruptSignal = (typeof INTERRUPT_SIGNALS)[number];
+
+/**
+ * Installing and removing the interruption handler.
+ *
+ * A seam rather than a direct `process.on`, so a test drives the whole
+ * interrupted path — including that the browser is actually given back —
+ * without signalling the process running the tests, which would take the test
+ * runner down with it.
+ */
+export interface InterruptHandling {
+  /**
+   * Register `onInterrupt`, and return a function that unregisters it.
+   *
+   * The disposer is what keeps a completed `broker login` from leaving a
+   * listener behind on a long-lived process.
+   */
+  readonly install: (onInterrupt: (signal: InterruptSignal) => void) => () => void;
+}
+
+/**
+ * The real one: process signal handlers, and an exit once the browser is back.
+ *
+ * ── Why this exits rather than letting the process continue ─────────────
+ *
+ * Installing a handler for `SIGINT` **takes over the default disposition**: a
+ * process carrying one runs the handler and carries on waiting rather than
+ * ending, which from a person's side is a command that has stopped responding
+ * to Ctrl-C. That would trade one bad outcome for another, so the handler does
+ * the work and then ends the process itself.
+ *
+ * The exit code is the conventional `128 + signal number`, which is what a
+ * shell reports for a process killed by that signal — so a script watching
+ * this command sees what it saw before rather than a new number to learn.
+ */
+export function realInterruptHandling(): InterruptHandling {
+  return {
+    install: (onInterrupt) => {
+      const registered = INTERRUPT_SIGNALS.map((signal) => {
+        const listener = (): void => {
+          onInterrupt(signal);
+        };
+        process.on(signal, listener);
+        return { signal, listener };
+      });
+
+      return () => {
+        for (const { signal, listener } of registered) {
+          process.off(signal, listener);
+        }
+      };
+    },
+  };
+}
+
+/** `128 + n`, the exit code a shell reports for a death by signal. */
+export const SIGNAL_EXIT_CODES: Readonly<Record<InterruptSignal, number>> = {
+  SIGINT: 130,
+  SIGTERM: 143,
+};
+
+/**
+ * The exit code when an interruption was caught and the browser could **not**
+ * be given back.
+ *
+ * Distinct from the signal codes on purpose: those say "this process was
+ * interrupted", which is ordinary and is what a script expects. This one says
+ * the interruption was handled and the cleanup it exists to perform failed, so
+ * something is left behind — a different fact, and one a script watching this
+ * command should be able to tell apart without parsing English.
+ */
+export const EXIT_INTERRUPT_INCOMPLETE = 70;
+
 export interface LoginStreams {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
@@ -101,6 +194,20 @@ export interface LoginOptions {
    * with none, and says so.
    */
   readonly window?: SignInWindow;
+  /**
+   * How an interruption is caught, injected so a test proves the browser is
+   * given back on one without signalling the test runner.
+   */
+  readonly interrupts?: InterruptHandling;
+  /**
+   * How the process is ended after an interruption has been handled.
+   *
+   * Injected for the same reason: the real one ends this process, and a test
+   * that called it would end the run rather than assert on it.
+   */
+  readonly exit?: (code: number) => void;
+  /** This process's identifier, recorded as the sign-in's owner. */
+  readonly ownerPid?: number;
 }
 
 /**
@@ -230,9 +337,76 @@ export async function runLoginCommand(options: LoginOptions): Promise<number> {
   await runSetupHandshake(options.store, environment.profileRoot);
 
   // Step 1. Every refusal is the service's; this route adds none of its own.
-  const began = await broker.begin_sign_in({ browser: requested });
+  //
+  // **The owner is recorded as part of taking the claim**, so a sign-in is
+  // never held by a process the store cannot name. See step eight of the
+  // schema for why this is the command's identifier rather than the browser's.
+  const began = await broker.begin_sign_in({
+    browser: requested,
+    ownerPid: options.ownerPid ?? process.pid,
+  });
   const browser: BrowserId = began.browser;
   const profileDir = signInProfileDirectory(environment.profileRoot, browser);
+
+  // ── The interruption handler, installed as soon as there is something to
+  //    give back and not one line earlier ──────────────────────────────────
+  //
+  // **Ordering is the whole correctness argument here.** Installed before the
+  // claim, it could fire when there is no claim to release and would call
+  // `end_sign_in` against a browser that is not signing in — which the service
+  // refuses, so a person interrupting an early failure would be handed a
+  // confusing refusal on their way out. Installed after the window opens, a
+  // Ctrl-C during the launch — which is a slow step and therefore a likely
+  // moment to press it — would strand exactly the state this is here to
+  // prevent.
+  //
+  // So it goes immediately after the claim is taken and immediately before
+  // anything slow, and it is removed in the `finally` so a completed command
+  // leaves no listener behind.
+  const handling = options.interrupts ?? { install: () => () => {} };
+  const endProcess = options.exit ?? ((code: number) => process.exit(code));
+
+  let interrupted = false;
+  const remove = handling.install((signal) => {
+    // **Re-entrancy matters more than it looks.** A person who presses Ctrl-C
+    // and sees nothing happen immediately presses it again, and a second run
+    // through here would call `end_sign_in` twice — the second against a
+    // browser already given back, which refuses. Latching means the extra
+    // presses are ignored rather than producing a refusal on the way out.
+    if (interrupted) {
+      return;
+    }
+    interrupted = true;
+
+    streams.err('');
+    streams.err(
+      `Interrupted. Giving the ${browser} browser back before exiting — it would otherwise refuse every caller until somebody intervened.`,
+    );
+
+    void (async () => {
+      let code = SIGNAL_EXIT_CODES[signal];
+      try {
+        await broker.end_sign_in({ browser });
+        streams.err(`The ${browser} browser is serving again.`);
+      } catch (error) {
+        // Reported, and it changes the exit code: a person whose browser was
+        // **not** given back needs to know that the thing this message
+        // promised did not happen. Exiting zero-shaped here would be the same
+        // class of defect as the comment that used to claim a `finally`
+        // covered a signal.
+        streams.err(
+          `The browser could not be returned to service: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        streams.err(
+          'It is recorded as signing-in and this process is about to exit. The next `broker login` will reclaim it, because the sign-in records which process was holding it.',
+        );
+        code = EXIT_INTERRUPT_INCOMPLETE;
+      }
+      endProcess(code);
+    })();
+  });
+
+  const signals = { dispose: remove };
 
   let opened: { pid: number; startedIt: boolean } | undefined;
   try {
@@ -283,29 +457,53 @@ export async function runLoginCommand(options: LoginOptions): Promise<number> {
     // Step 3. The person signs in. Nothing happens here until they close it.
     await window.waitForClose({ profileDirectory: profileDir, pid: opened.pid });
   } finally {
-    // Step 4, and it is in a `finally` for a reason worth stating: a browser
-    // left in `signing-in` refuses **every** caller, permanently, with a
-    // message about a person who has walked away. That is a worse outcome
-    // than any failure this block could be recovering from, so the browser is
-    // given back on every path out of here — including a refusal from the
-    // window and an interruption.
-    try {
-      const ended = await broker.end_sign_in({ browser });
-      if (!json) {
-        streams.out('');
-        for (const line of signInCompletion(browser, ended.queueDepth)) {
-          streams.out(line);
+    // ── Step 4, and what this `finally` actually guarantees ─────────────
+    //
+    // A browser left in `signing-in` refuses **every** caller with a message
+    // about a person who has walked away, so the browser is given back on
+    // every path out of here — a normal completion and a refusal from the
+    // window alike.
+    //
+    // **It does not cover an interruption, and it never did.** A `finally`
+    // is ordinary control flow: the runtime unwinds to it when a call
+    // returns or throws. A signal is not either of those, and with no
+    // handler installed the default disposition for `SIGINT` terminates the
+    // process without unwinding anything — so this block does not run, and
+    // before the handler below existed a Ctrl-C left the browser
+    // unrecoverable. That is why the handler is installed rather than being
+    // relied upon from here, and it is why the store records an owner as
+    // well: a handler cannot run on `SIGKILL` or on a power cut.
+    signals.dispose();
+
+    // **Nothing is given back twice.** When the handler ran it has already
+    // called `end_sign_in`, and calling it again would hit the service's own
+    // refusal for ending a sign-in that never began — turning a clean
+    // interruption into an error message on the way out. The handler owns the
+    // release from the moment it fires, and this block owns every other path.
+    //
+    // Written as a condition around the work rather than as an early `return`,
+    // deliberately: a `return` inside a `finally` **discards an exception the
+    // `try` was throwing**, so the one shape that reads most naturally here is
+    // the one that would silently swallow a genuine launch failure.
+    if (!interrupted) {
+      try {
+        const ended = await broker.end_sign_in({ browser });
+        if (!json) {
+          streams.out('');
+          for (const line of signInCompletion(browser, ended.queueDepth)) {
+            streams.out(line);
+          }
+        } else {
+          streams.err(`The ${browser} browser is serving again.`);
         }
-      } else {
-        streams.err(`The ${browser} browser is serving again.`);
+      } catch (error) {
+        // Reported rather than swallowed and never allowed to replace the
+        // original failure: if this is running because something above threw,
+        // that is the thing the person needs to read.
+        streams.err(
+          `The browser could not be returned to service: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
-    } catch (error) {
-      // Reported rather than swallowed and never allowed to replace the
-      // original failure: if this is running because something above threw,
-      // that is the thing the person needs to read.
-      streams.err(
-        `The browser could not be returned to service: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
   }
 
