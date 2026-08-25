@@ -123,8 +123,8 @@ const WAL_CONVERSION_PAUSE_MS = 20;
  * The `busy_timeout` ordering above is correct and is kept, but **no test
  * fails if it is moved back** — the retry covers that case on its own. It is
  * ordered this way because a timeout configured after the first thing that can
- * block is a timeout that was not configured when it was needed, not because
- * anything currently proves it.
+ * block is a timeout that was not configured when it was needed. That reason
+ * stands on its own; no assertion rests on it.
  *
  * **A busy error is the only one retried.** Anything else — a directory that
  * cannot be written, a file that is not a database — is returned to the caller

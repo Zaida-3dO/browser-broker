@@ -17,11 +17,10 @@ import test from 'node:test';
  * the refusal points at an entry that is not there, and a caller following the
  * pointer finds nothing.
  *
- * Fifteen names had drifted into exactly that state — the behaviour was
- * specified in prose, only the naming was missing — and nothing caught it
- * because nothing was looking. Adding the fifteen fixes today's drift; this
- * test is what stops tomorrow's, and it is the difference between closing an
- * instance and closing the class.
+ * Fifteen names sat in exactly that state — the behaviour specified in prose,
+ * only the naming missing — because nothing was looking for them. Listing them
+ * closes those fifteen; this test closes the class, by making any further
+ * drift a failing build rather than something a reader has to notice.
  *
  * ── How this differs from the check that already exists ─────────────────
  *
@@ -31,9 +30,9 @@ import test from 'node:test';
  * raised directly at their call sites. This scans the source instead, so a rule
  * invented at a call site and never added to any table is still caught.
  *
- * Neither replaces the other, and this one deliberately does not import
- * anything from the service layer — it reads files, so a rule cited in a module
- * this test never loads is still found.
+ * The two are complements, and this one deliberately imports nothing from the
+ * service layer — it reads files, so a rule cited in a module this test never
+ * loads is still found.
  */
 
 /** Where the rules are declared, and where they are cited. */
@@ -149,7 +148,7 @@ test('the declared exceptions are all still cited somewhere in the source', () =
   for (const rule of Object.keys(NOT_IN_SECTION_SEVEN)) {
     assert.ok(
       everything.includes(`'${rule}'`),
-      `${rule} is listed as deliberately outside section 7, but nothing in the source cites it any more. Remove the exception rather than leaving it to excuse a rule that no longer exists.`,
+      `${rule} is listed as deliberately outside section 7, but no citation for it exists anywhere in the source. Remove the exception rather than leaving it to excuse a rule nothing raises.`,
     );
   }
 });

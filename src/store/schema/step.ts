@@ -114,11 +114,11 @@ export async function stepSchema(
       // THE VERSION IS READ AGAIN HERE, AND THIS READ IS THE ONE THAT COUNTS
       // ══════════════════════════════════════════════════════════════════
       //
-      // **The defect this closes.** The version used to be read once, outside
-      // the transaction, and the steps derived from it. Two processes spawning
-      // simultaneously against an empty store both read zero, both decided
-      // step one was pending, and the loser ran a `CREATE TABLE` the winner
-      // had already committed — `table browsers already exists`.
+      // **The hazard this closes.** Reading the version once, outside the
+      // transaction, and deriving the steps from it lets two processes spawning
+      // simultaneously against an empty store both read zero, both decide step
+      // one is pending, and the loser run a `CREATE TABLE` the winner has
+      // already committed — `table browsers already exists`.
       //
       // That is not an exotic race here. The service is **spawned per session
       // and exits with it**, so two callers starting at once is the ordinary
