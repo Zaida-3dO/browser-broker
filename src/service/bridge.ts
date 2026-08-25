@@ -250,7 +250,7 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         const selector = argument(args, 'selector');
         // The tool surface spells it `compare_to` and the command line
         // `--compare-to`, which `parseArguments` normalises to `compare_to`
-        // by replacing dashes with underscores — so both surfaces arrive at
+        // by turning dashes into underscores — so both surfaces arrive at
         // the same key and the command line needs no entry of its own. The
         // camel spelling is accepted too, for a caller driving the dispatcher
         // in process with the service's own vocabulary.
