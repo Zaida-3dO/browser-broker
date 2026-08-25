@@ -2,6 +2,8 @@ import type { Database } from 'better-sqlite3';
 
 import { stepOne } from './step-001-initial.ts';
 import { stepFive } from './step-005-storage-seed-event.ts';
+import { stepSix } from './step-006-signin-events.ts';
+import { stepSeven } from './step-007-signin-without-process.ts';
 import { stepFour } from './step-004-tab-never-opened.ts';
 import { stepThree } from './step-003-queue-order.ts';
 import { stepTwo } from './step-002-tab-budget.ts';
@@ -29,7 +31,15 @@ export interface Step {
   readonly apply: (db: Database) => void;
 }
 
-export const STEPS: readonly Step[] = [stepOne, stepTwo, stepThree, stepFour, stepFive];
+export const STEPS: readonly Step[] = [
+  stepOne,
+  stepTwo,
+  stepThree,
+  stepFour,
+  stepFive,
+  stepSix,
+  stepSeven,
+];
 
 /**
  * The version a store must be at for this build to use it.
@@ -45,7 +55,7 @@ export const STEPS: readonly Step[] = [stepOne, stepTwo, stepThree, stepFour, st
  *
  * So the number is written here and the check below is what keeps it honest.
  */
-export const EXPECTED_VERSION = 5;
+export const EXPECTED_VERSION = 7;
 
 /**
  * The list is consistent with the version above, asserted where the list is

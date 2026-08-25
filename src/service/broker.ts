@@ -18,6 +18,12 @@ import type {
   TabReplaceInput,
   TabReplaceResult,
 } from './operations/pages.ts';
+import type {
+  BeginSignInInput,
+  BeginSignInResult,
+  EndSignInInput,
+  EndSignInResult,
+} from './operations/sign-in.ts';
 import type { StatusInput, StatusResult } from './operations/status.ts';
 
 /**
@@ -57,6 +63,19 @@ export interface Broker {
   capture: (input: CaptureInput) => Promise<CaptureResult>;
   /** Give up this lease's tab and take a fresh one, in one transaction. */
   tab_replace: (input: TabReplaceInput) => Promise<TabReplaceResult>;
+
+  /**
+   * The two halves of a person signing in (SCHEMA.md 5.5.1).
+   *
+   * **Neither is keyed and neither takes tab budget**, which is what
+   * distinguishes them from everything above: a person at a keyboard is not a
+   * caller. They are on this interface rather than beside it because the
+   * refusal that makes a sign-in safe — no live lease may hold a tab on that
+   * browser — is a fact about leases, and every fact about leases is derived
+   * inside the arbitration transaction.
+   */
+  begin_sign_in: (input: BeginSignInInput) => Promise<BeginSignInResult>;
+  end_sign_in: (input: EndSignInInput) => Promise<EndSignInResult>;
 }
 
 export interface BrokerOptions {
@@ -118,5 +137,7 @@ export function createBroker(options: BrokerOptions): Broker {
     evaluate: (input) => run<EvaluateInput, EvaluateResult>('evaluate', input),
     capture: (input) => run<CaptureInput, CaptureResult>('capture', input),
     tab_replace: (input) => run<TabReplaceInput, TabReplaceResult>('tab_replace', input),
+    begin_sign_in: (input) => run<BeginSignInInput, BeginSignInResult>('begin_sign_in', input),
+    end_sign_in: (input) => run<EndSignInInput, EndSignInResult>('end_sign_in', input),
   };
 }

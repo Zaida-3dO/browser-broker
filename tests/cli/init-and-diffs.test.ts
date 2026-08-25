@@ -179,14 +179,23 @@ test('broker diffs refuses a malformed filter with the malformed exit code', asy
   }
 });
 
-test('the command that is genuinely still owed still says so', async () => {
+test('login refuses without a service rather than opening a browser anyway', async () => {
   const temp = makeTempStore();
   try {
-    // The counterweight to every assertion above: wiring two commands must not
-    // turn the honest refusal into a blanket success for the third.
+    // **The counterweight to every assertion above**, and the reason it is
+    // still here after `login` was built: wiring commands up must not turn an
+    // honest refusal into a blanket success.
+    //
+    // What it guards has sharpened rather than gone away. This route is driven
+    // without a service, and `login`'s first act is to claim the browser
+    // through one — which is what stops a person being handed a window that a
+    // caller is already driving (SCHEMA.md 5.5.1, step 1). So a `login` that
+    // exited zero here would mean a command that opened a browser without
+    // having claimed it, which is precisely the failure that step exists to
+    // prevent.
     const result = await drive(['login'], environmentFor(temp));
     assert.notEqual(result.code, 0);
-    assert.match(result.err.join('\n'), /not built yet/u);
+    assert.match(result.err.join('\n'), /service\.not_built/u);
   } finally {
     temp.remove();
   }

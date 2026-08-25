@@ -19,6 +19,8 @@ import { OPERATION_COMMANDS, parseCommand, STANDALONE_COMMANDS } from './command
 import { describeSetupReport, runSetupHandshake } from '../browser/setup.ts';
 import { runDiffs } from './diffs.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
+import { explainLoginFailure, runLoginCommand } from './login-command.ts';
+import type { Broker } from '../service/broker.ts';
 
 /**
  * Argument parsing and command dispatch.
@@ -57,6 +59,23 @@ export interface RunOptions {
    * onward); see {@link serviceUnavailable}.
    */
   readonly service?: BrokerService;
+
+  /**
+   * The typed service, for `login` — which is not one of the ten operations.
+   *
+   * A second field alongside {@link RunOptions.service} rather than one field,
+   * because the two carry different surfaces on purpose: `service` is the
+   * flat ten-operation seam every adapter drives and every parity assertion
+   * is made over, and signing in is deliberately not on it (§5.4: the
+   * administrative operations "are not on the agent surface and adding them
+   * there fails the build"). A command that needs this and does not get it
+   * says so rather than guessing.
+   */
+  readonly broker?: Broker;
+  /** The open store, for the commands that need the setup handshake. */
+  readonly store?: StoreHandle;
+  /** The environment snapshot the runtime already read (§6.3: one per process). */
+  readonly environment?: Environment;
 }
 
 const defaultStreams: Streams = {
@@ -220,6 +239,10 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 
       if (name === 'init') {
         return await runInitCommand({ streams, json, options });
+      }
+
+      if (name === 'login') {
+        return await runLogin(parsed.rest, { streams, json, options });
       }
 
       streams.err(`broker ${name} is not built yet — owed by ${parsed.command.owedBy}.`);
@@ -500,6 +523,61 @@ async function runInitCommand(context: {
     throw error;
   } finally {
     store?.close();
+  }
+}
+
+/**
+ * `broker login` — hand the signed-in browser to a person (§5.5.1).
+ *
+ * ── Why this needs the typed service and says so when it lacks one ──────
+ *
+ * Every other command here either takes the flat ten-operation seam or takes
+ * no service at all. This one takes neither: signing in is a service
+ * operation (the live-lease refusal is a fact about leases, derived inside
+ * the arbitration transaction) but it is **not** one of the ten, because a
+ * person at a keyboard is not a caller and takes no tab budget.
+ *
+ * So when the typed service is absent it refuses, in the same shape
+ * `serviceUnavailable` refuses, rather than opening a browser anyway. A
+ * command that handed somebody a window without having claimed the browser
+ * would be handing them one a caller might be using — which is the single
+ * thing §5.5.1's first step exists to prevent.
+ */
+async function runLogin(
+  rest: readonly string[],
+  context: { streams: Streams; json: boolean; options: RunOptions },
+): Promise<number> {
+  const { streams, json, options } = context;
+  const { broker, store, environment } = options;
+
+  if (broker === undefined || store === undefined || environment === undefined) {
+    streams.err(
+      'refused (service.not_built): signing in claims the browser through the service, and no service was supplied to this run. Without it the command could hand somebody a window that a caller is already using.',
+    );
+    return EXIT.unexpected;
+  }
+
+  // The browser is a positional word rather than a flag, per §5.5's own
+  // spelling of the command: `broker login <browser>`.
+  const named = rest.find((word) => !word.startsWith('-'));
+
+  try {
+    return await runLoginCommand({
+      broker,
+      store,
+      environment,
+      streams,
+      json,
+      ...(named === undefined ? {} : { browser: named }),
+    });
+  } catch (error) {
+    if (error instanceof BrokerError) {
+      // The launch refusals get the extra sentence about what to do, which a
+      // message about endpoints cannot supply on its own.
+      streams.err(`refused (${error.rule}): ${explainLoginFailure(error)}`);
+      return EXIT.refused;
+    }
+    throw error;
   }
 }
 

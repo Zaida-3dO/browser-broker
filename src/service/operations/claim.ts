@@ -218,6 +218,51 @@ export function decideClaim(
   }
 
   const browserId = input.browser;
+
+  // **A browser being signed into is not available, and this is what makes
+  // that state mean anything** (§5.5.1 step 2: "From that moment, requests
+  // for it are refused with a retry hint").
+  //
+  // ── Why refused here, and why refused rather than queued ──────────────
+  //
+  // The position is load-bearing in both directions. It is **after** the
+  // argument checks, because nothing about a sign-in makes a malformed
+  // request valid — a caller naming a browser that does not exist should hear
+  // about the name, not about somebody's sign-in. It is **before** the
+  // admission arithmetic and before any row is written, so a refused caller
+  // is not charged capacity, holds no key, and has nothing to release: the
+  // same position, and the same reason, as the two refusals above it.
+  //
+  // Refused rather than queued because §2.2 draws that line by what the queue
+  // promises: **the queue's promise is that capacity frees up**, and a browser
+  // handed to a person is not a capacity shortage. Queuing here would give a
+  // caller a place in a line whose length says nothing about how long a human
+  // takes to type a password. So it is `retryable`, with the hint on the
+  // sentence, and the caller decides when to come back.
+  //
+  // **Queued callers already waiting are untouched** — this reads the browser
+  // row and writes nothing, so §5.5.1's "queued callers keep their places and
+  // their timers" holds by there being no code here that could take one.
+  const browserState = db
+    .prepare<{ id: string }, { state: string }>('SELECT state FROM browsers WHERE id = @id')
+    .get({ id: browserId });
+
+  if (browserState?.state === 'signing-in') {
+    scope.recordRefusal({
+      kind: 'claim_requested',
+      outcome: 'deny',
+      guard: 'browser.serving',
+      adapter,
+      sessionId: input.sessionId,
+      detail: { browser: browserId, state: browserState.state },
+    });
+    throw new CallRefusal(
+      'browser_unavailable',
+      `The ${browserId} browser is being signed into by a person right now, so it is not serving callers. This is a pause rather than a fault: it will serve again as soon as they are finished, and a place in the queue would not help because nothing here is waiting on capacity. Try again shortly.`,
+      { detail: { browser: browserId, state: browserState.state } },
+    );
+  }
+
   const now = swept.sweptAt;
   const claimId = randomUUID();
   const key = mintKey();

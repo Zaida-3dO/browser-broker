@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 
 import { createBroker, type Broker } from '../../src/service/broker.ts';
+import type { Environment } from '../../src/config/environment.ts';
 import type { OrphanedTab } from '../../src/service/arbitration.ts';
 import { prepareStore, type StoreHandle } from '../../src/store/open.ts';
 import { makeTempStore, type TempStoreOptions } from './temp-store.ts';
@@ -17,6 +18,15 @@ import { makeTempStore, type TempStoreOptions } from './temp-store.ts';
 export interface BrokerFixture {
   readonly broker: Broker;
   readonly store: StoreHandle;
+  /**
+   * The environment this store was built with.
+   *
+   * Exposed because the commands that establish profiles need the same
+   * snapshot the service was bound to (§6.3: one per process). A test that
+   * built its own would be a second snapshot, and the profile root it named
+   * would not be the one the service is using.
+   */
+  readonly environment: Environment;
   /** Every tab the service asked to close, in the order it asked. */
   readonly closed: OrphanedTab[];
   /** A second, read-only connection — see {@link readCommitted}. */
@@ -47,6 +57,7 @@ export async function withBroker(
     try {
       await fn({
         store,
+        environment: temp.environment,
         closed,
         broker: createBroker({
           store,

@@ -85,7 +85,17 @@ if (needsNoService(argv)) {
 
   if (runtime !== undefined) {
     try {
-      process.exitCode = await run(argv, { service: runtime.service });
+      process.exitCode = await run(argv, {
+        service: runtime.service,
+        // `broker login` is performed by a person and is not one of the ten
+        // operations the flat seam carries, so it reaches the service through
+        // the typed interface. Supplied here rather than constructed in the
+        // dispatcher for the reason `RunOptions.service` gives: a dispatcher
+        // that built its own service could only be tested by spawning.
+        broker: runtime.broker,
+        store: runtime.store,
+        environment: runtime.environment,
+      });
     } finally {
       runtime.close();
     }

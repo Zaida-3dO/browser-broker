@@ -355,14 +355,20 @@ test('every spelling of the key is on the never-printed list, by name', () => {
 
 // ── The unbuilt commands say so honestly ────────────────────────────────
 
-test('a command with no operation behind it says it is not built rather than pretending', async () => {
-  // `login` rather than `doctor`: SCHEMA.md 5.5 lists four commands with no
-  // operation behind them, and the two that report on an installation are
-  // built. The example has to be one that genuinely is not, or this
-  // asserts nothing.
+test('a command with no operation behind it refuses rather than pretending', async () => {
+  // **This assertion outlived the state it was written for, and was rewritten
+  // rather than deleted.** It used to require `login` to report itself "not
+  // built yet". All four of SCHEMA.md 5.5's commands are now built, so there
+  // is no unbuilt one left to point it at — and pointing it at a working
+  // command would have made it pass while asserting nothing.
+  //
+  // The property worth keeping is the one that generalises: a command driven
+  // on this route **without a service** must refuse and say so, never report
+  // success. For `login` that is the strongest form of the claim, because the
+  // thing it would otherwise do is open a browser window for a person.
   const result = await drive(['login']);
-  assert.notEqual(result.code, EXIT.accepted, 'an unbuilt command reported success');
-  assert.match(result.err.join('\n'), /not built yet/u);
+  assert.notEqual(result.code, EXIT.accepted, 'a command with no service reported success');
+  assert.match(result.err.join('\n'), /service\.not_built/u);
 });
 
 test('an operation command with no service says so rather than reporting success', async () => {

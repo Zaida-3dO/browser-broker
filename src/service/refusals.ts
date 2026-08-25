@@ -116,6 +116,36 @@ export const REFUSALS = {
   },
 
   /**
+   * §5.5.1's last line: the private browser cannot be signed into.
+   *
+   * ── Why this is not `unknown_browser`, which it was at first ────────────
+   *
+   * The private browser **is** one of the two. Refusing it with the code for
+   * a name that does not exist made the command report the rule
+   * `claim.browser_known` — telling a person their browser name was wrong
+   * when it was correct, and pointing them at the one rule that was not the
+   * reason. The message said the right thing and the machine-readable fields
+   * contradicted it, which is worse than either alone: a caller branching on
+   * the rule would conclude it had a typo and retry the same word.
+   *
+   * The rule is looked up here rather than passed by the caller precisely so
+   * that the pair cannot drift — so a refusal that needs a different rule
+   * needs a different code, which is this one.
+   *
+   * Not retryable: the private browser's profile is ephemeral by design, so
+   * no amount of waiting makes signing into it produce anything.
+   */
+  cannot_sign_in: {
+    // §7.1 `browser.serving`, whose entry covers the signing-in cases. The
+    // private browser is not available *to be signed into* — permanently,
+    // which is why this code and `browser_unavailable` share a rule and
+    // differ on the one field a caller acts on.
+    rule: 'browser.serving',
+    summary: 'The browser named keeps a profile that a sign-in can persist in.',
+    retryable: false,
+  },
+
+  /**
    * §7.1 `browser.serving`, and §2.2's second: a browser being down is an
    * availability problem rather than a capacity one, so it is refused rather
    * than queued — the queue's promise is that capacity frees up, and nothing
