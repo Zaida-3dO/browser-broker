@@ -4,11 +4,15 @@ import test from 'node:test';
 
 import {
   ARBITRATION_SOURCE,
+  BROWSER_SEAM_SOURCE,
+  OPERATION_SOURCES,
   FORBIDDEN_DRIVER_TRANSACTIONS,
   FORBIDDEN_SQL_KEYWORDS,
   REQUIRED_BEGIN,
   TRANSACTION_SOURCE,
+  browserSessionMethods,
   checkImmediateTransaction,
+  checkNoBrowserIo,
   checkNoReadOnlyPath,
   registeredNamesIn,
   stringLiterals,
@@ -46,6 +50,27 @@ import {
 
 const arbitration = readFileSync(ARBITRATION_SOURCE, 'utf8');
 const transaction = readFileSync(TRANSACTION_SOURCE, 'utf8');
+const seam = readFileSync(BROWSER_SEAM_SOURCE, 'utf8');
+
+/** Every operation module, as `arbitration.no_browser_io` reads them. */
+function operationSources() {
+  return Object.fromEntries(OPERATION_SOURCES.map((path) => [path, readFileSync(path, 'utf8')]));
+}
+
+/** The operation modules with one file replaced by a mutation of itself. */
+function seededOperation(path, mutate) {
+  const sources = operationSources();
+  const after = mutate(sources[path]);
+  assert.notEqual(
+    after,
+    sources[path],
+    `the seed for ${path} changed nothing — the mutation missed, so the assertion below would pass vacuously`,
+  );
+  return { ...sources, [path]: after };
+}
+
+/** The handler body that every browser-rule seed below reaches into. */
+const NAVIGATE_BODY = "const { lease, tab, expiresAt } = admit(scope, input, 'navigate');";
 
 /** The real tree, as the two rules see it. */
 function clean() {
@@ -363,4 +388,119 @@ test('an outer-empty registry reads as empty however its values would be shaped'
   // belonging to something else entirely.
   const wrap = (body) => `export const ARBITRATION_OPERATIONS = ${body} as const satisfies X;`;
   assert.deepEqual(registeredNamesIn(wrap('{\n}')).names, []);
+});
+
+/* ─────────────── arbitration.no_browser_io ─────────────── */
+
+/**
+ * The browser rule's self-tests.
+ *
+ * **What a green run of these means:** each scan has been run against a
+ * mutation of the shipped operation modules that violates it, and each
+ * refused. The mutation in the first test is the one a reviewer wrote by hand
+ * to demonstrate that the build check could not see it.
+ *
+ * **What it does not mean:** that browser work inside the transaction is
+ * impossible. The script's header carries the limits in full; the short
+ * version is that the load-bearing defence is `ArbitrationScope` carrying no
+ * driver, and that this rule sees the one deliberate route — a session
+ * supplied on the input — rather than every conceivable one.
+ */
+
+test('the real operation modules pass the browser rule', () => {
+  assert.deepEqual(checkNoBrowserIo(operationSources(), seam), []);
+});
+
+test('scan A fires when a handler resolves the session in its body', () => {
+  // ── The mutation this rule was written for ──────────────────────────
+  //
+  // Browser I/O inside the arbitration transaction, reaching around
+  // `ArbitrationScope` — which carries no driver — by way of the session the
+  // caller supplied on the input. Tests killed this; the build check did not.
+  const sources = seededOperation('src/service/operations/pages.ts', (source) =>
+    source.replace(
+      NAVIGATE_BODY,
+      `${NAVIGATE_BODY}\n  const live = await input.session();\n  void live;`,
+    ),
+  );
+  const failures = checkNoBrowserIo(sources, seam);
+  assert.ok(
+    failures.some((failure) => failure.scan === 'A'),
+    `resolving the session in a handler body did not fire scan A; scans that fired: ${failures.map((f) => f.scan).join(', ') || 'none'}`,
+  );
+});
+
+test('scan B fires on a seam method called in a handler body, whatever the receiver is called', () => {
+  // The receiver is deliberately named nothing like `session`: what makes a
+  // call browser I/O is the method it names, and a check keyed to a variable
+  // name is one a rename walks straight through.
+  const sources = seededOperation('src/service/operations/pages.ts', (source) =>
+    source.replace(NAVIGATE_BODY, `${NAVIGATE_BODY}\n  await thing.navigate(page, url);`),
+  );
+  const failures = checkNoBrowserIo(sources, seam);
+  assert.ok(
+    failures.some((failure) => failure.scan === 'B'),
+    `a seam method in a handler body did not fire scan B; scans that fired: ${failures.map((f) => f.scan).join(', ') || 'none'}`,
+  );
+});
+
+test('scan B fires for every method the seam declares, including its inherited ones', () => {
+  // **The seam splits its methods across two interfaces**, and the page verbs
+  // — the ones a handler would actually call — are on the base. A scan that
+  // read only the leaf would collect the lifecycle methods, find none of them
+  // in an operation module, and report green over the whole rule.
+  const methods = browserSessionMethods(seam);
+  assert.notEqual(methods, null, 'the seam declared no readable methods');
+
+  for (const method of methods) {
+    const sources = seededOperation('src/service/operations/pages.ts', (source) =>
+      source.replace(NAVIGATE_BODY, `${NAVIGATE_BODY}\n  await thing.${method}();`),
+    );
+    const failures = checkNoBrowserIo(sources, seam);
+    assert.ok(
+      failures.some((failure) => failure.scan === 'B'),
+      `${method}() in a handler body did not fire scan B`,
+    );
+  }
+});
+
+test('the same call inside an after-commit closure does not fire, so the rule is positional', () => {
+  // ── The control for this rule ───────────────────────────────────────
+  //
+  // Without it, a scan that fired on the mere presence of `session.navigate(`
+  // anywhere in the file would pass every test above while forbidding the
+  // correct code as loudly as the incorrect code. What is being checked is
+  // *where* the call sits, so a seed in the permitted position must stay
+  // silent.
+  const sources = seededOperation('src/service/operations/pages.ts', (source) =>
+    source.replace(
+      '(session, page) => session.navigate(page, url)',
+      '(session, page) => session.navigate(page, url + String(session.describe()))',
+    ),
+  );
+  assert.deepEqual(
+    checkNoBrowserIo(sources, seam).filter((failure) => failure.scan === 'B'),
+    [],
+    'a browser call inside an after-commit closure fired the rule, which would forbid the correct shape',
+  );
+});
+
+test('scan C refuses an operation module that is not there', () => {
+  const sources = operationSources();
+  delete sources['src/service/operations/pages.ts'];
+  const failures = checkNoBrowserIo(sources, seam);
+  assert.ok(
+    failures.some((failure) => failure.scan === 'C'),
+    'a missing operation module was scanned as though it were clean, which reads exactly like a clean tree',
+  );
+});
+
+test('scan D refuses rather than scanning for an empty set of browser methods', () => {
+  // The vacuous case, and the one that would pass forever and silently: with
+  // no methods to look for, scan B asks nothing of any file.
+  const failures = checkNoBrowserIo(operationSources(), 'export interface NotTheSeam {}');
+  assert.ok(
+    failures.some((failure) => failure.scan === 'D'),
+    'an unreadable browser seam did not refuse, so the rule would have scanned for nothing',
+  );
 });

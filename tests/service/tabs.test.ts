@@ -492,6 +492,46 @@ test('live tabs are the unfinished ones, and each carries whether its lease is l
   });
 });
 
+test('a tab asked to close but not confirmed is still live, so it is not counted as free', async () => {
+  // ── Why `closing` gets its own test ─────────────────────────────────
+  //
+  // `closing` is "the honest representation of *the tool was asked and has
+  // not answered*, and it is what stops a page that may still exist being
+  // counted as free" (§1.4). A page in that state may still exist in the
+  // browser, so reconciliation must keep seeing it: treating it as finished
+  // means a real page nobody is tracking, and the administrative operation
+  // that clears leaked tabs selects on rows.
+  //
+  // **The single-character change this catches** is dropping `'closing'`
+  // from `LIVE_TAB_STATES`. Seeding only `opening`, `open` and `closed`
+  // leaves that mutation alive: every assertion still holds, because no test
+  // ever puts a tab into the one state the mutation removes.
+  //
+  // The state is reached through `markTabClosing` rather than written with
+  // SQL, so this exercises the transition the service actually performs
+  // instead of a shape a test invented.
+  await withSteppedStore((store) => {
+    const claim = seedClaim(store.db, { state: 'active' });
+
+    const closingTab = reserveTab(store.db, claim.claimId, 'regular');
+    recordTabOpened(store.db, closingTab, 'driver-page-closing');
+    markTabClosing(store.db, closingTab);
+
+    assert.equal(
+      readTab(store.db, closingTab).state,
+      'closing',
+      'the fixture did not reach the state under test, so the assertion below would not exercise it',
+    );
+
+    const rows = liveTabsIn(store.db, 'regular');
+    assert.deepEqual(
+      rows.map((row) => row.tabId),
+      [closingTab],
+      'a tab asked to close and not yet confirmed was treated as finished with, so a page that may still exist is counted as free',
+    );
+  });
+});
+
 test('live tabs are scoped to one browser, so reconciling one cannot touch the other', async () => {
   await withSteppedStore((store) => {
     const regular = seedClaim(store.db, { browserId: 'regular' });

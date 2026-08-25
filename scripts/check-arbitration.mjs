@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * The two build rules that keep the arbitration transaction shape true:
- * `arbitration.immediate_transaction` and `arbitration.no_read_only_path`
- * (`SCHEMA.md` §7.3).
+ * The three build rules that keep the arbitration transaction shape true:
+ * `arbitration.immediate_transaction`, `arbitration.no_read_only_path` and
+ * `arbitration.no_browser_io` (`SCHEMA.md` §7.3).
  *
- * Both assert an **absence** — that no arbitration path opens a transaction
- * without declaring its intent to write, and that none answers without
- * writing — and an absence has no call site, so there is nothing for a test
+ * All three assert an **absence** — that no arbitration path opens a
+ * transaction without declaring its intent to write, that none answers
+ * without writing, and that none reaches a browser while the transaction is
+ * open — and an absence has no call site, so there is nothing for a test
  * to invoke. `MILESTONES.md` #50: the second is the one that matters most,
  * because a "check status without sweeping" fast path **would pass a
  * low-contention test suite**, which is exactly what the deferred measurement
@@ -45,6 +46,12 @@
  * | The runner sweeps unconditionally before the handler | **Checked.** Rule two, scan B |
  * | The registry is non-empty | **Checked.** Rule two, scan C — and see the exemption below |
  * | An operation cannot declare itself read-only | **Checked.** Rule two, scan D |
+ * | A session supplied on the input is resolved only inside an after-commit closure | **Checked.** Rule three, scan A |
+ * | A browser-seam method is called only inside an after-commit closure | **Checked.** Rule three, scan B |
+ * | Every listed operation module is present | **Checked.** Rule three, scan C |
+ * | The seam's method list is read from the seam, including inherited methods | **Checked.** Rule three, scan D — refuses rather than scanning for nothing |
+ * | *A handler that constructed a driver for itself* | **NOT checked.** Reaching a browser that way takes a launch or an attach, which rule three does not look for. What stands against it is that `ArbitrationScope` carries no driver, so there is nothing to reach for by accident |
+ * | *A browser reached through a value rule three cannot recognise* | **NOT checked, and not checkable this way.** A session smuggled through a differently-typed field matches no shape here |
  * | *Nothing anywhere in the tree can ever write outside a transaction* | **NOT checked, and not checkable this way.** A statement run on a raw handle takes its lock at statement time and matches no shape here |
  * | *A future module could not open its own deferred transaction* | **NOT checked.** These scans cover the arbitration module. A new module calling itself something else is outside them by construction |
  * | *The sweep is correct* | **NOT checked.** That it runs is a source fact; that it expires the right rows is a test, and the concurrency suite in #12–#17 is where the global-sweep assertion lives |
@@ -58,6 +65,22 @@
  * harness in #12–#17: real operating-system processes, with the deferred
  * variant kept as a deliberately-failing control. Neither substitutes for the
  * other, and this file is not the stronger of the two.
+ *
+ * ── What rule three rests on, said plainly ──────────────────────────────
+ *
+ * **The load-bearing defence against browser work inside the transaction is
+ * the type system, not this script.** `ArbitrationScope` carries no driver,
+ * so a handler has nothing to call: the obvious path does not exist. What is
+ * left is the one deliberate route — a `SessionSource` supplied on the
+ * operation input by the caller that owns the browser connection — and
+ * `operations/pages.ts` states the governing rule, that it is read inside an
+ * after-commit closure and never in a handler body.
+ *
+ * Rule three checks **that** rule, and can, because it is a question about
+ * where a call sits rather than about what a value is. It does not make the
+ * violation impossible; it makes the natural way to commit it — moving an
+ * `await session.…` out of the closure to get its result before returning —
+ * fail in the diff.
  *
  * ── Why this is source scanning and not the type system ─────────────────
  *
@@ -85,6 +108,22 @@ import { spawnSync } from 'node:child_process';
  */
 export const ARBITRATION_SOURCE = 'src/service/arbitration.ts';
 export const TRANSACTION_SOURCE = 'src/store/transaction.ts';
+
+/**
+ * The operation modules `arbitration.no_browser_io` scans.
+ *
+ * Named individually for the same reason the two above are: a glob would
+ * silently start covering the next file somebody adds, and this rule's whole
+ * value is that adding an operation module is a deliberate decision taken in
+ * the diff. {@link checkNoBrowserIo}'s scan C is what refuses a registry
+ * whose handlers live somewhere unlisted.
+ */
+export const OPERATION_SOURCES = [
+  'src/service/operations/claim.ts',
+  'src/service/operations/give-back.ts',
+  'src/service/operations/pages.ts',
+  'src/service/operations/status.ts',
+];
 
 /**
  * The literal the transaction helper must open with.
@@ -129,6 +168,22 @@ export const FORBIDDEN_DRIVER_TRANSACTIONS = [
 /** Strip line and block comments, so prose about a keyword is not a match. */
 export function stripComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+}
+
+/**
+ * Strip comments **without moving any line**, for a scan that reports
+ * positions.
+ *
+ * {@link stripComments} collapses a block comment to a single space, which is
+ * correct when only the presence of a match matters — but it means a line
+ * number counted afterwards refers to the stripped text rather than to the
+ * file. In this repository's files, whose comments are long, that difference
+ * is a hundred lines or more, and **a rule that reports the wrong line sends
+ * its reader to innocent code**. Every newline is kept here so the two agree.
+ */
+export function stripCommentsKeepingLines(source) {
+  const blank = (match) => match.replace(/[^\n]/g, ' ');
+  return source.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/\/\/[^\n]*/g, blank);
 }
 
 /**
@@ -366,6 +421,365 @@ export function checkNoReadOnlyPath(sources, registeredNames) {
 }
 
 /**
+ * The methods that reach a browser, so a call to one is browser I/O.
+ *
+ * Read from `BrowserSession` in `src/browser/driver.ts` at run time rather
+ * than written down here, by {@link browserSessionMethods}. A list copied
+ * into this file would go stale the moment the seam grew a method, and a
+ * scan that silently stopped covering a new method is the shape this whole
+ * script is written against.
+ */
+export const BROWSER_SEAM_SOURCE = 'src/browser/driver.ts';
+
+/**
+ * Read the browser seam's method names out of its own interface.
+ *
+ * Returns `null` rather than a guess when the interface cannot be found, and
+ * the caller refuses on that — reporting an empty set would make the scan an
+ * assertion over nothing, which passes forever and silently.
+ */
+/**
+ * Everything after an interface's name: its optional `extends` clause, then
+ * its body up to the closing brace in the first column.
+ *
+ * Written as a literal so the escapes are the regular expression's own rather
+ * than a string's, which keeps the doubled backslashes of an escaped-string
+ * form out of the source entirely.
+ */
+const INTERFACE_BODY_PATTERN = /(?:\s+extends\s+([^{]+))?\s*\{([\s\S]*?)\n\}/;
+
+export function browserSessionMethods(source) {
+  const names = new Set();
+  const seen = new Set();
+
+  // **The `extends` chain is followed, and that is not a nicety.** The seam
+  // declares its page verbs — `navigate`, `act`, `read`, `evaluate`,
+  // `capture` — on a base interface, and those are precisely the methods a
+  // handler would call. A scan reading only the leaf interface would collect
+  // the five session-lifecycle methods, find none of them in an operation
+  // module, and report green over the whole rule.
+  const collect = (name) => {
+    if (seen.has(name)) return;
+    seen.add(name);
+
+    // Built from a literal regular expression rather than from a string of
+    // escapes: a source line carrying doubled backslashes reads to the
+    // hygiene gate as a machine path, and rewording a check to appease
+    // another check is how both end up trusted less.
+    const declaration = new RegExp(
+      ['export interface ', name, INTERFACE_BODY_PATTERN.source].join(''),
+    ).exec(source);
+    if (declaration === null) return;
+
+    for (const parent of (declaration[1] ?? '').split(',')) {
+      const trimmed = parent.trim();
+      if (trimmed !== '') collect(trimmed);
+    }
+
+    // `readonly name: (...) => ...` — a method is a property whose type is a
+    // function, which is how this seam declares every one of them.
+    for (const property of stripComments(declaration[2]).matchAll(
+      /readonly\s+([A-Za-z_$][\w$]*)\s*:\s*\(/g,
+    )) {
+      names.add(property[1]);
+    }
+  };
+
+  collect('BrowserSession');
+  return names.size > 0 ? [...names] : null;
+}
+
+/**
+ * `arbitration.no_browser_io` — no browser call is reachable from a handler
+ * body, only from the after-commit work it hands back (`SCHEMA.md` §2.4b).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * WHAT THIS SCAN CAN SEE, AND WHAT IT CANNOT
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Read this before trusting it, and before extending it.
+ *
+ * **The load-bearing defence is the type system, not this scan.**
+ * `ArbitrationScope` carries no driver, so a handler has nothing to call: the
+ * obvious path to a browser does not exist and cannot be taken by accident.
+ * What remains is the one deliberate route — a `SessionSource` supplied on
+ * the *input* by the caller that owns the browser connection — and the rule
+ * governing it is stated in `operations/pages.ts`: it "is only ever read
+ * inside an `afterCommit` closure, never in the body of a handler".
+ *
+ * That rule is what this scan checks, and it is checkable because it is a
+ * question about *where* a call sits rather than about what a value is.
+ *
+ * | Claim | Status |
+ * |---|---|
+ * | A session obtained from the operation input is dereferenced only inside an after-commit closure | **Checked.** Scan A |
+ * | A browser-seam method is called only inside an after-commit closure | **Checked.** Scan B |
+ * | Every listed operation module exists | **Checked.** Scan C |
+ * | The browser seam's method list is read from the seam itself | **Checked.** Scan D — refuses rather than assuming an empty set |
+ * | *A handler importing a driver module directly* | **NOT checked.** Constructing a driver takes a launch or an attach, neither of which this looks for. A handler that did so would be reaching around `ArbitrationScope` in a way no operation here has reason to |
+ * | *A browser reached through a value this cannot recognise as a session* | **NOT checked, and not checkable this way.** A session smuggled through a differently-typed field, or returned by a helper whose own body is elsewhere, matches no shape here |
+ * | *An operation module not on the list* | **NOT checked.** Scan C refuses a missing file, but a handler defined in a module nobody listed is outside these scans by construction — the same limit rule two carries |
+ *
+ * **So this makes the violation loud rather than impossible**, exactly as the
+ * two rules above do. Its value is that the natural way to commit it — moving
+ * an `await session.…` out of the closure and into the body, which is what
+ * somebody does when they want the result before returning — is caught in the
+ * diff. Somebody determined to reach a browser inside the transaction still
+ * can, and the tests in `tests/service/` are what stand in the way.
+ */
+export function checkNoBrowserIo(sources, seamSource) {
+  const failures = [];
+
+  // Scan D. The seam's own method list, read rather than assumed.
+  const methods = browserSessionMethods(seamSource);
+  if (methods === null) {
+    failures.push({
+      rule: 'arbitration.no_browser_io',
+      scan: 'D',
+      line: 0,
+      file: BROWSER_SEAM_SOURCE,
+      detail:
+        `${BROWSER_SEAM_SOURCE} does not declare a readable BrowserSession interface. ` +
+        'Scanning for an empty set of browser methods would pass forever and silently, so this refuses instead of guessing.',
+    });
+    return failures;
+  }
+
+  for (const file of OPERATION_SOURCES) {
+    const source = sources[file];
+
+    // Scan C. A rule pointed at a file that has moved reports nothing, which
+    // reads exactly like a clean tree.
+    if (source === undefined) {
+      failures.push({
+        rule: 'arbitration.no_browser_io',
+        scan: 'C',
+        line: 0,
+        file,
+        detail:
+          `${file} is listed as an operation module but is not present. ` +
+          'A scan over a file that has moved finds no violations, which is indistinguishable from finding none.',
+      });
+      continue;
+    }
+
+    failures.push(...scanOneOperationModule(file, source, methods));
+  }
+
+  return failures;
+}
+
+/**
+ * The two positional scans, over one module.
+ *
+ * The whole method is "is this call inside an after-commit closure or not",
+ * so the work is finding those regions and then asking of each browser call
+ * whether it falls in one.
+ */
+function scanOneOperationModule(file, rawSource, methods) {
+  const failures = [];
+  // Line-preserving, because every failure this produces reports a position.
+  const code = stripCommentsKeepingLines(rawSource);
+  const safe = afterCommitRegions(code);
+  const inSafeRegion = (index) => safe.some(([from, to]) => index >= from && index < to);
+  const lineAt = (index) => code.slice(0, index).split('\n').length;
+
+  // Scan A. A session taken off the operation input, outside a closure.
+  //
+  // `input.session` is the documented route and the only one an operation has.
+  // Reading it is harmless — `const source = input.session` inside a handler
+  // body is how the real code hands it to the closure — so what is caught is
+  // **invoking** it, which is what turns the source into a live session.
+  for (const call of code.matchAll(/\b(?:await\s+)?(\w+\s*\.\s*)?session\s*\(\s*\)/g)) {
+    if (inSafeRegion(call.index)) continue;
+    failures.push({
+      rule: 'arbitration.no_browser_io',
+      scan: 'A',
+      line: lineAt(call.index),
+      file,
+      detail:
+        `${file} resolves a browser session (${call[0].trim()}) in a handler body. ` +
+        'Section 2.4b: the arbitration transaction is open here, and one unresponsive browser inside it blocks every arbitration call on the machine. Hand the work back in afterCommit instead.',
+    });
+  }
+
+  // Scan B. A browser-seam method called outside a closure.
+  //
+  // The receiver is deliberately not constrained to a variable called
+  // `session`: what makes a call browser I/O is the method, and a value
+  // renamed on its way into a handler body is exactly the case a
+  // receiver-name check would miss.
+  for (const method of methods) {
+    for (const call of code.matchAll(new RegExp(`\\.\\s*${method}\\s*\\(`, 'g'))) {
+      if (inSafeRegion(call.index)) continue;
+      failures.push({
+        rule: 'arbitration.no_browser_io',
+        scan: 'B',
+        line: lineAt(call.index),
+        file,
+        detail:
+          `${file} calls the browser seam's ${method}() in a handler body. ` +
+          'Section 2.4b requires browser work to happen after the commit: expiring a claim must also close its tab, and a browser that will not answer must not be able to hold the transaction open.',
+      });
+    }
+  }
+
+  return failures;
+}
+
+/**
+ * Every region of the source that runs after the commit rather than inside
+ * the transaction.
+ *
+ * Two shapes, and both are found by **matching braces from the opening one**
+ * rather than by a regular expression over the whole region — a nested
+ * closure or an object literal inside the callback would otherwise end the
+ * region early and turn everything after it into a false positive:
+ *
+ * - `afterCommit: …` on a returned outcome, which is the declaration itself.
+ * - `afterCommitWork(scope, input, tab, (session, page) => …)`, the helper
+ *   that wraps one piece of work in the closure the runner calls. Its last
+ *   argument is the work, so the region is that argument.
+ *
+ * A region that cannot be closed — unbalanced braces, which means the file
+ * does not parse — is dropped rather than extended to the end of the file. An
+ * unclosed region would mark the whole remainder safe, which is the failure
+ * mode where a scan silently stops scanning.
+ */
+export function afterCommitRegions(code) {
+  const regions = [];
+
+  for (const start of code.matchAll(/\bafterCommit\s*:|\bafterCommitWork\s*\(/g)) {
+    const from = start.index;
+    const end = closingIndexFrom(code, from);
+    if (end !== null) regions.push([from, end]);
+  }
+
+  // ── Helpers that are handed a session ────────────────────────────────
+  //
+  // A function **taking a `BrowserSession` as a parameter cannot obtain one
+  // itself**, and nothing inside the transaction has one to pass: the only
+  // values of that type in this layer come from resolving a `SessionSource`,
+  // which happens inside an after-commit closure. Such a helper is therefore
+  // after-commit work wherever it is written in the file.
+  //
+  // **This is a type-directed exemption, not a name-based one.** It is not
+  // "functions called `pageFor`" and not "parameters called `session`" —
+  // either of those would be a hole any handler could climb through by
+  // choosing a name. A handler that wanted to smuggle browser work into the
+  // transaction this way would have to *acquire* a `BrowserSession` to pass
+  // in, and acquiring one is the thing scan A catches.
+  for (const declaration of code.matchAll(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(([\s\S]*?)\)\s*:/g)) {
+    if (!/:\s*BrowserSession\b/.test(declaration[1])) continue;
+    const bodyStart = code.indexOf('{', declaration.index + declaration[0].length);
+    if (bodyStart === -1) continue;
+    const end = matchingBracket(code, bodyStart);
+    if (end !== null) regions.push([bodyStart, end]);
+  }
+
+  return regions;
+}
+
+/**
+ * Where the construct beginning at `from` ends, by counting brackets.
+ *
+ * Starts counting at the first bracket at or after `from` and returns the
+ * index just past its match. Strings are skipped, so a brace inside a literal
+ * cannot unbalance the count.
+ */
+function closingIndexFrom(code, from) {
+  const openers = { '(': ')', '[': ']', '{': '}' };
+  const closers = { ')': '(', ']': '[', '}': '{' };
+  const stack = [];
+
+  // **Scanning to the end of the whole value, not to the first balanced
+  // bracket.** `afterCommit:` is frequently followed by a ternary whose first
+  // branch is an empty array — `source === undefined ? [] : [ … ]` — and
+  // stopping at the first balanced pair would end the region on that `[]`,
+  // leaving the closure that follows it looking like handler-body code. That
+  // is a false positive on correct source, which is the fastest way to get a
+  // check waived.
+  //
+  // The value ends at the comma or closing bracket that sits at the depth the
+  // property started at.
+  for (let index = from; index < code.length; index += 1) {
+    const character = code[index];
+
+    if (character === "'" || character === '"' || character === '`') {
+      index = endOfString(code, index);
+      if (index === -1) return null;
+      continue;
+    }
+
+    if (openers[character] !== undefined) {
+      stack.push(character);
+      continue;
+    }
+
+    if (closers[character] !== undefined) {
+      // A closer at depth zero ends the object or call this property sits in,
+      // so the value ended here.
+      if (stack.length === 0) return index;
+      if (stack.pop() !== closers[character]) return null;
+      continue;
+    }
+
+    // A comma at depth zero separates this property from the next one.
+    if (character === ',' && stack.length === 0) return index;
+  }
+  return null;
+}
+
+/**
+ * The index just past the bracket matching the one at `start`.
+ *
+ * Distinct from {@link closingIndexFrom}, which ends a *value* and therefore
+ * stops at a comma or at the closer of an enclosing construct. A function body
+ * ends where its own brace closes and nowhere else.
+ *
+ * Returns `null` on unbalanced input rather than running to the end of the
+ * file. A region left open would mark everything after it as after-commit
+ * work, which is the failure where a scan silently stops scanning.
+ */
+function matchingBracket(code, start) {
+  const openers = { '(': ')', '[': ']', '{': '}' };
+  const stack = [];
+
+  for (let index = start; index < code.length; index += 1) {
+    const character = code[index];
+
+    if (character === "'" || character === '"' || character === '`') {
+      index = endOfString(code, index);
+      if (index === -1) return null;
+      continue;
+    }
+
+    if (openers[character] !== undefined) {
+      stack.push(openers[character]);
+      continue;
+    }
+    if (character === ')' || character === ']' || character === '}') {
+      if (stack.pop() !== character) return null;
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return null;
+}
+
+/** The index of the closing quote of the string starting at `start`. */
+function endOfString(code, start) {
+  const quote = code[start];
+  for (let index = start + 1; index < code.length; index += 1) {
+    if (code[index] === '\\') {
+      index += 1;
+      continue;
+    }
+    if (code[index] === quote) return index;
+  }
+  return -1;
+}
+
+/**
  * The registered names, read from the source rather than imported.
  *
  * Importing the module would be the obvious thing and it is the wrong one
@@ -465,7 +879,9 @@ function requireFile(path) {
  * a missing one is never ordinary.
  */
 function missingSources() {
-  return [ARBITRATION_SOURCE, TRANSACTION_SOURCE].filter((path) => !requireFile(path));
+  return [ARBITRATION_SOURCE, TRANSACTION_SOURCE, BROWSER_SEAM_SOURCE, ...OPERATION_SOURCES].filter(
+    (path) => !requireFile(path),
+  );
 }
 
 /**
@@ -493,6 +909,9 @@ export function main() {
     [ARBITRATION_SOURCE]: read(ARBITRATION_SOURCE),
     [TRANSACTION_SOURCE]: read(TRANSACTION_SOURCE),
   };
+  for (const path of OPERATION_SOURCES) {
+    sources[path] = read(path);
+  }
 
   const registry = registeredNamesIn(sources[ARBITRATION_SOURCE]);
   if (registry.names === null) {
@@ -503,15 +922,23 @@ export function main() {
     return 1;
   }
 
+  const seam = read(BROWSER_SEAM_SOURCE);
+  const seamMethods = browserSessionMethods(seam) ?? [];
+
   const failures = [
     ...checkImmediateTransaction(sources),
     ...checkNoReadOnlyPath(sources, registry.names),
+    ...checkNoBrowserIo(sources, seam),
   ];
 
   if (failures.length > 0) {
     for (const failure of failures) {
       console.error(
-        `${failure.rule} [scan ${failure.scan}]${failure.line > 0 ? ` ${ARBITRATION_SOURCE}:${failure.line}` : ''}\n    ${failure.detail}\n`,
+        // The file is carried on the failure rather than assumed: the browser
+        // rule reports against whichever operation module it read, and naming
+        // the arbitration module for all of them would send a reader to a file
+        // the violation is not in.
+        `${failure.rule} [scan ${failure.scan}]${failure.line > 0 ? ` ${failure.file ?? ARBITRATION_SOURCE}:${failure.line}` : ''}\n    ${failure.detail}\n`,
       );
     }
     console.error(
@@ -527,8 +954,10 @@ export function main() {
   const registryNote = ` ${registry.names.length} operation${registry.names.length === 1 ? '' : 's'} registered: ${registry.names.join(', ')}.`;
 
   console.log(
-    `arbitration.immediate_transaction and arbitration.no_read_only_path hold on ${treeDescription()}.${registryNote}\n` +
-      "This means the arbitration surface is narrow, not that a bypass is impossible — see this script's header.",
+    `arbitration.immediate_transaction, arbitration.no_read_only_path and arbitration.no_browser_io hold on ${treeDescription()}.${registryNote}\n` +
+      `Browser I/O was checked positionally across ${String(OPERATION_SOURCES.length)} operation modules, against the ${String(seamMethods.length)} methods read from ${BROWSER_SEAM_SOURCE}.\n` +
+      "This means the arbitration surface is narrow, not that a bypass is impossible — see this script's header. " +
+      'In particular the browser rule sees a session resolved or a seam method called in a handler body; it does not see a driver a handler constructed for itself.',
   );
   return 0;
 }

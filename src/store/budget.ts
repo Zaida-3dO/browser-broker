@@ -135,7 +135,36 @@ function readAndRecord(db: Database, tabs: number): { stored: number; wrote: boo
     db.prepare('COMMIT').run();
     return { stored: after.tabs, wrote: after.tabs === tabs };
   } catch (error) {
-    db.prepare('ROLLBACK').run();
+    // ── Why the rollback is guarded and the original error is rethrown ────
+    //
+    // **Both success paths above have already issued their own `COMMIT`**, so
+    // for any failure at or after that point there is no transaction left to
+    // roll back, and the rollback statement itself throws `SQLITE_ERROR:
+    // cannot rollback - no transaction is active`. Left unguarded that error
+    // is the one the caller receives, and the failure that brought us into
+    // this catch is never reported at all.
+    //
+    // Measured: calling `prepareStore` with an environment lacking
+    // `tabBudget` surfaces "cannot rollback - no transaction is active",
+    // while a statement-level trace shows `ROLLBACK` is the only statement
+    // that throws — the actual cause being a `CHECK (tabs > 0)` violation
+    // from `schema/step-002-tab-budget.ts`, because `undefined` binds as
+    // NULL. `agreeOnTabBudget` runs on **every spawn**, so this sits on the
+    // startup path of every process.
+    //
+    // The rollback is still attempted, because the failure that lands here
+    // may well be one that left a transaction open, and leaving it open would
+    // hold a write lock every other process is waiting behind. It simply does
+    // so silently: a rollback that cannot happen has nothing to report, and
+    // the error worth reporting is already in hand.
+    // `tests/concurrency/worker-transaction-mode.mjs` carries the same
+    // reasoning at its own rollback.
+    try {
+      db.prepare('ROLLBACK').run();
+    } catch {
+      // A transaction the engine already ended cannot be rolled back, and
+      // saying so would drown out the error that is actually worth reading.
+    }
     throw error;
   }
 }
