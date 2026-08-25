@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { BrowserId } from '../browser/driver.ts';
 import type { Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
+import { SIGN_IN_OWNER_UNKNOWN_REMEDY, type SignInOwnerState } from '../service/signin-recovery.ts';
 import { refuseNetworkLocation, type NetworkPathChecks } from '../store/network-path.ts';
 import { EXPECTED_VERSION } from '../store/schema/steps.ts';
 import type { SessionProbe } from './session.ts';
@@ -630,6 +631,86 @@ export function checkTabBudget(stored: number | null, configured: number | null)
  * profile whose browser has not flushed yet looks like. So those come back as
  * `unknown` **with the reason**, never as a confident negative.
  */
+/**
+ * **Whether a sign-in has been abandoned** (§5.5.1).
+ *
+ * ── Why this is the one sign-in check that can fail ─────────────────────
+ *
+ * Its neighbour {@link checkSignInSession} never fails, because a profile with
+ * no session in it is every installation up until somebody signs in. This one
+ * is the opposite kind of fact: a browser stuck in `signing-in` with **no
+ * process holding it** is not a state any working installation is in. It
+ * refuses every caller, and before it was recoverable it did so permanently.
+ * So it is a genuine failure and is reported as one.
+ *
+ * ── The three answers, and why only one of them is a failure ────────────
+ *
+ * - **Owner gone** — failed. Nobody is signing in and every caller is being
+ *   turned away. The remedy is the recovery path, named explicitly, because a
+ *   check that reports a fault without saying what to do has moved the work
+ *   rather than done it.
+ * - **Owner running** — `ok`. Somebody is signing in right now, which is the
+ *   command working exactly as designed. Reported rather than silent, so a
+ *   person who cannot understand why callers are being refused can see the
+ *   reason on this report instead of guessing.
+ * - **Owner unknown** — `unknown`, never failed. A row written before the
+ *   owner column existed records nobody, and calling that a fault would fail
+ *   the report on an installation that may be perfectly healthy. The detail
+ *   says what was found and what to do about it.
+ */
+export function checkAbandonedSignIn(browser: BrowserId, owner: SignInOwnerState): GroupedCheck {
+  const id = `browser.${browser}.signin_owner`;
+  const title = `No sign-in has been abandoned on the ${browser} browser`;
+
+  if (owner.kind === 'not-signing-in') {
+    return {
+      group: 'session',
+      id,
+      title,
+      status: 'ok',
+      detail: 'The browser is not being signed into, so there is nothing to have been abandoned.',
+    };
+  }
+
+  if (owner.kind === 'owner-running') {
+    return {
+      group: 'session',
+      id,
+      title,
+      status: 'ok',
+      detail:
+        `A sign-in is in progress and the process holding it (${String(owner.pid)}) is running. ` +
+        'Callers are being refused while it lasts; that is a pause rather than a fault.',
+    };
+  }
+
+  if (owner.kind === 'owner-unknown') {
+    return {
+      group: 'session',
+      id,
+      title,
+      status: 'unknown',
+      detail:
+        'The browser is recorded as being signed into, but this store does not say which process began it — ' +
+        'so whether anybody is still signing in cannot be determined from here.',
+      remedy: SIGN_IN_OWNER_UNKNOWN_REMEDY,
+    };
+  }
+
+  return {
+    group: 'session',
+    id,
+    title,
+    status: 'failed',
+    detail:
+      `The browser is stuck being signed into: the process that began it (${String(owner.pid)}) has gone. ` +
+      'Every caller asking for this browser is being refused, and nothing will clear it on its own.',
+    remedy:
+      'Run `broker login` — it reclaims a sign-in whose process is gone and then hands you the window. ' +
+      'If you do not want to sign in, running it and closing the browser window it opens returns the browser to service.',
+  };
+}
+
 export function checkSignInSession(browser: BrowserId, probe: SessionProbe): GroupedCheck {
   const id = `browser.${browser}.session`;
   const title = `The ${browser} browser’s profile carries a sign-in`;

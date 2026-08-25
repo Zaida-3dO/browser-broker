@@ -17,7 +17,9 @@ import { isFeedbackCategory } from '../feedback/record.ts';
 import { cliAdapter, EXIT, parseArguments, withoutSecrets } from './adapter.ts';
 import { OPERATION_COMMANDS, parseCommand, STANDALONE_COMMANDS } from './commands.ts';
 import { describeSetupReport, runSetupHandshake } from '../browser/setup.ts';
+import { ArtifactStore } from '../artifacts/store.ts';
 import { runDiffs } from './diffs.ts';
+import { runImage } from './image.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
 import { explainLoginFailure, runLoginCommand } from './login-command.ts';
 import type { Broker } from '../service/broker.ts';
@@ -233,7 +235,13 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
       // owed, and it keeps the honest refusal below rather than being quietly
       // absent — a command that pretended to work would be worse than one
       // that says it does not.
-      if (name === 'snapshot' || name === 'doctor' || name === 'events' || name === 'diffs') {
+      if (
+        name === 'snapshot' ||
+        name === 'doctor' ||
+        name === 'events' ||
+        name === 'diffs' ||
+        name === 'image'
+      ) {
         return await runOperationsCommand(name, parsed.rest, { streams, json, options });
       }
 
@@ -595,7 +603,7 @@ async function runLogin(
 }
 
 async function runOperationsCommand(
-  command: 'snapshot' | 'doctor' | 'events' | 'diffs',
+  command: 'snapshot' | 'doctor' | 'events' | 'diffs' | 'image',
   rest: readonly string[],
   context: { streams: Streams; json: boolean; options: RunOptions },
 ): Promise<number> {
@@ -642,6 +650,24 @@ async function runOperationsCommand(
       // the other reads do; what it does not take is a lease, because it
       // decides nothing.
       return runDiffs(rest, { db: store.db, streams });
+    }
+    if (command === 'image') {
+      // **Serving the bytes of one recorded image** (§1.9). Unlike `diffs` it
+      // does take a lease key, because an artifact belongs to the lease that
+      // took it — but it still decides nothing and drives no browser, which is
+      // why it is a read beside the others rather than an operation.
+      //
+      // The artifact store is built here, from the same environment the
+      // service builds its own from, because turning a stored path into a
+      // location is the one thing this command cannot do for itself: the
+      // resolver that refuses a path escaping the root lives on that store,
+      // and a second one built anywhere else is the copy that would miss a
+      // case.
+      return await runImage(rest, {
+        db: store.db,
+        artifacts: new ArtifactStore(environment.artifactsRoot),
+        streams,
+      });
     }
     return runEventsCommand(rest, { db: store.db, streams, json });
   } catch (error) {

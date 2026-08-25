@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
+  checkAbandonedSignIn,
   checkAutomation,
   checkCaptureSurface,
   checkDiscoveryRecord,
@@ -401,5 +402,54 @@ describe('the exit code', () => {
     ] as const) {
       assert.notEqual(exitCodeFor([check(group, 'failed')]), 0);
     }
+  });
+});
+
+describe('the abandoned sign-in check', () => {
+  /**
+   * **The abandoned-sign-in check** — the one thing on this report that can be
+   * actively refusing every caller at the moment it is run.
+   *
+   * Its neighbour never fails by design; this one has to, and the distinction is
+   * what the first two tests pin down. A check that reported a stranded browser
+   * as `unknown` would leave `broker doctor` exiting zero on an installation that
+   * refuses every caller — which is exactly the state this whole mechanism exists
+   * to make visible.
+   */
+  it('a sign-in whose process is gone FAILS the report, and says what to do', () => {
+    const check = checkAbandonedSignIn('regular', { kind: 'owner-gone', pid: 4242 });
+
+    assert.equal(check.status, 'failed', 'a stranded browser is a fault, not an unknown');
+    assert.match(check.detail, /4242/, 'the dead process should be named');
+    assert.ok(check.remedy !== undefined, 'a failure owes a remedy');
+    assert.match(check.remedy, /broker login/, 'and the remedy is the command that reclaims it');
+  });
+
+  it('a stranded sign-in changes the EXIT CODE, so a script can see it', () => {
+    // The report is what a person reads; the exit code is what a readiness check
+    // branches on. Asserting only the former would let the command report a fault
+    // and still exit zero.
+    const failing = exitCodeFor([checkAbandonedSignIn('regular', { kind: 'owner-gone', pid: 1 })]);
+    assert.equal(failing, DOCTOR_EXIT.session);
+    assert.notEqual(failing, DOCTOR_EXIT.ok, 'a stranded browser must not exit zero');
+  });
+
+  it('a sign-in in progress is reported as OK rather than as a fault', () => {
+    // Somebody signing in right now is the command working. Failing here would
+    // make `doctor` report a fault every time a person used `broker login`.
+    const check = checkAbandonedSignIn('regular', { kind: 'owner-running', pid: 4242 });
+    assert.equal(check.status, 'ok');
+    assert.equal(exitCodeFor([check]), DOCTOR_EXIT.ok);
+  });
+
+  it('an unrecorded owner is UNKNOWN, so a store without the column is not reported as broken', () => {
+    const check = checkAbandonedSignIn('regular', { kind: 'owner-unknown' });
+    assert.equal(check.status, 'unknown', 'a missing record is not evidence of a fault');
+    assert.equal(exitCodeFor([check]), DOCTOR_EXIT.ok, 'and it must not fail the command');
+  });
+
+  it('a browser that is not signing in reports OK', () => {
+    const check = checkAbandonedSignIn('regular', { kind: 'not-signing-in' });
+    assert.equal(check.status, 'ok');
   });
 });

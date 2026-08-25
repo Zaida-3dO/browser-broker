@@ -2,6 +2,12 @@ import type { ArbitrationOutcome, ArbitrationScope } from '../arbitration.ts';
 import { BROWSER_IDS, BROWSER_CHOICE_GUIDANCE, type BrowserId } from '../../browser/driver.ts';
 import { CallRefusal } from '../refusals.ts';
 import { append } from '../events.ts';
+import {
+  classifySignIn,
+  processIsRunning,
+  SIGN_IN_OWNER_UNKNOWN_REMEDY,
+  type ProcessLiveness,
+} from '../signin-recovery.ts';
 
 /**
  * `broker login` — **the one time a person drives** (`SCHEMA.md` §5.5.1).
@@ -102,6 +108,24 @@ export interface HoldingLease {
 
 export interface BeginSignInInput {
   readonly browser: string;
+  /**
+   * The process that will hold this sign-in, recorded so an abandoned one is
+   * recoverable.
+   *
+   * Supplied by the command rather than read from `process.pid` here, because
+   * this module runs inside the service and the owner is the **command's**
+   * process. In this build they are the same process — the service is spawned
+   * by its caller and exits with it (§1.0a) — but they are the same by
+   * arrangement rather than by necessity, and a service that read its own
+   * identifier would be recording the wrong one the moment that arrangement
+   * changed.
+   */
+  readonly ownerPid?: number;
+  /**
+   * How the owner's liveness is asked, injected so the reclaim path is
+   * reachable from a test without killing a real process.
+   */
+  readonly isRunning?: ProcessLiveness;
 }
 
 export interface BeginSignInResult {
@@ -135,11 +159,15 @@ interface BrowserRow {
   readonly id: BrowserId;
   readonly state: string;
   readonly pid: number | null;
+  /** Which process began the sign-in, when the browser is in one (step eight). */
+  readonly signin_owner_pid: number | null;
 }
 
 function readBrowser(scope: ArbitrationScope, browser: BrowserId): BrowserRow {
   return scope.db
-    .prepare<{ id: string }, BrowserRow>('SELECT id, state, pid FROM browsers WHERE id = @id')
+    .prepare<{ id: string }, BrowserRow>(
+      'SELECT id, state, pid, signin_owner_pid FROM browsers WHERE id = @id',
+    )
     .get({ id: browser }) as BrowserRow;
 }
 
@@ -210,24 +238,81 @@ export function decideBeginSignIn(
   const browser = resolveSignableBrowser(scope, input.browser);
   const row = readBrowser(scope, browser);
 
-  // Already signing in. Refused rather than treated as success: two people
-  // handed the same window would each believe they had it to themselves, and
-  // whichever finished first would end the other's sign-in by moving the
-  // state back underneath them.
+  // ── Already signing in: whose, and are they still there? ──────────────
+  //
+  // **Refusing unconditionally here is what made an interrupted `broker login`
+  // unrecoverable.** A `finally` does not run on a signal, so a person who
+  // pressed Ctrl-C left this state behind with nothing able to move it; this
+  // refusal then turned away every caller *and* the second `broker login` that
+  // would have ended it. The only exit was editing the database by hand.
+  //
+  // So the question asked is **"is anybody still signing in"** rather than
+  // merely "is it signing in", and the two answers are kept apart:
+  //
+  // - **Owner still running** — refused, exactly as before and for the
+  //   original reason: two people handed the same window would each believe
+  //   they had it to themselves, and whichever finished first would end the
+  //   other's by moving the state back underneath them.
+  // - **Owner gone** — reclaimed. Nothing is being taken from anybody,
+  //   because the process that was holding it does not exist. Recorded in the
+  //   ledger as its own decision so a reclamation is legible afterwards rather
+  //   than looking like a sign-in that ended itself.
+  // - **Owner unknown** — refused, and this is deliberate. A row written
+  //   before the owner column existed records nobody, and reclaiming on the
+  //   strength of a missing record would end a live sign-in because an old
+  //   build did not write down who started it. The refusal says so and says
+  //   what to do.
   if (row.state === 'signing-in') {
-    scope.recordRefusal({
-      kind: 'browser_signin_began',
-      outcome: 'deny',
-      guard: SIGN_IN_RULES.serving,
+    const owner = classifySignIn(row, input.isRunning ?? processIsRunning);
+
+    if (owner.kind === 'owner-running') {
+      scope.recordRefusal({
+        kind: 'browser_signin_began',
+        outcome: 'deny',
+        guard: SIGN_IN_RULES.serving,
+        adapter,
+        browserId: browser,
+        detail: { state: row.state, ownerPid: owner.pid, owner: 'running' },
+      });
+      throw new CallRefusal(
+        'browser_unavailable',
+        `The ${browser} browser is already being signed into, by a process that is still running. Only one sign-in happens at a time — a second would hand the same window to two people, and whichever finished first would end the other's. Finish that one, or stop it.`,
+        { detail: { browser, state: row.state, ownerPid: owner.pid } },
+      );
+    }
+
+    if (owner.kind === 'owner-unknown') {
+      scope.recordRefusal({
+        kind: 'browser_signin_began',
+        outcome: 'deny',
+        guard: SIGN_IN_RULES.serving,
+        adapter,
+        browserId: browser,
+        detail: { state: row.state, owner: 'unknown' },
+      });
+      throw new CallRefusal(
+        'browser_unavailable',
+        `The ${browser} browser is recorded as being signed into, but this store does not say which process began it — so it cannot be confirmed abandoned and is not ended on a guess. ${SIGN_IN_OWNER_UNKNOWN_REMEDY}`,
+        { detail: { browser, state: row.state } },
+      );
+    }
+
+    // `owner-gone`. Reclaimed, and recorded as a reclamation on its own row:
+    // §1.6 keeps one row per decision, and a reclamation is a different
+    // decision from a person finishing. A run of these reads as a command
+    // being interrupted repeatedly, which is exactly the pattern somebody
+    // debugging would want to see.
+    append(db, {
+      kind: 'browser_signin_ended',
+      outcome: 'allow',
       adapter,
       browserId: browser,
-      detail: { state: row.state },
+      detail: {
+        reclaimed: true,
+        ownerPid: owner.kind === 'owner-gone' ? owner.pid : null,
+        reason: 'the process holding this sign-in has gone',
+      },
     });
-    throw new CallRefusal(
-      'browser_unavailable',
-      `The ${browser} browser is already being signed into. Only one sign-in happens at a time — a second would hand the same window to two people, and whichever finished first would end the other's. Finish that one, or end it if it was abandoned.`,
-      { detail: { browser, state: row.state } },
-    );
   }
 
   // §5.5.1 step 1, and the reason this is a service operation at all. The
@@ -315,8 +400,19 @@ export function decideBeginSignIn(
   // is not stays stopped. The table's own check constraint ties `stopped` to
   // a null pid, so this preserves the pid rather than setting it.
   const browserWasRunning = row.pid !== null;
-  db.prepare(`UPDATE browsers SET state = 'signing-in', updated_at = @now WHERE id = @id`).run({
+
+  // **The owner is written in the same statement that moves the state**, so
+  // there is no instant at which a browser is `signing-in` with nobody
+  // recorded against it. Two statements would leave exactly that window, and
+  // a process killed inside it would produce the unrecoverable row this whole
+  // mechanism exists to remove — rarely, which is the worst frequency for a
+  // defect of this kind.
+  const ownerPid = input.ownerPid ?? null;
+  db.prepare(
+    `UPDATE browsers SET state = 'signing-in', signin_owner_pid = @ownerPid, updated_at = @now WHERE id = @id`,
+  ).run({
     id: browser,
+    ownerPid,
     now: swept.sweptAt,
   });
 
@@ -382,7 +478,13 @@ export function decideEndSignIn(
   // person started, and one that was never up.
   const state: 'running' | 'stopped' = row.pid === null ? 'stopped' : 'running';
 
-  db.prepare(`UPDATE browsers SET state = @state, updated_at = @now WHERE id = @id`).run({
+  // **The owner is cleared with the state**, for the same reason it was set
+  // with it: a browser that is not signing in has no owner, and a stale
+  // identifier left behind would be a record of a process that is not holding
+  // anything — the kind of leftover a later reader trusts.
+  db.prepare(
+    `UPDATE browsers SET state = @state, signin_owner_pid = NULL, updated_at = @now WHERE id = @id`,
+  ).run({
     id: browser,
     state,
     now: swept.sweptAt,
