@@ -705,15 +705,22 @@ higher, and a warning that never becomes a wall.
 
 ### The tiers
 
-**Provisional defaults** — reasoned to, not measured, and the resolution-ladder study (`MILESTONES.md`
-#34) exists to settle them with evidence. The documents say "provisional" everywhere on purpose,
-because a number presented as settled fact stops being questioned.
+**Measured defaults.** These were reasoned to rather than measured, and the resolution-ladder study
+(`MILESTONES.md` #34) has since settled them with evidence — **it kept all three unchanged.** The
+property they rest on held: a downscale destroys a feature once its period falls below roughly two
+and a half *destination* pixels, so layout-scale features survive the whole ladder while fine text
+detail does not. Evidence and the per-rung table are in `src/capture/tiers.ts`.
 
-| Tier | Long edge | How a caller gets it |
-|---|---|---|
-| default | 1024 px | **passes nothing** |
-| `detail` | 1568 px | asks for it — the ceiling of the cheap vision tier |
-| `max` | 2576 px | asks for it **and gives a mandatory `reason`**, which is recorded |
+What the study did **not** settle is the absolute legibility floor — what a reader can actually read
+— because the instruments measure what the pipeline destroys, which bounds that question without
+answering it. That much is still open and is still labelled so, on the same principle that kept these
+numbers labelled before: a number presented as settled fact stops being questioned.
+
+| Tier | Long edge | How a caller gets it | What #34 measured it delivering |
+|---|---|---|---|
+| default | 1024 px | **passes nothing** | layout and headings intact; small body copy damaged |
+| `detail` | 1568 px | asks for it — the ceiling of the cheap vision tier | ordinary body copy recovered |
+| `max` | 2576 px | asks for it **and gives a mandatory `reason`**, which is recorded | everything, at every font size tested |
 
 > **Extended 2026-08-24 (§13f), not overturned: the reason is free text.** The tiers, the default
 > and the mandatory reason all stand. What §13f settles is the reason's *shape* — prose the caller
@@ -1598,7 +1605,9 @@ deleting the thing that raised them:
    remainder** — and unusually, the design ships the instrument that answers it: the feedback tool's
    `no-path` category, filtered, is exactly this question asked of the callers who hit it. Not owed
    before launch; owed before the feedback tool is retired.
-2. **The capture-policy numbers (§13d).** The tiers are provisional — reasoned to, not measured — and
-   the resolution-ladder study (`MILESTONES.md` #34) exists to settle them with evidence. §13f
-   settles the escalation reason's *shape* as free text, which is what makes that study able to learn
-   anything; the **numbers** it exists to settle are still open.
+2. **The capture-policy numbers (§13d) — now largely answered.** The resolution-ladder study
+   (`MILESTONES.md` #34) has run and **kept all three rungs**, so the numbers themselves are settled
+   with evidence rather than argument. §13f settles the escalation reason's *shape* as free text,
+   which is what let that study learn anything. **What remains open is narrower than the original
+   question:** the absolute legibility floor, which the study bounds but cannot answer, because no
+   automated instrument can establish what a reader can read.

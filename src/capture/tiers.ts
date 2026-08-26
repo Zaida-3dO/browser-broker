@@ -19,15 +19,60 @@
  * or the evaluation, which return text and cost almost nothing. The policy does
  * not have to argue anyone into the cheaper tool.
  *
- * ── These numbers are PROVISIONAL, and this is the file a study changes ──
+ * ── These numbers have been MEASURED, and they survived it ──────────────
  *
- * `SCHEMA.md` §6.2 and §9.3, and `MILESTONES.md` #34: the rungs are *reasoned
- * to, not measured*, and a resolution-ladder study exists to settle them with
- * evidence. They are named constants in one module for exactly that reason —
- * **nothing hard-codes a rung anywhere a study cannot change it**, and a
- * capture records which rung it was taken at (`captures.tier`) rather than
- * having its rung inferred from its dimensions, so a rung moving invalidates
- * nothing already stored (§6.2).
+ * `MILESTONES.md` #34's resolution-ladder study has been run — the harness is
+ * `ladder.ts`, the instruments are `legibility.ts`, and the measurements are
+ * `tests/capture/ladder.test.ts` (everywhere) and
+ * `tests/capture/ladder-rendered.test.ts` (where a browser exists).
+ * **The measurement kept all three rungs below**, and the evidence for each is
+ * published beside it. A change to any of them needs a measurement rather than
+ * an argument.
+ *
+ * **The property the default rests on held.** *Text legibility breaks at a
+ * higher resolution than layout critique does* is now measured rather than
+ * asserted, and the mechanism is nameable: a downscale destroys a feature when
+ * the feature's period falls below roughly two and a half **destination**
+ * pixels, so what a rung costs a picture depends on the size of the feature
+ * rather than on the rung. A block-scale feature — the scale a layout
+ * judgement is made at — survives every rung on this ladder, including well
+ * below the cheapest one. Fine text detail does not.
+ *
+ * Stem retention on rendered prose, at a viewport wide enough that all three
+ * rungs genuinely shrink:
+ *
+ * | Font | `default` | `detail` | `max` |
+ * |---|---|---|---|
+ * | 11px | 35% | 41% | 100% |
+ * | 12px | 24% | 50% | 100% |
+ * | 14px | 7% | 83% | 100% |
+ * | 16px | 63% | 93% | 100% |
+ * | 20px | 87% | 100% | 100% |
+ * | 32px | 98% | 100% | 100% |
+ *
+ * Each rung does the job its name claims: **`max` returns everything**, which
+ * is why it is the one that costs a written reason; **`detail` recovers
+ * ordinary body copy**; and **`default` keeps headings and layout intact while
+ * damaging small body copy** — which is not a defect but the lever working,
+ * since a caller that needs to *read* something is pushed toward the snapshot
+ * or the evaluation, which return text and cost almost nothing.
+ *
+ * ── ⚠️ What the study did NOT settle ────────────────────────────────────
+ *
+ * **The absolute legibility floor is still open**, and it is worth being exact
+ * about why. The instruments measure what the *pipeline* destroys — stroke
+ * contrast, and whether the gaps between strokes survive — which **bounds**
+ * what any reader could recover but does not predict what one will. What an
+ * agent looking at a picture can actually read is a property of that model,
+ * not of these pixels, and no test here can establish it. So the rungs are
+ * settled as *"these deliver the structure they claim to"*, not as *"this is
+ * the smallest picture a reader can use"*. §9.3 keeps that second question
+ * open.
+ *
+ * They remain named constants in one module: **nothing hard-codes a rung
+ * anywhere a later study cannot change it**, and a capture records which rung
+ * it was taken at (`captures.tier`) rather than having its rung inferred from
+ * its dimensions, so a rung moving invalidates nothing already stored (§6.2).
  *
  * ── The token estimate is fixed by the version, deliberately ────────────
  *
@@ -74,13 +119,14 @@ export const TIER_REQUIRING_REASON: CaptureTier = 'max';
 
 /**
  * The long edge each rung shrinks to, in pixels (`SCHEMA.md` §6.2,
- * `DECISIONS.md` §13d). **Provisional — #34 settles these with evidence.**
+ * `DECISIONS.md` §13d). **Measured by #34 and kept** — see the evidence table
+ * in this file's header.
  *
- * | Tier | Long edge | How a caller gets it |
- * |---|---|---|
- * | `default` | 1024 | passes nothing |
- * | `detail` | 1568 | asks for it — the ceiling of the cheap vision tier |
- * | `max` | 2576 | asks for it **and gives a written reason**, which is recorded |
+ * | Tier | Long edge | How a caller gets it | What the study measured it delivering |
+ * |---|---|---|---|
+ * | `default` | 1024 | passes nothing | layout and headings intact; small body copy damaged |
+ * | `detail` | 1568 | asks for it — the ceiling of the cheap vision tier | ordinary body copy recovered |
+ * | `max` | 2576 | asks for it **and gives a written reason**, which is recorded | everything, at every font size tested |
  */
 export const TIER_LONGEST_EDGE: Readonly<Record<CaptureTier, number>> = {
   default: 1024,
