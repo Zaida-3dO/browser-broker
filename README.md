@@ -208,7 +208,8 @@ Run everything the pipeline runs with `npm run check`.
 
 Under construction — the store, the executable and the pipeline are in place, the arbitration
 surface is being built, and the one manual step is wired: `broker login` hands a person the shared
-browser and `broker doctor` reports whether the sign-in took. Read [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
+browser and `broker doctor` reports whether the sign-in took. Read [`docs/ROLLOUT.md`](docs/ROLLOUT.md) for taking it from installed to sole route in an order that
+never leaves traffic unarbitrated, [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
 [`docs/plans/DECISIONS.md`](docs/plans/DECISIONS.md) for why it is shaped this way, and
 [`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue.
 
