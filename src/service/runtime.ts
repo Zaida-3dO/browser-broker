@@ -4,7 +4,7 @@ import { readEnvironment, type Environment } from '../config/environment.ts';
 import { openStore, type StoreHandle } from '../store/open.ts';
 import { stepSchema } from '../store/schema/step.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
-import type { BrowserId } from '../browser/driver.ts';
+import type { BrowserDriver, BrowserId } from '../browser/driver.ts';
 import { browserSessionProvider } from './browser-session.ts';
 import { serviceFor } from './bridge.ts';
 import { createBroker, type Broker } from './broker.ts';
@@ -58,6 +58,31 @@ export interface RuntimeOptions {
   readonly adapter: EventAdapter;
   /** The process environment to read configuration from. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * The browser driver, for a caller that has one to supply.
+   *
+   * **Defaults to the real driver, which is what both shipped binaries get.**
+   * Neither passes this, so nothing about a shipped spawn changes by this
+   * parameter existing: `src/bin/broker.ts` and `src/bin/broker-tool.ts` call
+   * this function with an adapter and nothing else.
+   *
+   * ── Why the seam is here rather than only one layer down ───────────────
+   *
+   * `browserSessionProvider` already takes a driver, *"so a test can hand in
+   * a fake and drive the whole adoption path with no browser installed"*.
+   * This function is what stands between that seam and anything that wants
+   * the **whole service** — store, schema, artifacts, broker, bridge — rather
+   * than one piece of it. Without this parameter, the only way to reach a
+   * real service was to rebuild all five by hand, and a caller that rebuilt
+   * them would be testing its own assembly rather than this one.
+   *
+   * The conformance suite is the caller that needs it: §8's parity assertion
+   * is about the routes over the real service, and continuous integration
+   * runs with no browser binary. A real service over a fake driver keeps
+   * every rule, every transaction and every route real, and fakes only the
+   * thing the assertion is not about.
+   */
+  readonly driver?: BrowserDriver;
 }
 
 /**
@@ -120,7 +145,12 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
   }
 
   const artifacts = new ArtifactStore(environment.artifactsRoot);
-  const browsers = browserSessionProvider({ store, environment, artifacts });
+  const browsers = browserSessionProvider({
+    store,
+    environment,
+    artifacts,
+    ...(options.driver === undefined ? {} : { driver: options.driver }),
+  });
 
   const broker = createBroker({
     store,

@@ -184,11 +184,22 @@ export async function runConformance(options: ConformanceRunOptions): Promise<Co
 
       const subject = await options.makeService();
       try {
-        await testCase.seed?.apply(subject.service);
+        // What the seed established, merged over the case's own input. See
+        // `CaseSeed.apply` for why some of it can only be known here.
+        const substitutions = (await testCase.seed?.apply(subject.service)) ?? {};
+        const seeded: ConformanceCase = {
+          ...testCase,
+          input: { ...testCase.input, ...substitutions },
+        };
+
+        // **Read after the seed, not before it.** A seed that mints a lease
+        // moves the claim count, and a baseline taken before it would make
+        // every keyed case look as though the operation itself had moved the
+        // count — turning assertion 2 into a test of the fixture.
         const claimsBefore = subject.liveClaimCount();
         const callsBefore = subject.driverCalls().length;
 
-        const observation = await driver.run(subject.service, testCase, {
+        const observation = await driver.run(subject.service, seeded, {
           driverCalls: subject.driverCalls,
           liveClaimCount: subject.liveClaimCount,
         });

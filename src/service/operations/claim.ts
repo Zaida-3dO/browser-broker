@@ -515,20 +515,26 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
     //
     // ── What this row asserts, and what it deliberately does not ──────────
     //
-    // **It records that a seed was ACCEPTED, not that storage was written.**
-    // The distinction is load-bearing while the tab lifecycle is unwired:
-    // `seedStorage` is implemented on both drivers and **has no caller**,
-    // because the claim path creates a tab row in `opening` and nothing on
-    // this layer holds a browser session to open it with (§2.4b keeps browser
-    // work outside the transaction, and the row that wires it is not this
-    // one).
+    // **It records that a seed was ACCEPTED, not that storage was written**,
+    // and it stays that way now that the write exists. The claim path still
+    // cannot do the writing: it runs inside the arbitration transaction, and
+    // §2.4b keeps browser work outside it — the tab is a row in `opening`
+    // with no page behind it yet.
     //
-    // So a row saying the lease *started life holding a credential* would
-    // assert something the system did not do — a ledger that overstates is
+    // What changed is that there is now a **second** row. `pageFor` opens the
+    // page on the tab's first use, seeds it before any navigation, and
+    // appends `seed: 'applied'` once the driver has returned
+    // (`operations/pages.ts`). So the pair reads as a request and its
+    // outcome, and a lease that was granted a seed which never reached a
+    // browser has the first row and not the second.
+    //
+    // That asymmetry is the point. A row saying the lease *started life
+    // holding a credential* on the strength of the ask alone would assert
+    // something the system may not have done — a ledger that overstates is
     // worse than one that is silent, because the question §3.2 wants answered
     // is a security question and a false negative in it is read as an
-    // all-clear. `requested` is the true fact available at this point, and it
-    // is what a later row can turn into `applied` when the write exists.
+    // all-clear. `requested` is the true fact available at this point;
+    // `applied` is the true fact available at the other one.
     append(scope.db, {
       kind: 'storage_seeded',
       outcome: 'allow',

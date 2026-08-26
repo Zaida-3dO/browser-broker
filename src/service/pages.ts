@@ -684,6 +684,50 @@ export function validateExpression(expression: unknown): string {
   return expression;
 }
 
+/**
+ * Check a capture's two mode arguments before the shutter is pressed.
+ *
+ * ── Why this exists as its own guard, and what it was found by ──────────
+ *
+ * `capture.exclusive_mode` is a §7.1 rule — *"a selector and a full page are
+ * not both asked for"*, refused with *"cannot do both"* — and it had **no
+ * implementation anywhere**. A capture naming both was accepted, and what it
+ * then did was decided by whichever argument the pipeline happened to read
+ * first. That is the shape §7's own header calls out: a rule that never
+ * refuses anything protects nothing.
+ *
+ * It went unnoticed because the only thing asserting it was a service double
+ * that implemented the rule itself, so the assertion was about the double.
+ * Running the same cases against the real service is what surfaced it.
+ *
+ * ── Why it is a refusal rather than a precedence rule ───────────────────
+ *
+ * Picking a winner would be the worse answer and §1.9's reasoning is the
+ * same one: the two arguments express **different intentions**, not different
+ * amounts of one. A caller asking for an element and for the whole page has
+ * contradicted itself, and any resolution silently gives it a picture of
+ * something it did not ask for — which it cannot detect, because a capture
+ * comes back as a path and some dimensions rather than as pixels it could
+ * check.
+ *
+ * **This is a refusal about a malformed argument and never about cost**,
+ * which `capture.never_refused_for_cost` (§7.3) requires be kept true: a
+ * capture is never refused for being expensive, and nothing here reads a tier,
+ * a size or a count.
+ */
+export function validateCaptureMode(options: {
+  readonly fullPage: boolean;
+  readonly selector: string | undefined;
+}): void {
+  if (options.fullPage && options.selector !== undefined) {
+    throw new PageRefusal(
+      'capture.exclusive_mode',
+      'A capture takes a selector or the whole page, and this call asked for both. They are different pictures rather than different amounts of one, so nothing here can pick for you: ask for the element, or ask for the page.',
+      { fullPage: true, selector: options.selector },
+    );
+  }
+}
+
 /** What an evaluation should do with its result: hand it back, or spill it. */
 export interface EvaluationDisposition {
   /** The serialised result. */
