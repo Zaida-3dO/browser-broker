@@ -87,6 +87,55 @@ export const SERVICE_RULE_REGISTRY: RuleRegistry = {
  * `readEnvironment` takes one, and a subject that mutated `process.env` would
  * be read by every other test sharing the process.
  */
+/** How many times a subject's directory is removed before the failure is reported. */
+const REMOVE_ATTEMPTS = 10;
+
+/** How long to wait between removal attempts, in milliseconds. */
+const REMOVE_RETRY_DELAY_MS = 30;
+
+/**
+ * Remove a subject's temporary directory, waiting out a handle the OS is still
+ * releasing — and **saying so** if the directory genuinely will not go.
+ *
+ * `dispose` is called from a `finally` in the conformance runner, so anything
+ * thrown here becomes the result of the case that just ran. On Windows a
+ * still-live handle makes `rmSync` fail with `EPERM` (`force` suppresses only
+ * `ENOENT`), and `node --test` attributes such a throw to the **file** rather
+ * than to any test — producing a bare file-level failure with every subtest
+ * passing. That is a fixture fault wearing the costume of a test fault, and it
+ * is worth naming because this suite has already spent a red Windows run on it.
+ *
+ * The retry is written out rather than delegated to `rmSync`'s own
+ * `maxRetries`/`retryDelay`: measured here, those options make no difference to
+ * this failure at all (`{ maxRetries: 20 }` gives up as fast as
+ * `{ maxRetries: 0 }`), so relying on them would look like a fix while changing
+ * nothing.
+ *
+ * A directory that survives every attempt still throws. The alternative —
+ * swallowing it — is how ~1,450 stores accumulated unnoticed in the first place.
+ */
+function removeSubjectDirectory(directory: string): void {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < REMOVE_ATTEMPTS; attempt += 1) {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < REMOVE_ATTEMPTS - 1) {
+        // Blocking on purpose: the caller is synchronous, and the wait exists
+        // to let the OS finish a release this thread cannot observe otherwise.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, REMOVE_RETRY_DELAY_MS);
+      }
+    }
+  }
+  throw new Error(
+    `could not remove the conformance subject's store at ${directory}. ` +
+      'A handle was most likely still open when the subject was disposed.',
+    { cause: lastError },
+  );
+}
+
 export async function makeServiceSubject(): Promise<ConformanceSubject> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-conformance-'));
   const driver = new FakeBrowserDriver();
@@ -113,7 +162,7 @@ export async function makeServiceSubject(): Promise<ConformanceSubject> {
     liveClaimCount: () => countActiveClaims(runtime.store.db),
     dispose: () => {
       runtime.close();
-      fs.rmSync(directory, { recursive: true, force: true });
+      removeSubjectDirectory(directory);
     },
   };
 }
