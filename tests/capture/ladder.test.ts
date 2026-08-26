@@ -82,6 +82,29 @@ test('a picture already inside the rung is reported as unshrunk, at ratio one', 
   assert.equal(rung.ratio, 1);
 });
 
+test('the ratio is what ACTUALLY happened to the picture, on a portrait one too', () => {
+  // Every other fixture in this study is landscape, and on a landscape picture
+  // "the cap over the source width" and "the written width over the source
+  // width" agree — so a ratio computed from the cap would pass every one of
+  // them. It is a portrait picture that separates the two, because the cap
+  // applies to the LONG edge, which is the height.
+  //
+  // A tall, narrow page is also not an exotic case here: a full-page capture of
+  // a long document is exactly this shape, and it is the one the tiers cost the
+  // most on.
+  const portrait = field(600, 3000);
+  const [rung] = sweepLadder(portrait, [1500]);
+  assert.ok(rung);
+
+  // Halved: 3000 capped to 1500.
+  assert.equal(rung.height, 1500);
+  assert.equal(rung.width, 300);
+  // Dies if the ratio is computed as `cap / sourceWidth`, which would report
+  // 1500/600 clamped to 1 — "nothing was shrunk" about a picture that was
+  // halved.
+  assert.equal(rung.ratio, 0.5);
+});
+
 test('the ladder table is readable and quotes every rung it swept', () => {
   const table = formatLadder(sweepLadder(layoutBlock().image, [1024, 2576]));
   assert.match(table, /long edge/);
@@ -164,6 +187,25 @@ test('bestSurvivingRow finds the mark without being told which row it is on', ()
   const best = bestSurvivingRow(image, 255, 0, INK);
   assert.equal(best.runs, 8);
   assert.ok(best.row >= 60 && best.row < 80, `found the marks on row ${String(best.row)}`);
+});
+
+test('bestSurvivingRow reports the FIRST row achieving the best count, not the last', () => {
+  // Which of several equally-good rows is reported is not cosmetic: the row is
+  // in the returned shape so a caller can go and look at it, and a scan that
+  // kept overwriting on ties would report the bottom edge of a tall mark rather
+  // than the first place the structure is intact.
+  //
+  // Two separated bands, both with the same number of marks, so the count ties
+  // across many rows. Dies if the comparison becomes `>=`.
+  const image = field(200, 100);
+  for (let index = 0; index < 5; index++) {
+    paint(image, 20 + index * 8, 10, 2, 10); // rows 10-19
+    paint(image, 20 + index * 8, 70, 2, 10); // rows 70-79
+  }
+
+  const best = bestSurvivingRow(image, 255, 0, INK);
+  assert.equal(best.runs, 5);
+  assert.equal(best.row, 10, `reported row ${String(best.row)} rather than the first tying row`);
 });
 
 // ── ⚠️ THE FIXTURES MUST BE ABLE TO FAIL ──────────────────────────────────
@@ -364,10 +406,11 @@ test('each rung up the ladder costs materially more than the one below it', () =
   // The reason a low default is the lever: the cost is quadratic in the long
   // edge, so a rung is not a small increment. Asserted as a ratio rather than
   // as figures, so it survives the rungs moving.
-  const rungs = sweepLadder(
-    layoutBlock().image,
-    [TIER_LONGEST_EDGE.default, TIER_LONGEST_EDGE.detail, TIER_LONGEST_EDGE.max],
-  );
+  const rungs = sweepLadder(layoutBlock().image, [
+    TIER_LONGEST_EDGE.default,
+    TIER_LONGEST_EDGE.detail,
+    TIER_LONGEST_EDGE.max,
+  ]);
   const [cheap, middle, dear] = rungs;
   assert.ok(cheap && middle && dear);
 
@@ -389,7 +432,10 @@ test('every study fixture sweeps every rung without the harness refusing anythin
     assert.equal(rungs.length, STUDY_RUNGS.length, `${fixture.name} did not sweep every rung`);
     for (const rung of rungs) {
       assert.ok(rung.width > 0 && rung.height > 0, `${fixture.name} produced a zero dimension`);
-      assert.ok(rung.bytes > 0, `${fixture.name} produced an empty file at ${String(rung.longestEdge)}`);
+      assert.ok(
+        rung.bytes > 0,
+        `${fixture.name} produced an empty file at ${String(rung.longestEdge)}`,
+      );
     }
   }
 });

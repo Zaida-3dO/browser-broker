@@ -53,7 +53,7 @@ export function paint(
   width: number,
   height: number,
 ): void {
-  const data = image.pixels as Uint8Array;
+  const data = image.pixels;
   for (let row = 0; row < height; row++) {
     const atY = y + row;
     if (atY < 0 || atY >= image.height) continue;

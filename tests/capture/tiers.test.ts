@@ -28,10 +28,19 @@ test('the DEFAULT is the cheapest rung — the lever this milestone turns on', (
   );
 });
 
-test('the three rungs are the provisional numbers §6.2 publishes', () => {
+test('the three rungs are the numbers §6.2 publishes, which the study MEASURED and kept', () => {
   // Named individually rather than compared as a set: a test that only checked
   // "three distinct numbers" would stay green if two were swapped, and the
   // ordering is what the escalation ladder means.
+  //
+  // These were provisional and are not any more. #34's study swept a ladder
+  // from 512 to 3200 against drawn fixtures of known geometry and against
+  // rendered prose, and each rung delivers what its name claims: `max` returns
+  // everything, `detail` recovers ordinary body copy, `default` keeps layout
+  // and headings while damaging small body copy. The evidence table is in
+  // `tiers.ts`; the measurements are in `ladder.test.ts` and
+  // `ladder-rendered.test.ts`. **A change to any of these three numbers now
+  // needs a measurement, not an argument.**
   assert.equal(TIER_LONGEST_EDGE.default, 1024);
   assert.equal(TIER_LONGEST_EDGE.detail, 1568);
   assert.equal(TIER_LONGEST_EDGE.max, 2576);
@@ -73,6 +82,33 @@ test('the estimate is consistent with the measured tier costs it is calibrated a
   const at2576 = estimateTokens(2576, Math.round(2576 * (9 / 16)));
   assert.ok(at1568 > 1000 && at1568 < 2400, `1568px estimated at ${String(at1568)}`);
   assert.ok(at2576 > 3500 && at2576 < 6500, `2576px estimated at ${String(at2576)}`);
+});
+
+test('escalating a rung costs materially more, which is why the default is the lever', () => {
+  // What #34 measured on the cost side, stated as the property rather than as
+  // three figures: the estimate is quadratic in the long edge, so a rung is not
+  // a small increment and a caller landing on the cheapest one by default is
+  // most of the saving.
+  //
+  // Asserted as ratios between the shipped rungs, so it survives a later study
+  // moving them — it would only fail if the rungs stopped being materially
+  // separated, which is the thing that would make the ladder pointless.
+  const ratio = (of: number) => estimateTokens(of, Math.round(of * (9 / 16)));
+  const atDefault = ratio(TIER_LONGEST_EDGE.default);
+  const atDetail = ratio(TIER_LONGEST_EDGE.detail);
+  const atMax = ratio(TIER_LONGEST_EDGE.max);
+
+  assert.ok(
+    atDetail > atDefault * 2,
+    `the detail rung (${String(atDetail)}) is not materially dearer than the default (${String(atDefault)})`,
+  );
+  assert.ok(
+    atMax > atDetail * 2,
+    `the max rung (${String(atMax)}) is not materially dearer than the detail rung (${String(atDetail)})`,
+  );
+  // The whole ladder: the top rung costs several times the bottom one, which is
+  // the number that makes "most callers never pass a parameter" the lever.
+  assert.ok(atMax > atDefault * 5, `the ladder spans only ${(atMax / atDefault).toFixed(1)}x`);
 });
 
 // ── The accounting: a warning, never a refusal (#33) ───────────────────────
