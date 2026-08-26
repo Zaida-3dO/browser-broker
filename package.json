@@ -13,6 +13,7 @@
   },
   "scripts": {
     "check:external-refs": "node scripts/check-external-refs.mjs",
+    "check:doc-links": "node scripts/check-doc-links.mjs",
     "check:capture-isolation": "node scripts/check-capture-isolation.mjs",
     "check:install": "node scripts/check-install.mjs",
     "check:operations": "node scripts/check-operations.mjs",
@@ -22,7 +23,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test \"tests/**/*.test.mjs\" \"tests/**/*.test.ts\"",
-    "check": "npm run check:external-refs && npm run check:arbitration && npm run check:capture-isolation && npm run check:artifact-path && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install && npm run check:operations && npm run check:argument-refusals",
+    "check": "npm run check:external-refs && npm run check:doc-links && npm run check:arbitration && npm run check:capture-isolation && npm run check:artifact-path && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install && npm run check:operations && npm run check:argument-refusals",
     "check:arbitration": "node scripts/check-arbitration.mjs",
     "check:artifact-path": "node scripts/check-artifact-path.mjs"
   },
