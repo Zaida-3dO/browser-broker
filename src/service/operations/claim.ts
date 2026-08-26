@@ -63,6 +63,56 @@ export const PURPOSE_MINIMUM = 3;
 export const PURPOSE_MAXIMUM = 200;
 
 /**
+ * The session-identity bound (§1.3), enforced here for the same reason the
+ * purpose bound above is — and with one difference that makes it worse.
+ *
+ * **`claims.session_id` is `TEXT NOT NULL` with no `CHECK` at all.** The
+ * purpose had a column constraint standing behind it, so the missing guard
+ * showed itself as a crash: ugly, but loud, and fixed within a day of being
+ * seen. An empty session identity satisfies `NOT NULL`, so there was nothing
+ * behind it to fail — **the lease was granted, and the defect was silent.**
+ *
+ * ── Why an anonymous lease is not a cosmetic problem ────────────────────
+ *
+ * §1.3 makes `session_id` the attribution key, and §1.6 puts it on **every
+ * refusal row** precisely so a denied request is not anonymous. An empty one
+ * defeats both: the ledger records a grant and a denial with nothing saying
+ * who. Worse, the you-are-your-own-obstacle nudge (§2.3a) selects live claims
+ * by `session_id = @sessionId`, so **every anonymous caller matches every
+ * other anonymous caller** — the nudge would list one caller's leases to a
+ * different caller and advise it to release them.
+ *
+ * ── The bound, and why there is no maximum ──────────────────────────────
+ *
+ * A minimum of one: the identifier is opaque to this service (§1.3 calls it
+ * "a key another system owns"), so its *content* is not this service's to
+ * judge. What is judgeable is whether one arrived at all, which is the whole
+ * defect. No maximum is imposed because the column imposes none, and a guard
+ * that refused what the store would have accepted would be inventing a rule
+ * rather than enforcing one — the mirror of the reasoning that keeps
+ * {@link PURPOSE_MAXIMUM} pinned to its column's `CHECK`.
+ */
+export const SESSION_ID_MINIMUM = 1;
+
+/**
+ * How the refusal describes a missing session identity.
+ *
+ * Two cases rather than one, for the reason {@link describePurpose} gives:
+ * "was not supplied" and "is blank" are the same mistake from the caller's
+ * side, but a value that is present and of the wrong *type* is a different
+ * one, and telling them apart is what stops a caller re-sending the same
+ * malformed argument.
+ */
+function describeSessionId(sessionId: unknown): string {
+  if (typeof sessionId !== 'string') {
+    return sessionId === undefined
+      ? 'was not supplied'
+      : `arrived as ${typeof sessionId} rather than as text`;
+  }
+  return 'is empty';
+}
+
+/**
  * How the refusal describes what was wrong, in the caller's own terms.
  *
  * Three sentences rather than one, because "missing", "too short" and "too
@@ -199,6 +249,64 @@ export function decideClaim(
   settings: ArbitrationSettings,
 ): ArbitrationOutcome<ClaimResult> {
   const { db, swept, adapter } = scope;
+
+  // **The session identity, checked here rather than by the column** (§7.1
+  // `claim.session_bounded`).
+  //
+  // ── Why this is first, ahead of even the browser check ────────────────
+  //
+  // Every refusal below records `sessionId: input.sessionId` on the ledger
+  // row, because §1.6 exists so that a denied request is attributable. If the
+  // identity is the thing that is missing, those rows are anonymous — so the
+  // ordering that puts this first is not a preference, it is what makes every
+  // *other* refusal on this operation carry a caller. The purpose guard sits
+  // after the browser guard because a caller that named a browser that does
+  // not exist should hear about the name first; nothing outranks knowing who
+  // is asking.
+  //
+  // ── What the store would have done, which is the point ────────────────
+  //
+  // Accepted it. `claims.session_id` is `TEXT NOT NULL` with no `CHECK`, and
+  // `''` satisfies `NOT NULL` — so unlike the purpose, there is no backstop
+  // here and never was. Before this guard, `broker claim` with no
+  // `--session-id` returned a granted lease with a real key and a real tab,
+  // and wrote `session_id = ''` to the claims row and to all three of its
+  // ledger events. Nothing failed, which is why it lasted.
+  //
+  // Refused **before the first insert and before the arrival counter is
+  // allocated**, so a refused caller is not charged capacity, holds no key,
+  // and has nothing to release — the position every other argument refusal
+  // on this operation takes, for that same reason.
+  if (typeof input.sessionId !== 'string' || input.sessionId.length < SESSION_ID_MINIMUM) {
+    scope.recordRefusal({
+      kind: 'claim_requested',
+      outcome: 'deny',
+      guard: 'claim.session_bounded',
+      adapter,
+      // Deliberately **not** `sessionId: input.sessionId`. Every other
+      // refusal here attaches the caller; this is the one call where doing so
+      // would write the empty string this guard exists to keep out, turning
+      // the record of the defect into an instance of it. The column is
+      // nullable on `events` (§1.6), so absent is expressible and honest.
+      detail: {
+        supplied: typeof input.sessionId === 'string' ? input.sessionId.length : null,
+        minimum: SESSION_ID_MINIMUM,
+      },
+    });
+    throw new CallRefusal(
+      'session_id_missing',
+      // Names the argument, says what is wrong with it, and says what it is
+      // *for* — a caller that thinks this is a formality supplies a constant
+      // and defeats the attribution just as thoroughly as omitting it.
+      `A claim carries the identity of the session asking for it, and this one ${describeSessionId(input.sessionId)}. Pass a stable identifier for your session: it is what attributes this lease and every refusal on it in the ledger, and it is how the service can tell you when you are waiting on capacity you are already holding.`,
+      {
+        detail: {
+          supplied: typeof input.sessionId === 'string' ? input.sessionId.length : null,
+          minimum: SESSION_ID_MINIMUM,
+        },
+      },
+    );
+  }
 
   if (!isKnownBrowser(input.browser)) {
     scope.recordRefusal({

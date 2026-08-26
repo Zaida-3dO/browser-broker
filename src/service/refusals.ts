@@ -150,6 +150,29 @@ export const REFUSALS = {
   },
 
   /**
+   * §1.3's attribution key, absent.
+   *
+   * ── Why this needs a code of its own rather than reusing the purpose's ──
+   *
+   * They are the same *shape* of defect — a surface coerced a missing
+   * argument to the empty string and the service took it — but not the same
+   * refusal, and the rule is looked up here precisely so a code and a rule
+   * cannot drift apart. A caller branching on `purpose_out_of_bounds` would
+   * go and rewrite a purpose that was never wrong.
+   *
+   * ── Why it is not retryable ─────────────────────────────────────────────
+   *
+   * Nothing about waiting supplies an identity the caller did not send
+   * (§2.2). The same reasoning that makes `unknown_browser` permanent applies
+   * unchanged: the request has to be re-made differently, not re-made later.
+   */
+  session_id_missing: {
+    rule: 'claim.session_bounded',
+    summary: 'A claim carries the identity of the session asking for it.',
+    retryable: false,
+  },
+
+  /**
    * §5.5.1's last line: the private browser cannot be signed into.
    *
    * ── Why this is not `unknown_browser`, which it was at first ────────────

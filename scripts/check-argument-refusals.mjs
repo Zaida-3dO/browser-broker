@@ -128,24 +128,94 @@ const REFUSED_EXIT_CODE = 3;
  */
 const CASES = [
   {
+    // The same coercion as the purpose case below and a worse outcome. There
+    // is no `CHECK` on `claims.session_id`, so `''` satisfied the column and
+    // this call **succeeded**: a granted lease, a real key, a real tab, and
+    // `session_id = ''` on the claims row and on every ledger event it wrote.
+    // Nothing crashed, so nothing was noticed. Every argument except the one
+    // under test is supplied, so `claim.session_bounded` is the only rule
+    // left that can fire.
+    what: 'claim with no session id',
+    rule: 'claim.session_bounded',
+    argv: ['claim', '--browser', 'regular', '--purpose', 'a purpose of a legal length'],
+    tool: {
+      name: 'browser_claim',
+      arguments: { browser: 'regular', purpose: 'a purpose of a legal length' },
+    },
+  },
+  {
+    what: 'claim with an empty session id',
+    rule: 'claim.session_bounded',
+    argv: [
+      'claim',
+      '--session-id',
+      '',
+      '--browser',
+      'regular',
+      '--purpose',
+      'a purpose of a legal length',
+    ],
+    tool: {
+      name: 'browser_claim',
+      arguments: { session_id: '', browser: 'regular', purpose: 'a purpose of a legal length' },
+    },
+  },
+  {
+    // The type case, which the command line cannot express — every argument
+    // it parses is a string — so it is checked on the tool surface only.
+    what: 'claim with a session id of the wrong type',
+    rule: 'claim.session_bounded',
+    argv: undefined,
+    tool: {
+      name: 'browser_claim',
+      arguments: { session_id: 1234, browser: 'regular', purpose: 'a purpose of a legal length' },
+    },
+  },
+  {
     what: 'claim with no purpose',
     rule: 'claim.purpose_bounded',
-    argv: ['claim', '--browser', 'regular'],
-    tool: { name: 'browser_claim', arguments: { browser: 'regular' } },
+    argv: ['claim', '--session-id', 'check-argument-refusals', '--browser', 'regular'],
+    tool: {
+      name: 'browser_claim',
+      arguments: { session_id: 'check-argument-refusals', browser: 'regular' },
+    },
   },
   {
     what: 'claim with a purpose under the minimum',
     rule: 'claim.purpose_bounded',
-    argv: ['claim', '--browser', 'regular', '--purpose', 'ab'],
-    tool: { name: 'browser_claim', arguments: { browser: 'regular', purpose: 'ab' } },
+    argv: [
+      'claim',
+      '--session-id',
+      'check-argument-refusals',
+      '--browser',
+      'regular',
+      '--purpose',
+      'ab',
+    ],
+    tool: {
+      name: 'browser_claim',
+      arguments: { session_id: 'check-argument-refusals', browser: 'regular', purpose: 'ab' },
+    },
   },
   {
     what: 'claim with a purpose over the maximum',
     rule: 'claim.purpose_bounded',
-    argv: ['claim', '--browser', 'regular', '--purpose', 'x'.repeat(201)],
+    argv: [
+      'claim',
+      '--session-id',
+      'check-argument-refusals',
+      '--browser',
+      'regular',
+      '--purpose',
+      'x'.repeat(201),
+    ],
     tool: {
       name: 'browser_claim',
-      arguments: { browser: 'regular', purpose: 'x'.repeat(201) },
+      arguments: {
+        session_id: 'check-argument-refusals',
+        browser: 'regular',
+        purpose: 'x'.repeat(201),
+      },
     },
   },
   {
@@ -154,15 +224,30 @@ const CASES = [
     what: 'claim with a purpose of the wrong type',
     rule: 'claim.purpose_bounded',
     argv: undefined,
-    tool: { name: 'browser_claim', arguments: { browser: 'regular', purpose: 1234 } },
+    tool: {
+      name: 'browser_claim',
+      arguments: { session_id: 'check-argument-refusals', browser: 'regular', purpose: 1234 },
+    },
   },
   {
     what: 'claim naming a browser that does not exist',
     rule: 'claim.browser_known',
-    argv: ['claim', '--browser', 'chrome', '--purpose', 'a purpose of a legal length'],
+    argv: [
+      'claim',
+      '--session-id',
+      'check-argument-refusals',
+      '--browser',
+      'chrome',
+      '--purpose',
+      'a purpose of a legal length',
+    ],
     tool: {
       name: 'browser_claim',
-      arguments: { browser: 'chrome', purpose: 'a purpose of a legal length' },
+      arguments: {
+        session_id: 'check-argument-refusals',
+        browser: 'chrome',
+        purpose: 'a purpose of a legal length',
+      },
     },
   },
   {

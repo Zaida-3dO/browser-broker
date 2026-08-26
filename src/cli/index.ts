@@ -1,5 +1,5 @@
 import type { OperationName } from '../adapter/operations.ts';
-import type { BrokerService } from '../adapter/service-seam.ts';
+import type { BrokerService, OperationOutcome } from '../adapter/service-seam.ts';
 import fs from 'node:fs';
 
 import { readEnvironment, type Environment } from '../config/environment.ts';
@@ -78,6 +78,23 @@ export interface RunOptions {
   readonly store?: StoreHandle;
   /** The environment snapshot the runtime already read (§6.3: one per process). */
   readonly environment?: Environment;
+
+  /**
+   * How `claim --wait` waits between polls, injected for the same reason
+   * {@link RunOptions.service} is.
+   *
+   * The interval `--wait` honours is **just under the queue-place lifetime**
+   * (§5.3), which against the default is nine minutes. A test that waited
+   * that long would not be run, and one that shortened the wait by reaching
+   * into the clock would be measuring a different mechanism than the one that
+   * ships. So the *sleeping* is injectable and the *duration* is not: a test
+   * substitutes a sleep that returns immediately and **records what it was
+   * asked to wait**, which is the assertion that matters — that the loop
+   * honours the number the service told it, rather than one of its own.
+   *
+   * Absent, it is a real timer.
+   */
+  readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
 const defaultStreams: Streams = {
@@ -334,6 +351,178 @@ interface OperationContext {
 }
 
 /**
+ * Whether this invocation asked to wait.
+ *
+ * Read off the argument vector rather than out of `parseArguments`, because
+ * the parser is the *service's* input shaping — every key it produces is sent
+ * on as an operation argument. `--wait` is not an argument to `claim` (§3.2
+ * has no such field) and must not become one: it is a behaviour of this route
+ * and of nothing else, which is the distinction §5.3 draws when it says this
+ * is "the one place this route does something the tool surface does not".
+ */
+function wantsWait(rest: readonly string[]): boolean {
+  return rest.includes('--wait');
+}
+
+/**
+ * Poll a queued claim until it is granted, its place is lost, or it is
+ * refused.
+ *
+ * ── The interval is the service's number, not this route's ──────────────
+ *
+ * §5.3 says "just under the lease lifetime", and the queued response already
+ * carries that number as `checkBackSeconds` — computed by
+ * `checkBackSeconds()` in the claim operation as nine parts in ten of the
+ * place's lifetime. **This reads it off the response rather than recomputing
+ * it**, so a deployment that shortens `BROKER_QUEUE_SECONDS` moves the poll
+ * with it and this file has no second opinion to drift. The scheduling nudge
+ * the queued caller is handed and the schedule `--wait` actually keeps are
+ * therefore the same number by construction.
+ *
+ * The fallback exists only for a response with no such field, and is
+ * deliberately the same nine-parts-in-ten rule rather than a constant.
+ *
+ * ── Polling is renewing, and there is no renew verb ─────────────────────
+ *
+ * §2.5: "any call carrying this key extends the place". `status` is that
+ * call — it extends the lease as the *effect* of asking, which is why row #14
+ * refuses to make renewal a verb of its own. So this loop calls `status` and
+ * nothing else: the place is held **because** it is being asked about, and a
+ * caller that stops asking loses it to the same lazy sweep that expires
+ * leases. Adding a renew here would be inventing the verb the design removed.
+ *
+ * ── Why it can stop, and why that is not a timeout ──────────────────────
+ *
+ * There is no deadline of this route's own. It ends when the service says the
+ * lease is `active` (granted), or when the service stops recognising the key
+ * — which is what a lost place looks like from here, because the sweep
+ * expires it and `key.valid`/`claim.live` then refuses. Both endings come
+ * from the service; this loop invents neither.
+ */
+async function waitForGrant(
+  service: BrokerService,
+  granted: Extract<OperationOutcome, { outcome: 'accepted' }>,
+  context: OperationContext,
+): Promise<OperationOutcome> {
+  const first = granted.value as Record<string, unknown>;
+
+  // Already granted: nothing to wait for, and saying so matters more than it
+  // looks. A caller that passes `--wait` on a service with spare capacity
+  // gets its tab immediately, and a loop that polled once anyway would spend
+  // a lease's worth of time proving what the first response already said.
+  if (first['outcome'] !== 'queued') {
+    return granted;
+  }
+
+  const key = first['key'];
+  if (typeof key !== 'string') {
+    // Nothing to poll with. Handing back the queued response is the honest
+    // outcome — the caller still has a place, it simply cannot be waited on
+    // from here.
+    return granted;
+  }
+
+  const sleep = context.options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+
+  // Said out loud, on the error stream so `--json` still produces exactly one
+  // document (§5.6). A command that silently blocks for nine minutes is
+  // indistinguishable from one that has hung.
+  const announce = (line: string): void => {
+    context.streams.err(line);
+  };
+
+  let interval = checkBackFrom(first);
+  announce(
+    `queued at position ${describe(first['position'])}; waiting. ` +
+      `Checking in every ${String(interval)}s — just under the ${describe(first['queueSeconds'])}s this place lives, because a check made exactly at the deadline races the reclamation. ` +
+      `Each check also holds the place; stopping loses it.`,
+  );
+
+  for (;;) {
+    await sleep(interval * 1000);
+
+    const polled = await cliAdapter.invoke(service, 'status', ['--key', key]);
+
+    if (polled.outcome !== 'accepted') {
+      // The place is gone, or the key stopped being valid. The service's own
+      // refusal is the answer — returned rather than reworded, so the caller
+      // sees the rule that ended the wait.
+      return polled;
+    }
+
+    const value = polled.value as Record<string, unknown>;
+    if (value['state'] === 'active') {
+      announce('granted.');
+      // **The claim's key with the status call's facts**, assembled field by
+      // field rather than by spreading the queued response.
+      //
+      // The key has to come from the claim: it is returned exactly once
+      // (§2.2), the grant is what carried it, and handing back the poll alone
+      // would strip the caller of the only thing that addresses the lease.
+      //
+      // Everything else has to come from the poll, and spreading the queued
+      // response would have been the bug: `position`, `queueSeconds` and the
+      // `checkBack` sentence telling the caller how to hold a *place* are all
+      // true of a state this lease has left. A granted response carrying
+      // queue advice reads as though the wait had not finished.
+      return {
+        outcome: 'accepted',
+        value: {
+          outcome: 'granted',
+          claimId: value['claimId'] ?? first['claimId'],
+          key,
+          browserId: value['browserId'] ?? first['browserId'],
+          ...(typeof value['tabId'] === 'string' ? { tabId: value['tabId'] } : {}),
+          ...(typeof value['expiresAt'] === 'string' ? { expiresAt: value['expiresAt'] } : {}),
+          ...(typeof value['ttlSeconds'] === 'number' ? { leaseSeconds: value['ttlSeconds'] } : {}),
+        },
+      };
+    }
+
+    // Still queued. The interval is re-read every poll rather than captured
+    // once, so a lease whose lifetime is reconfigured mid-wait is followed
+    // rather than outlived.
+    interval = checkBackFrom(value);
+    announce(
+      `still queued at position ${describe(value['position'])}; next check in ${String(interval)}s.`,
+    );
+  }
+}
+
+/**
+ * A field of an arbitrary response, rendered for a person.
+ *
+ * The values come off a `Record<string, unknown>`, so the compiler is right
+ * that an object could arrive — and `String({})` produces
+ * `[object Object]`, which is worse than saying nothing. Numbers and strings
+ * are what these fields actually are; anything else is reported as unknown
+ * rather than stringified into noise.
+ */
+function describe(value: unknown): string {
+  return typeof value === 'number' || typeof value === 'string' ? String(value) : '?';
+}
+
+/**
+ * The poll interval a response asks for, in seconds.
+ *
+ * Nine parts in ten of the lifetime, which is the rule `checkBackSeconds()`
+ * applies in the claim operation. Taken from the response where it is
+ * offered; derived by the same rule where it is not; and never less than one
+ * second, because a zero interval would be a busy loop rather than a wait.
+ */
+function checkBackFrom(value: Record<string, unknown>): number {
+  const offered = value['checkBackSeconds'];
+  if (typeof offered === 'number' && offered > 0) {
+    return offered;
+  }
+  const lifetime = value['queueSeconds'] ?? value['ttlSeconds'];
+  if (typeof lifetime === 'number' && lifetime > 0) {
+    return Math.max(1, Math.floor(lifetime * 0.9));
+  }
+  return 1;
+}
+
+/**
  * Run one operation command: resolve the input, make **one** service call,
  * shape the outcome for a terminal.
  *
@@ -348,7 +537,27 @@ async function runOperation(
   context: OperationContext,
 ): Promise<number> {
   const service = context.options.service ?? serviceUnavailable();
-  const outcome = await cliAdapter.invoke(service, operation, [...rest]);
+  const waiting = operation === 'claim' && wantsWait(rest);
+
+  // **The flag is removed before the vector reaches the adapter.**
+  // `parseArguments` normalises every `--name` it sees into the arguments
+  // record, so leaving it in would send `wait: true` to the service as an
+  // argument of `claim` — and §3.2 has no such field. §5.3 is explicit that
+  // this is a behaviour of *this route*: "the one place this route does
+  // something the tool surface does not". A route that smuggled an extra
+  // argument into the operation would be inventing a rule the tool surface
+  // cannot see, which is exactly what the service seam exists to prevent.
+  const forwarded = waiting ? rest.filter((word) => word !== '--wait') : rest;
+
+  let outcome = await cliAdapter.invoke(service, operation, [...forwarded]);
+
+  // Runs only after the claim has been made and only when it came back
+  // queued — so the flag changes nothing about the request, which is what
+  // lets §5.3's "it calls the same operation on every poll and adds none of
+  // its own" stay true.
+  if (waiting && outcome.outcome === 'accepted') {
+    outcome = await waitForGrant(service, outcome, context);
+  }
 
   if (outcome.outcome === 'accepted') {
     // §5.6: a machine-readable mode produces one document per call and puts
