@@ -4,8 +4,7 @@ import fs from 'node:fs';
 
 import { readEnvironment, type Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
-import { openStore, type StoreHandle } from '../store/open.ts';
-import { stepSchema } from '../store/schema/step.ts';
+import { openStoreForDiagnosis, prepareStore, type StoreHandle } from '../store/open.ts';
 import {
   DEFAULT_LIMIT,
   readFeedback,
@@ -15,7 +14,12 @@ import {
 } from '../feedback/read.ts';
 import { isFeedbackCategory } from '../feedback/record.ts';
 import { cliAdapter, EXIT, parseArguments, withoutSecrets } from './adapter.ts';
-import { OPERATION_COMMANDS, parseCommand, STANDALONE_COMMANDS } from './commands.ts';
+import {
+  OPERATION_COMMANDS,
+  parseCommand,
+  STANDALONE_COMMANDS,
+  type CommandOption,
+} from './commands.ts';
 import { describeSetupReport, runSetupHandshake } from '../browser/setup.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
 import { runDiffs } from './diffs.ts';
@@ -155,7 +159,15 @@ function usage(): string {
  * here, for the reason that table's own header gives: two lists that have to
  * agree is one list somebody eventually forgets, and the forgetting is silent.
  */
-function commandUsage(words: readonly string[], summary: string): string {
+function commandUsage(
+  words: readonly string[],
+  summary: string,
+  options: readonly CommandOption[] = [],
+): string {
+  // The command's own options come from the command table rather than from a
+  // list kept here, for the reason that table's header gives: two lists that
+  // have to agree is one list somebody eventually forgets.
+  const width = Math.max(21, ...options.map((option) => option.flag.length + 2));
   return [
     `broker ${words.join(' ')} — ${summary}`,
     '',
@@ -163,8 +175,9 @@ function commandUsage(words: readonly string[], summary: string): string {
     `  broker ${words.join(' ')} [options]`,
     '',
     'Options:',
-    '  --json                one document on the output stream, human text on the error stream',
-    '  --help                print this message',
+    ...options.map((option) => `  ${option.flag.padEnd(width)}${option.summary}`),
+    `  ${'--json'.padEnd(width)}one document on the output stream, human text on the error stream`,
+    `  ${'--help'.padEnd(width)}print this message`,
     '',
     'Run `broker --help` for every command.',
   ].join('\n');
@@ -184,8 +197,14 @@ function commandUsage(words: readonly string[], summary: string): string {
  * pragmas, and the schema version.
  */
 async function openAndStep(environment: Environment, streams: Streams): Promise<StoreHandle> {
-  const store = openStore(environment);
-  const stepped = await stepSchema(store.db);
+  // The spawn path, which steps the schema and settles the budget agreement.
+  //
+  // **The report below reads `store.stepped` rather than stepping again.**
+  // Stepping is idempotent, so a second call would truthfully answer "nothing
+  // to do" — and this command would then report a store it had just created
+  // from nothing as having already been at the current version.
+  const store = await prepareStore(environment);
+  const stepped = store.stepped;
 
   streams.out(`store: ${store.location}`);
   if (stepped.applied.length === 0) {
@@ -196,6 +215,41 @@ async function openAndStep(environment: Environment, streams: Streams): Promise<
     );
   }
   return store;
+}
+
+/**
+ * The store this run works on: the one the spawn already opened, or a fresh
+ * prepared one when nothing was supplied.
+ *
+ * ── Why a command must not simply open its own ──────────────────────────
+ *
+ * A shipped binary builds its runtime before dispatching, and that runtime has
+ * already opened, stepped and settled the budget agreement on the store this
+ * process is going to use (`src/bin/broker.ts`). A command that opened a
+ * second one would put **two independent open paths in a single spawn**, and
+ * two paths that each perform the same startup obligations are two paths that
+ * can drift — with the drift invisible, because whichever one is still correct
+ * satisfies any end-to-end assertion on its own. Measured: with the runtime's
+ * agreement removed, a disagreeing spawn was still refused by the other path,
+ * so nothing observable changed and no test could see the loss.
+ *
+ * So the supplied handle wins whenever there is one, and `owned` says whether
+ * this run is the one that has to close it — closing a store the runtime owns
+ * would pull the file out from under everything else the spawn is doing.
+ *
+ * Opening is still possible for the caller that supplied nothing: `run` is
+ * driven in-process with an argument vector by the conformance suite and by
+ * most command tests, and that caller has no runtime. It gets `prepareStore`,
+ * which is the same three obligations in the same order.
+ */
+async function storeForRun(
+  options: RunOptions,
+  environment: Environment,
+): Promise<{ store: StoreHandle; owned: boolean }> {
+  if (options.store !== undefined) {
+    return { store: options.store, owned: false };
+  }
+  return { store: await prepareStore(environment), owned: true };
 }
 
 /**
@@ -218,7 +272,9 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
   if (wantsHelp) {
     const parsed = parseCommand(argv);
     if (parsed.kind === 'operation' || parsed.kind === 'standalone') {
-      streams.out(commandUsage(parsed.command.words, parsed.command.summary));
+      streams.out(
+        commandUsage(parsed.command.words, parsed.command.summary, parsed.command.options),
+      );
       return EXIT.accepted;
     }
     streams.out(usage());
@@ -685,18 +741,25 @@ function renderForAPerson(value: unknown): string {
  * state to ask about, and arguably the state where the answer is most useful,
  * since it is the one somebody has just installed into.
  *
- * It opens the store **only if one is already there, and never steps it**.
- * Both halves are load-bearing and the first was learned the hard way:
- * `openStore` creates the directory and the file, so a doctor that opened
- * unconditionally would *create* an empty store at version zero and then
- * truthfully report it as being at the wrong version — a failure the command
- * had itself caused, on an installation that was fine a moment earlier.
- * Reporting a fault you just produced is worse than reporting nothing. There
- * is no open-but-do-not-create mode to ask for, so the only way not to create
- * one is not to open one.
+ * It opens the store **only if one is already there, and never steps it**, by
+ * the one export that permits that — `openStoreForDiagnosis`. Both halves are
+ * load-bearing and the first was learned the hard way: opening creates the
+ * directory and the file, so a doctor that opened unconditionally would
+ * *create* an empty store at version zero and then truthfully report it as
+ * being at the wrong version — a failure the command had itself caused, on an
+ * installation that was fine a moment earlier. Reporting a fault you just
+ * produced is worse than reporting nothing. There is no open-but-do-not-create
+ * mode to ask for, so the only way not to create one is not to open one.
  *
- * The other two step on the way in, because `SCHEMA.md` §1.2d puts stepping
- * on every spawn.
+ * **And it must not settle the budget agreement either**, which is the second
+ * reason it cannot use the spawn path: a store whose recorded budget disagrees
+ * with this environment is precisely one of the states `doctor` exists to
+ * report, and `prepareStore` refuses to return from it. Diagnosing that
+ * disagreement through a path that throws on it would hand the operator a
+ * refusal where the report naming both numbers is the whole point of asking.
+ *
+ * The other commands take the spawn path, because `SCHEMA.md` §1.2d puts
+ * stepping on every spawn and §1.10 puts the budget agreement there too.
  */
 /**
  * `broker init` — run the setup handshake explicitly and show what it did.
@@ -726,12 +789,17 @@ async function runInitCommand(context: {
   options: RunOptions;
 }): Promise<number> {
   const { streams, json } = context;
-  let store: StoreHandle | undefined;
+  let opened: { store: StoreHandle; owned: boolean } | undefined;
 
   try {
-    const environment = readEnvironment({ env: context.options.env });
-    store = openStore(environment);
-    await stepSchema(store.db);
+    const environment =
+      context.options.environment ?? readEnvironment({ env: context.options.env });
+    // The store the spawn already prepared, which is where the tab budget was
+    // recorded. `broker init` is the command whose whole purpose is to make an
+    // installation ready, so opening a second store here would be the last
+    // place to acquire a second startup path.
+    opened = await storeForRun(context.options, environment);
+    const store = opened.store;
 
     const report = await runSetupHandshake(store, environment.profileRoot);
 
@@ -752,7 +820,12 @@ async function runInitCommand(context: {
     }
     throw error;
   } finally {
-    store?.close();
+    // Closed only if this run opened it. A store the runtime owns outlives
+    // this command, and closing it would pull the file out from under the rest
+    // of the spawn.
+    if (opened?.owned === true) {
+      opened.store.close();
+    }
   }
 }
 
@@ -817,16 +890,17 @@ async function runOperationsCommand(
   context: { streams: Streams; json: boolean; options: RunOptions },
 ): Promise<number> {
   const { streams, json } = context;
-  let store: StoreHandle | undefined;
+  let opened: { store: StoreHandle; owned: boolean } | undefined;
 
   try {
-    const environment = readEnvironment({ env: context.options.env });
+    const environment =
+      context.options.environment ?? readEnvironment({ env: context.options.env });
 
     if (command === 'doctor') {
       let opened: StoreHandle | undefined;
       if (fs.existsSync(environment.databasePath)) {
         try {
-          opened = openStore(environment);
+          opened = openStoreForDiagnosis(environment);
         } catch (error) {
           if (!(error instanceof BrokerError)) {
             throw error;
@@ -843,8 +917,10 @@ async function runOperationsCommand(
       }
     }
 
-    store = openStore(environment);
-    await stepSchema(store.db);
+    // The store the spawn prepared, rather than a second one of this
+    // command's own — see `storeForRun`.
+    opened = await storeForRun(context.options, environment);
+    const store = opened.store;
 
     if (command === 'snapshot') {
       return await runSnapshotCommand(rest, {
@@ -886,7 +962,10 @@ async function runOperationsCommand(
     }
     throw error;
   } finally {
-    store?.close();
+    // Closed only if this run opened it — see `storeForRun`.
+    if (opened?.owned === true) {
+      opened.store.close();
+    }
   }
 }
 
@@ -945,11 +1024,12 @@ async function readFeedbackCommand(
     limit: typeof requested.limit === 'number' ? requested.limit : DEFAULT_LIMIT,
   };
 
-  let store: StoreHandle | undefined;
+  let opened: { store: StoreHandle; owned: boolean } | undefined;
   try {
-    const environment = readEnvironment({ env: context.options.env });
-    store = openStore(environment);
-    await stepSchema(store.db);
+    const environment =
+      context.options.environment ?? readEnvironment({ env: context.options.env });
+    opened = await storeForRun(context.options, environment);
+    const store = opened.store;
 
     const rows = readFeedback(store.db, filters);
     const narrowed = filters.rating !== undefined || filters.category !== undefined;
@@ -967,6 +1047,9 @@ async function readFeedbackCommand(
     }
     throw error;
   } finally {
-    store?.close();
+    // Closed only if this run opened it — see `storeForRun`.
+    if (opened?.owned === true) {
+      opened.store.close();
+    }
   }
 }

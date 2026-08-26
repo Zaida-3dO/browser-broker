@@ -120,13 +120,19 @@ describe('the doctor report', () => {
     await withSteppedStore(async (store) => {
       const temp = makeTempStore();
       try {
-        const report = runDoctor(temp.environment, store.db, { configuredTabBudget: 30 });
-        // The store has no recorded budget, so this is still unknown. Seed the
-        // disagreement properly.
-        assert.equal(report.exitCode, DOCTOR_EXIT.ok);
-
-        store.db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`);
-        store.db.prepare(`INSERT INTO settings (key, value) VALUES ('tab_budget', '15')`).run();
+        // ── The budget row is the product's, not the fixture's ─────────────
+        //
+        // `withSteppedStore` is the spawn path, so opening it recorded this
+        // store's budget of 15 — the same way a real installation gets one.
+        // A fixture that created a budget table and inserted into it would
+        // pass whether or not the doctor's read names the table the product
+        // actually writes, which is precisely how a read pointed at a table
+        // nothing writes can sit here reporting `unknown` forever.
+        assert.equal(
+          runDoctor(temp.environment, store.db, { configuredTabBudget: 15 }).exitCode,
+          DOCTOR_EXIT.ok,
+          'an agreeing budget is not a failed precondition',
+        );
 
         const disagreeing = runDoctor(temp.environment, store.db, { configuredTabBudget: 30 });
         assert.equal(disagreeing.exitCode, DOCTOR_EXIT.budget);
@@ -157,9 +163,8 @@ describe('the doctor report', () => {
     await withSteppedStore(async (store) => {
       const temp = makeTempStore();
       try {
-        store.db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`);
-        store.db.prepare(`INSERT INTO settings (key, value) VALUES ('tab_budget', '15')`).run();
-
+        // The store's own recorded budget is 15, written by the spawn that
+        // opened it; 30 below is the disagreeing environment.
         const lines = formatReport(
           runDoctor(temp.environment, store.db, { configuredTabBudget: 30 }),
         ).join('\n');

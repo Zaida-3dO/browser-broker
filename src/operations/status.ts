@@ -279,26 +279,41 @@ export function readStoreClock(db: Database): string {
 /**
  * Read the recorded tab budget, or null when nothing has recorded one.
  *
- * The row §1.10 describes is written by the first process to open the store,
- * and the table it lives in belongs to the row that builds that check. Until
- * then this returns null — which the document renders as "not recorded",
- * a true statement about a store nothing has arbitrated against yet.
+ * The row §1.10 describes is written by the first process to open the store —
+ * `agreeOnTabBudget`, on the spawn path — into the `tab_budget` table that
+ * `schema/step-002-tab-budget.ts` owns. Null means no process has opened this
+ * store yet, which the document renders as "not recorded".
  *
- * **Tolerating the table's absence is deliberate and is the narrow seam.**
- * The alternative was to invent the table here, which would mean the row that
- * actually owns it inheriting a shape it did not choose, in a schema step
- * that can never be edited afterwards.
+ * ── Why this names `tab_budget` and probes for nothing ──────────────────
+ *
+ * §1.10 **deletes** the settings table rather than giving the budget a key in
+ * one, so `tab_budget` is the only place the value lives and this is a direct
+ * read of it. A read pointed anywhere else is worse than wrong: it returns
+ * null, which this function's own contract renders as "nothing has recorded a
+ * budget", and that is a plausible sentence about a healthy store. It would
+ * silence two things without either looking broken — `broker doctor`'s
+ * `config.tab_budget_agrees` would answer `unknown` forever, so **the one
+ * check that exists to catch a budget disagreement could never catch one**,
+ * and `status.limit` below would report null instead of the ceiling in force.
+ *
+ * **The table's absence is deliberately not tolerated.** `tab_budget` arrives
+ * in `schema/step-002-tab-budget.ts` and every caller here holds a stepped
+ * store, so a missing table is a broken installation and this raises rather
+ * than answering null about it — an existence probe here converts that fault
+ * into the same believable "not recorded". An **empty** table does read as
+ * null, because a store nothing has opened yet is an ordinary state.
+ *
+ * A test for this has to let the product create the table. One that creates a
+ * budget table itself is a fixture seeding a state the product cannot reach,
+ * and it passes whether or not this read names the right one.
  */
 export function readTabBudget(db: Database): number | null {
-  const table = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'settings'`)
-    .get() as { name: string } | undefined;
-  if (table === undefined) {
+  const row = db.prepare(`SELECT tabs FROM tab_budget WHERE only_row = 1`).get() as
+    { tabs: unknown } | undefined;
+  if (row === undefined) {
     return null;
   }
-  const row = db.prepare(`SELECT value FROM settings WHERE key = 'tab_budget'`).get() as
-    { value: unknown } | undefined;
-  const value = Number(row?.value);
+  const value = Number(row.tabs);
   return Number.isFinite(value) ? value : null;
 }
 

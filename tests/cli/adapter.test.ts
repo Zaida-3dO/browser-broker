@@ -91,12 +91,19 @@ test('the commands with no operation behind them are named, not counted', () => 
   // that took it — but it still drives no browser and takes no tab budget,
   // which is what puts it here rather than among the ten.
   //
+  // `events` is here for the same reason `diffs` is: it reads the decision
+  // ledger back, takes no lease and no tab budget, drives no browser and
+  // decides nothing. It is in the table because that table is what
+  // `broker --help` prints, and a working command absent from it is one a
+  // caller has no way to discover.
+  //
   // **Named rather than counted, deliberately**: adding a command has to be a
   // visible edit in this list, and a length assertion would go green on a
   // command nobody meant to ship.
   assert.deepEqual(STANDALONE_COMMANDS.map((command) => command.words.join(' ')).sort(), [
     'diffs',
     'doctor',
+    'events',
     'image',
     'init',
     'login',
