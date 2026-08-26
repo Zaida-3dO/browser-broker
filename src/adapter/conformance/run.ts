@@ -216,7 +216,18 @@ export async function runConformance(options: ConformanceRunOptions): Promise<Co
             adapter: adapterId,
             operation: testCase.operation,
             caseName: testCase.name,
-            detail: `expected ${testCase.expect.outcome}, got ${outcome.outcome}`,
+            // **The refusal's own code and rule are carried**, not just the
+            // fact that the outcomes differed. `MILESTONES.md` #72 is the
+            // reason: an intermittent failure here read only "expected
+            // accepted, got refused", which names no rule and so gives a
+            // reader nothing to attribute it to — two separate
+            // investigations reproduced it and still could not say which
+            // guard had fired. The rule name was the whole diagnosis, and it
+            // was being discarded one line before it could be reported.
+            detail:
+              outcome.outcome === 'refused'
+                ? `expected ${testCase.expect.outcome}, got ${outcome.outcome} (${outcome.code} / ${outcome.rule})`
+                : `expected ${testCase.expect.outcome}, got ${outcome.outcome}`,
           });
         } else if (testCase.expect.outcome === 'refused' && outcome.outcome === 'refused') {
           // The code and the rule are compared; the sentence never is

@@ -97,6 +97,29 @@ export function withoutSecrets(value: unknown): unknown {
  * Keys are normalised from the terminal's spelling to the service's:
  * `--session-id` becomes `session_id`, so a caller types what a terminal
  * reads and the service receives what §3 names.
+ *
+ * ── Why a value is not rejected merely for starting with `--` ───────────
+ *
+ * A lease key is 32 random bytes rendered as base64url, and **the base64url
+ * alphabet contains `-`**, so about one key in 6,250 begins with `--`. Read
+ * as "the next word looks like a flag, so this one is a boolean", such a key
+ * is swallowed: `lease_key` arrives as `true`, the key never reaches the
+ * service, and the caller is told its key is missing — for a key it holds and
+ * typed correctly. It is a real defect on the shipped route rather than a
+ * curiosity, because there is no way for that caller to succeed and nothing
+ * in the message points at the cause.
+ *
+ * So "looks like a flag" is decided by **shape rather than by the leading
+ * dashes**: a flag's name is lower-case letters, digits and hyphens, which is
+ * every option this command line actually has. A base64url key contains
+ * upper-case letters or underscores, or is far longer than any option name,
+ * so it fails that test and is correctly read as a value. A genuine adjacent
+ * flag — `broker read --lease-key K --json` — still parses as two arguments,
+ * because `json` matches the shape.
+ *
+ * This is deliberately a **narrow** rule and not an argument-parsing library:
+ * it separates the two cases that actually occur without adding a dependency
+ * the manifest's one-runtime-dependency binding forbids.
  */
 export function parseArguments(rest: readonly string[]): Readonly<Record<string, unknown>> {
   const parsed: Record<string, unknown> = {};
@@ -115,7 +138,7 @@ export function parseArguments(rest: readonly string[]): Readonly<Record<string,
     }
 
     const next = rest[index + 1];
-    if (next === undefined || next.startsWith('--')) {
+    if (next === undefined || looksLikeFlag(next)) {
       parsed[normaliseKey(body)] = true;
       continue;
     }
@@ -128,6 +151,26 @@ export function parseArguments(rest: readonly string[]): Readonly<Record<string,
 
 function normaliseKey(key: string): string {
   return key.replaceAll('-', '_');
+}
+
+/**
+ * Whether a word is an option rather than a value that begins with dashes.
+ *
+ * See {@link parseArguments} for why the leading `--` cannot decide this on
+ * its own. The name after the dashes must look like an option name: lower-case
+ * letters and digits, hyphen-separated, and non-empty. `--json` and
+ * `--full-page` match; a base64url lease key such as
+ * `--SgvBJ5qVwX2T8B9XEhfQHsD2iZ2maYPC0sflBlFjg` does not, because of its
+ * upper-case letters.
+ */
+function looksLikeFlag(word: string): boolean {
+  if (!word.startsWith('--')) {
+    return false;
+  }
+  const body = word.slice(2);
+  // `--name=value` is unambiguously an option however its value is spelled.
+  const name = body.indexOf('=') === -1 ? body : body.slice(0, body.indexOf('='));
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name);
 }
 
 /**

@@ -419,3 +419,53 @@ test('usage lists every command, so the table and the help cannot drift', async 
     assert.match(text, new RegExp(`broker ${command.words.join(' ')}`, 'u'));
   }
 });
+
+// ── A value that begins with dashes ─────────────────────────────────────
+
+/**
+ * The intermittent conformance failure of `MILESTONES.md` #72, as a test that
+ * runs every time instead of about once in six thousand.
+ *
+ * A lease key is 32 random bytes as base64url, and that alphabet contains
+ * `-`, so roughly **one key in 6,250 begins with `--`**. The parser used to
+ * decide "the next word starts with `--`, so this option is a boolean", which
+ * swallowed such a key: `lease_key` arrived as `true` and the service refused
+ * the call for a missing key, against a caller holding a perfectly good one.
+ *
+ * That is why the conformance suite failed intermittently on the `cli` route
+ * and on **no particular case** — the seed mints a fresh key per case-and-route
+ * pair, so which case is hit is whichever pair happened to draw the key. It
+ * survived every attempt to reproduce it by repeating one case, because
+ * repetition of a single case does not draw more keys than the suite does.
+ *
+ * The key below is a real `mintKey()` output, kept verbatim rather than
+ * generated: a generated one would reproduce this about once in six thousand
+ * runs, which is the flake rather than a test for it.
+ */
+const KEY_BEGINNING_WITH_DASHES = '--SgvBJ5qVwX2T8B9XEhfQHsD2iZ2maYPC0sflBlFjg';
+
+test('a value that begins with -- is a value, not the next option', () => {
+  const parsed = parseArguments(['--lease-key', KEY_BEGINNING_WITH_DASHES, '--json']);
+
+  // The key reaches the service intact. Asserted by value rather than by
+  // "is not true", so a parser that mangled it in some other way also fails.
+  assert.equal(parsed['lease_key'], KEY_BEGINNING_WITH_DASHES);
+  // And the option after it is still read as an option.
+  assert.equal(parsed['json'], true);
+});
+
+test('an option genuinely followed by another option is still a boolean', () => {
+  // The other half, and the reason this cannot be fixed by simply never
+  // treating a `--` word as an option: two real flags in a row must not make
+  // the first one consume the second as its value.
+  const parsed = parseArguments(['--wait', '--json']);
+
+  assert.equal(parsed['wait'], true);
+  assert.equal(parsed['json'], true);
+});
+
+test('the equals form carries a value beginning with dashes too', () => {
+  const parsed = parseArguments([`--lease-key=${KEY_BEGINNING_WITH_DASHES}`]);
+
+  assert.equal(parsed['lease_key'], KEY_BEGINNING_WITH_DASHES);
+});
