@@ -30,12 +30,28 @@ import { makeTempStore } from '../helpers/temp-store.ts';
  * justification: "the table's entire justification is that tuning reads it, so
  * a version with nothing reading it has a justification and no evidence".
  *
- * **What it does not mean:** that `broker diffs` is reachable from the command
- * line yet. `src/cli/index.ts` belongs to the row that fills the command
- * surface, and this milestone deliberately does not edit it — so the dispatch
- * from the noun `diffs` to `runDiffs` is one line that has not been written.
- * The command's behaviour is complete and tested; its wiring is not, and that
- * is recorded in the handoff rather than left to be discovered.
+ * **What it does not mean:** that every path a person can reach this command
+ * by is exercised here. This file drives `runDiffs` directly, so it proves
+ * the command's behaviour rather than its wiring; the dispatch from the noun
+ * `diffs` is asserted where the command table is asserted, not here.
+ *
+ * ── A correction, kept rather than quietly deleted ──────────────────────
+ *
+ * A reader may find a copy of this note claiming `broker diffs` is **not**
+ * reachable from the command line, and that the dispatch is "one line that
+ * has not been written". That claim is false: `src/cli/commands.ts` carries
+ * the `diffs` entry and `src/cli/index.ts` dispatches it. The row filling the
+ * command surface wires it, and a note written before that row is not
+ * evidence about the state of the tree it sits in.
+ *
+ * It is worth saying why that survived. The repository's most recurrent
+ * defect is documentation and code disagreeing about **reachability** — a
+ * feature described as working that nothing calls. This was the same defect
+ * inverted: a feature described as unreachable that is wired. Both read as
+ * confident prose, and `check:doc-links` catches neither, because a sentence
+ * making a false claim about wiring names no symbol that fails to resolve.
+ * The gate proves every `{@link}` target exists; it cannot prove a claim
+ * about a call graph, and its own header says so.
  */
 
 interface Recorded {
