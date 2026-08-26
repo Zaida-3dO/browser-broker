@@ -181,7 +181,15 @@ export interface DoctorCommandOptions {
  * machine-readable one is one document, per §5.6.
  */
 export function runDoctorCommand(options: DoctorCommandOptions): number {
-  const report = runDoctor(options.environment, options.db);
+  // **The configured budget is passed, and until it was, the check could not
+  // fail.** `checkTabBudget` compares the stored value against this process's
+  // own; with nothing supplied it reported `unknown` regardless of what the
+  // store held. The only callers ever passing it were the doctor's own tests,
+  // which is why the gap survived — see `operations/status.ts` for the other
+  // half of the same failure.
+  const report = runDoctor(options.environment, options.db, {
+    configuredTabBudget: options.environment.tabBudget,
+  });
 
   if (options.json) {
     options.streams.out(

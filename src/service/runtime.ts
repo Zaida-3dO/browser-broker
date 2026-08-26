@@ -1,8 +1,7 @@
 import type { BrokerService } from '../adapter/service-seam.ts';
 import type { EventAdapter } from './events.ts';
 import { readEnvironment, type Environment } from '../config/environment.ts';
-import { openStore, type StoreHandle } from '../store/open.ts';
-import { stepSchema } from '../store/schema/step.ts';
+import { prepareStore, type StoreHandle } from '../store/open.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
 import type { BrowserDriver, BrowserId } from '../browser/driver.ts';
 import { browserSessionProvider } from './browser-session.ts';
@@ -133,16 +132,15 @@ export interface RuntimeOptions {
  */
 export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
   const environment = readEnvironment({ env: options.env });
-  const store = openStore(environment);
 
-  try {
-    // `SCHEMA.md` §1.2d: every spawn steps the schema. A binary that skipped
-    // it would run against whatever version it found.
-    await stepSchema(store.db);
-  } catch (error) {
-    store.close();
-    throw error;
-  }
+  // **The spawn path, not a hand-assembled equivalent of it.** This used to
+  // open and step inline, which silently omitted the third thing a spawn owes:
+  // `budget.agrees_with_store` (§1.10, §7.2). Both shipped binaries build
+  // their service here, so that omission meant the one value several processes
+  // must agree on was never recorded and never compared in anything that
+  // shipped. `prepareStore` closes the handle itself if any of the three
+  // refuses, so there is no partially-opened store to clean up here.
+  const store = await prepareStore(environment);
 
   const artifacts = new ArtifactStore(environment.artifactsRoot);
   const browsers = browserSessionProvider({

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { run } from '../../src/cli/index.ts';
+import { OPERATION_COMMANDS, STANDALONE_COMMANDS } from '../../src/cli/commands.ts';
 import { makeTempStore } from '../helpers/temp-store.ts';
 import { sharePath } from '../helpers/paths.ts';
 
@@ -65,6 +66,93 @@ test('the help flag prints usage and exits zero', async () => {
   const result = await drive(['--help'], {});
   assert.equal(result.code, 0);
   assert.match(result.out.join('\n'), /Usage:/);
+});
+
+/* ───────────── a caller cannot use what it cannot discover ───────────── */
+
+test('every command the dispatcher accepts is listed in the top-level help', async () => {
+  // ── Why the candidates come from OUTSIDE the command table ────────────
+  //
+  // The obvious spelling of this test — walk the command table, require each
+  // entry in the help — **cannot fail for the defect it is named after.** The
+  // help is rendered *from* that table, so a command missing from the table is
+  // missing from both sides and the loop simply does not check it. Measured:
+  // deleting the `events` entry left this suite green.
+  //
+  // So the candidate words are listed here deliberately, as a second opinion
+  // about what this build accepts, and each is put to the dispatcher: a word
+  // it does not know is answered `Unrecognised command`. Anything it *does*
+  // accept must appear in the help. The duplication is the mechanism, not an
+  // oversight — a rule derived entirely from the thing under test is not a
+  // rule.
+  //
+  // The gap this catches: `events` was implemented, reachable and working, and
+  // absent from the table, so it appeared in no help output at all. Nothing
+  // failed; it was undiscoverable.
+  const candidates = [
+    'claim',
+    'status',
+    'release',
+    'tab replace',
+    'navigate',
+    'act',
+    'read',
+    'evaluate',
+    'capture',
+    'feedback',
+    'snapshot',
+    'doctor',
+    'login',
+    'init',
+    'diffs',
+    'image',
+    'events',
+  ];
+
+  const top = (await drive(['--help'], {})).out.join('\n');
+
+  for (const name of candidates) {
+    const attempt = await drive([...name.split(' '), '--help'], {});
+    const answered = attempt.err.join('\n');
+    assert.doesNotMatch(
+      answered,
+      /Unrecognised command/,
+      `this test's candidate list disagrees with the dispatcher: it expects \`${name}\` to be a command and the dispatcher does not know it`,
+    );
+
+    assert.ok(
+      top.includes(`broker ${name}`),
+      `\`broker ${name}\` is dispatched but missing from the top-level help, so a caller has no way to find it`,
+    );
+  }
+});
+
+test('a command that documents options prints each of them in its own help', async () => {
+  // The options live on the command table so that this can be derived too. A
+  // documented option that the renderer drops is the same defect as an
+  // undocumented one — `claim --wait` worked and appeared nowhere.
+  for (const command of [...OPERATION_COMMANDS, ...STANDALONE_COMMANDS]) {
+    const options = command.options ?? [];
+    if (options.length === 0) {
+      continue;
+    }
+    const help = (await drive([...command.words, '--help'], {})).out.join('\n');
+    for (const option of options) {
+      assert.ok(
+        help.includes(option.flag),
+        `\`broker ${command.words.join(' ')} --help\` does not mention ${option.flag}`,
+      );
+    }
+  }
+});
+
+test('claim documents --wait, which changes what the command does', async () => {
+  // Named explicitly as well as covered by the rule above, because this one is
+  // not a convenience: without it a caller has no way to learn that `claim`
+  // can hold its queue place rather than returning it.
+  const help = (await drive(['claim', '--help'], {})).out.join('\n');
+  assert.match(help, /--wait/);
+  assert.match(help, /queued place|queue place/i);
 });
 
 test('an unrecognised option is refused with a non-zero code', async () => {

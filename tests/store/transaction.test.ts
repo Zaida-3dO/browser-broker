@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 
-import { openStore, type StoreHandle } from '../../src/store/open.ts';
+import { openStoreForDiagnosis as openStore, type StoreHandle } from '../../src/store/open.ts';
+
+// `openStoreForDiagnosis` is the raw open — no schema step, no budget
+// agreement — aliased here because that is exactly what these tests are about:
+// the open itself, below the spawn path. It is the only export that reaches
+// the raw open, deliberately, so that a caller wanting one has to name what it
+// is doing (see `src/store/open.ts`); a test of the open qualifies.
 import { BEGIN_STATEMENT } from '../../src/store/transaction.ts';
 import { makeTempStore } from '../helpers/temp-store.ts';
 

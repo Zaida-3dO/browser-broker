@@ -3,7 +3,17 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import { StartupRefusal } from '../../src/errors.ts';
-import { BUSY_TIMEOUT_MS, openStore, prepareStore } from '../../src/store/open.ts';
+import {
+  BUSY_TIMEOUT_MS,
+  openStoreForDiagnosis as openStore,
+  prepareStore,
+} from '../../src/store/open.ts';
+
+// `openStoreForDiagnosis` is the raw open — no schema step, no budget
+// agreement — aliased here because that is exactly what these tests are about:
+// the open itself, below the spawn path. It is the only export that reaches
+// the raw open, deliberately, so that a caller wanting one has to name what it
+// is doing (see `src/store/open.ts`); a test of the open qualifies.
 import { EXPECTED_VERSION } from '../../src/store/schema/steps.ts';
 import { readStoreVersion } from '../../src/store/schema/step.ts';
 import { makeTempStore } from '../helpers/temp-store.ts';

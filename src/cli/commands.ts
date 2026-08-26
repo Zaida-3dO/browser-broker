@@ -18,6 +18,23 @@ export interface OperationCommand {
   readonly words: readonly string[];
   readonly operation: OperationName;
   readonly summary: string;
+  /**
+   * Options this command accepts beyond the two every command takes.
+   *
+   * **Here rather than written out in the help renderer**, for the reason this
+   * table's own header gives: two lists that have to agree is one list
+   * somebody eventually forgets, and the forgetting is silent. A caller cannot
+   * use what it cannot discover, so an option that works and goes undocumented
+   * does not exist for most of the people who need it.
+   */
+  readonly options?: readonly CommandOption[];
+}
+
+/** One documented option, as `broker <command> --help` prints it. */
+export interface CommandOption {
+  /** The flag as it is typed, including any value placeholder. */
+  readonly flag: string;
+  readonly summary: string;
 }
 
 /**
@@ -32,6 +49,13 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
     words: ['claim'],
     operation: 'claim',
     summary: 'Ask for a lease. Get one tab, or a place in the queue.',
+    options: [
+      {
+        flag: '--wait',
+        summary:
+          'Poll a queued place until it is granted, lost or refused, rather than returning the place.',
+      },
+    ],
   },
   { words: ['status'], operation: 'status', summary: 'Where your lease stands. Extends it.' },
   {
@@ -82,6 +106,8 @@ export interface StandaloneCommand {
   readonly summary: string;
   /** The row that builds it, so an unimplemented command says so honestly. */
   readonly owedBy: string;
+  /** See {@link OperationCommand.options}. */
+  readonly options?: readonly CommandOption[];
 }
 
 /**
@@ -128,6 +154,26 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     words: ['image'],
     summary: 'Write the bytes of one recorded image — a capture, an overlay or a region crop.',
     owedBy: 'the row that builds image delivery',
+  },
+  {
+    // Reading the ledger back. Standalone for the same reason `diffs` is: it
+    // takes no lease and no tab budget, drives no browser and decides nothing —
+    // it is a read of history. Listed here because this table is what
+    // `broker --help` prints, and a command absent from it is a command a
+    // caller has no way to discover.
+    words: ['events'],
+    summary: 'Read the decision ledger, filtered by kind, outcome, guard, session or claim.',
+    owedBy: 'the row that builds the ledger read',
+    options: [
+      { flag: '--kind <a,b>', summary: 'Only these event kinds, comma-separated.' },
+      { flag: '--outcome <name>', summary: 'Only entries with this outcome.' },
+      { flag: '--guard <rule>', summary: 'Only entries naming this rule.' },
+      { flag: '--session-id <id>', summary: 'Only entries for this session.' },
+      { flag: '--claim-id <id>', summary: 'Only entries for this claim.' },
+      { flag: '--since <n>', summary: 'Entries after this cursor, oldest first.' },
+      { flag: '--before <n>', summary: 'Entries before this cursor.' },
+      { flag: '--limit <n>', summary: 'At most this many entries.' },
+    ],
   },
 ];
 

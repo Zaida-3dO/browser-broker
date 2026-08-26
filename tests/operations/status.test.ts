@@ -8,7 +8,9 @@ import {
 } from '../../src/operations/status.ts';
 import { STEP_ONE_SQL } from '../../src/store/schema/step-001-initial.ts';
 import { seedClaim, seedEvent, seedFeedback, seedTab } from '../helpers/seed.ts';
-import { withSteppedStore } from '../helpers/temp-store.ts';
+import { openStoreForDiagnosis } from '../../src/store/open.ts';
+import { stepSchema } from '../../src/store/schema/step.ts';
+import { makeTempStore, withSteppedStore } from '../helpers/temp-store.ts';
 
 /**
  * The derived operations read.
@@ -217,14 +219,47 @@ describe('the operations status read', () => {
   });
 
   it('reports the tab budget as not recorded when nothing has recorded one', async () => {
-    // §1.10: the row is written by the first process to open the store, and
-    // that row's owner has not landed. Null is a true statement; a default
-    // would be a number nobody chose.
-    await withSteppedStore(async (store) => {
-      const status = readOperationsStatus(store.db, { now });
-      assert.equal(status.budget.limit, null);
-      await Promise.resolve();
-    });
+    // §1.10: the row is written by the first process to open the store, so the
+    // state this is about is a store stepped but **not yet opened by any
+    // process**. It is built that way — raw diagnostic open, then the stepper —
+    // rather than through `withSteppedStore`, which is the spawn path and
+    // records the budget on its way in. Null is a true statement about this
+    // store; a default would be a number nobody chose.
+    const temp = makeTempStore();
+    try {
+      const store = openStoreForDiagnosis(temp.environment);
+      try {
+        await stepSchema(store.db);
+        const status = readOperationsStatus(store.db, { now });
+        assert.equal(status.budget.limit, null);
+      } finally {
+        store.close();
+      }
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('reports the recorded tab budget once a spawn has opened the store', async () => {
+    // ── Why the null case above cannot stand alone ────────────────────────
+    //
+    // A budget read pointed at a table nothing writes returns null, and null is
+    // rendered as "not recorded" — a sentence that reads as healthy. So the
+    // assertion above passes just as happily against a read that can never
+    // succeed. This is the one that fails for that defect: it asserts the
+    // number, on a store a spawn has genuinely opened.
+    //
+    // 23 rather than the default, so that a read accidentally returning the
+    // environment's fallback instead of the stored row would not coincide with
+    // a correct answer.
+    await withSteppedStore(
+      async (store) => {
+        const status = readOperationsStatus(store.db, { now });
+        assert.equal(status.budget.limit, 23);
+        await Promise.resolve();
+      },
+      { tabBudget: 23 },
+    );
   });
 
   it('reports the browsers’ state and restart count', async () => {

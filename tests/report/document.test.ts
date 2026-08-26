@@ -8,7 +8,9 @@ import type { TabAddress } from '../../src/operations/addresses.ts';
 import { readOperationsStatus } from '../../src/operations/status.ts';
 import { humaniseSeconds, renderDocument } from '../../src/report/document.ts';
 import { seedClaim, seedEvent, seedFeedback, seedTab } from '../helpers/seed.ts';
-import { withSteppedStore } from '../helpers/temp-store.ts';
+import { makeTempStore, withSteppedStore } from '../helpers/temp-store.ts';
+import { openStoreForDiagnosis } from '../../src/store/open.ts';
+import { stepSchema } from '../../src/store/schema/step.ts';
 
 /**
  * The operations document (`MILESTONES.md` #35, `SCHEMA.md` §4).
@@ -401,12 +403,48 @@ describe('the sections §4.2 requires', () => {
   });
 
   it('says the budget is not recorded rather than inventing a number', async () => {
-    await withSteppedStore(async (store) => {
-      const status = readOperationsStatus(store.db, { now });
-      const html = renderDocument({ status, addresses: new Map() });
-      assert.match(html, /not recorded/);
-      await Promise.resolve();
-    });
+    // ── Reaching the unrecorded state honestly ────────────────────────────
+    //
+    // A spawn records the budget as it opens, so `withSteppedStore` — which is
+    // the spawn path — cannot produce a store with an empty `tab_budget`. The
+    // state this is about is a store that has been stepped and **not yet
+    // opened by any process**, so it is built that way: the raw diagnostic
+    // open, the stepper, and nothing else.
+    //
+    // Seeding it by deleting the row afterwards would be the same fixture
+    // wearing a disguise; this is a state the product genuinely passes through
+    // between `stepSchema` and `agreeOnTabBudget`.
+    const temp = makeTempStore();
+    try {
+      const store = openStoreForDiagnosis(temp.environment);
+      try {
+        await stepSchema(store.db);
+        const status = readOperationsStatus(store.db, { now });
+        const html = renderDocument({ status, addresses: new Map() });
+        assert.match(html, /not recorded/);
+      } finally {
+        store.close();
+      }
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('shows the recorded budget once a spawn has opened the store', async () => {
+    // The other half, and the one that fails if the budget read is pointed at
+    // a table nothing writes: such a read returns null, which this document
+    // renders as "not recorded" — a believable sentence, which is exactly why
+    // the assertion above cannot be the only one. This asserts the number.
+    await withSteppedStore(
+      async (store) => {
+        const status = readOperationsStatus(store.db, { now });
+        const html = renderDocument({ status, addresses: new Map() });
+        assert.match(html, /Tab budget<\/span><span class="value">23</);
+        assert.doesNotMatch(html, /not recorded/);
+        await Promise.resolve();
+      },
+      { tabBudget: 23 },
+    );
   });
 
   it('says a discovery record is a claim rather than a proof', () => {

@@ -13,10 +13,10 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import type { Environment } from '../config/environment.ts';
-import { agreeOnTabBudget } from './budget.ts';
+import { agreeOnTabBudget, type BudgetAgreement } from './budget.ts';
 import { resolveStoreLocation } from './location.ts';
 import type { NetworkPathChecks } from './network-path.ts';
-import { stepSchema } from './schema/step.ts';
+import { stepSchema, type StepResult } from './schema/step.ts';
 import { immediate, type TransactionResult, type TransactionScope } from './transaction.ts';
 
 /**
@@ -29,16 +29,29 @@ import { immediate, type TransactionResult, type TransactionScope } from './tran
  * inside one long-lived process, and here the callers are separate operating
  * system processes, each opening the file, doing its work and exiting.
  *
- * ── Opening and stepping are two functions, and `openStore` is the first ──
+ * ── There is exactly one way for a spawn to open this store ─────────────
  *
- * `SCHEMA.md` §1.2d puts stepping on **every spawn**, so `prepareStore` below
- * is what a spawn calls and it does both. They are separate because stepping
- * is asynchronous — it goes through the transaction helper, which is — and an
- * open that had to be awaited would make every test and every caller that
- * wants a handle pay for a schema it may not touch. **A caller that opens
- * without stepping gets a store at whatever version it is at**, which is the
- * right answer for the stepper's own tests and the wrong one for a spawn;
- * `prepareStore` is the name a spawn is meant to reach for.
+ * `prepareStore` below. It opens, steps the schema, and settles the tab-budget
+ * agreement, in that order, and **it is the only export that hands a spawn a
+ * handle**. The raw open is deliberately module-private now.
+ *
+ * **The privacy is the mechanism, and a comment would not be one.** An
+ * entry point that a sibling export can bypass is a suggestion; the thing that
+ * makes it a path is that there is nothing else to call. Were the raw open
+ * exported beside it, each binary could assemble its own open-and-step pair,
+ * every one of them would be a place for `agreeOnTabBudget` to go missing, and
+ * the omission would be invisible: a store opens, a schema steps, and the one
+ * value several processes must agree on (§1.10, §7.2) is simply never compared.
+ * The budget suite would keep passing throughout, because it calls
+ * `prepareStore` — so the tests would agree with a product that did something
+ * else.
+ *
+ * The one exception is a diagnostic that must be able to observe the states
+ * this refuses to return from, and it is exported under a name that says so.
+ *
+ * Stepping remains a separate asynchronous call inside this module because it
+ * goes through the transaction helper; no caller outside can hold the halves
+ * apart.
  */
 
 /** How long a blocked writer waits before giving up, in milliseconds. */
@@ -158,7 +171,7 @@ function convertToWriteAheadLog(db: Database.Database, location: string): unknow
   );
 }
 
-export function openStore(environment: Environment, options: OpenStoreOptions = {}): StoreHandle {
+function openStore(environment: Environment, options: OpenStoreOptions = {}): StoreHandle {
   const location = resolveStoreLocation(environment, options.checks);
 
   // Created on first spawn, not at install time. An install step that
@@ -230,21 +243,70 @@ export function openStore(environment: Environment, options: OpenStoreOptions = 
  * throw has no handle to close and the file would otherwise be held open by a
  * process that has already decided not to run.
  */
+export interface PreparedStore extends StoreHandle {
+  /**
+   * What stepping did, for a caller that reports it.
+   *
+   * **Carried on the handle so that reporting does not mean stepping twice.**
+   * A second `stepSchema` call against the same store answers truthfully that
+   * there is nothing to do — it is idempotent — so a caller that stepped
+   * through this function and then stepped again to find out what happened
+   * would report "already at version N" about a store it had itself just
+   * created. The fact belongs to the call that performed it.
+   */
+  readonly stepped: StepResult;
+  /** The budget in force, and whether this process is the one that recorded it. */
+  readonly budget: BudgetAgreement;
+}
+
 export async function prepareStore(
   environment: Environment,
   options: OpenStoreOptions = {},
-): Promise<StoreHandle> {
+): Promise<PreparedStore> {
   const store = openStore(environment, options);
   try {
-    await stepSchema(store.db);
+    const stepped = await stepSchema(store.db);
     // `budget.agrees_with_store` (§7.2), and it runs **after** stepping
     // because the row it compares against is part of the schema. A process
     // whose environment disagrees with the store refuses here rather than
     // arbitrating against a bound the other processes are not using.
-    agreeOnTabBudget(store.db, environment.tabBudget);
+    const budget = agreeOnTabBudget(store.db, environment.tabBudget);
+    return { ...store, stepped, budget };
   } catch (error) {
     store.close();
     throw error;
   }
-  return store;
+}
+
+/**
+ * Open an **existing** store without stepping it and without settling the
+ * budget agreement — for `broker doctor`, and for nothing else.
+ *
+ * ── Why this exception exists, and why it is a separate name ────────────
+ *
+ * `doctor`'s whole job is to report the state of an installation, including
+ * the two states `prepareStore` refuses to return from: a store behind this
+ * build's schema version, and a store whose recorded tab budget disagrees with
+ * this process's environment. A diagnostic that used the spawn path would
+ * throw on exactly the installations it exists to describe, and the operator
+ * would get a refusal instead of the report naming both numbers.
+ *
+ * **It is a distinct exported name rather than a second call to the raw open**
+ * because that is the difference between an exception and a bypass. The
+ * defect this module's header describes came from four callers quietly doing
+ * their own open; a caller reaching for something spelled
+ * `openStoreForDiagnosis` is stating that it is the diagnostic, and anything
+ * else calling it is visible in one grep.
+ *
+ * **Never creates a store.** The caller checks the file exists first, and that
+ * ordering is load-bearing: the raw open creates the directory and the file,
+ * so a doctor that opened unconditionally would create an empty store at
+ * version zero and then truthfully report it at the wrong version — a fault it
+ * had itself caused on an installation that was fine a moment earlier.
+ */
+export function openStoreForDiagnosis(
+  environment: Environment,
+  options: OpenStoreOptions = {},
+): StoreHandle {
+  return openStore(environment, options);
 }
