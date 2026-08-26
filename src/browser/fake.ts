@@ -499,11 +499,38 @@ export class FakeBrowserDriver implements BrowserDriver {
 
       openTab: () => openTab('openTab'),
 
+      /**
+       * Every page open in this browser **except the keeper tab**.
+       *
+       * ── Why the exclusion is here rather than left to the caller ────────
+       *
+       * `real.ts` excludes it, and says why: the keeper is *"never counted
+       * against the budget"* (§3.15) and never addressable, so it does not
+       * appear in the list capacity is derived from. This fake did not, and
+       * the divergence was invisible for as long as `listTabs` had no
+       * consumer in `src/`.
+       *
+       * **Reconciliation is that consumer** (`MILESTONES.md` #21a), and it is
+       * the one whose correctness the divergence destroys. Reconciliation
+       * closes pages no live lease owns; the keeper is owned by no lease, by
+       * construction. So a fake that listed it would make the fixture agree
+       * with a service that closes the keeper — and closing the keeper kills
+       * the shared signed-in session, because a headed browser dies within
+       * about half a second of its final tab closing.
+       *
+       * That is exactly the coinciding-fixture shape this repository keeps
+       * being caught by, in its most expensive form: the suite would be
+       * **evidence for** the destructive behaviour rather than against it,
+       * and nothing headed runs in continuous integration to contradict it.
+       */
       listTabs: () => {
         const failure = this.#enter({ name: 'listTabs', browser });
         if (failure) return Promise.reject(failure);
+        const keeper = this.#keeperTabs.get(browser);
         return Promise.resolve(
-          [...this.#tabsFor(browser)].map((driverTabId) => ({ browser, driverTabId })),
+          [...this.#tabsFor(browser)]
+            .filter((driverTabId) => driverTabId !== keeper)
+            .map((driverTabId) => ({ browser, driverTabId })),
         );
       },
 

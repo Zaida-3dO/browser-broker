@@ -188,6 +188,25 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     ],
   },
   {
+    // The administrative operation that asks a live browser what it actually
+    // has open (§2.6 step 2, §4.3). Standalone because it is not one of the
+    // ten and must never be: closing a page is browser-scoped, so §3.13 keeps
+    // it off the agent surface and `browser_scoped.never` (§7.3) makes that a
+    // build rule. It is a command for the reason §4.3 gives about the rest of
+    // that surface — a person runs it, and the ledger records that a person
+    // did.
+    words: ['reconcile'],
+    summary:
+      'Ask a browser what it has open; close pages no live lease owns, and end leases whose page is gone.',
+    owedBy: 'the row that builds reconciliation against a live browser',
+    options: [
+      {
+        flag: '--browser <regular|private>',
+        summary: 'Which browser to reconcile. May also be given as the first word.',
+      },
+    ],
+  },
+  {
     // Reading the ledger back. Standalone for the same reason `diffs` is: it
     // takes no lease and no tab budget, drives no browser and decides nothing —
     // it is a read of history. Listed here because this table is what

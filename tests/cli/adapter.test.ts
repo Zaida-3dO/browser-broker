@@ -102,6 +102,15 @@ test('the commands with no operation behind them are named, not counted', () => 
   // and what diffs did — and §5.4 puts "list captures" on this surface
   // alongside the other two.
   //
+  // `reconcile` is here on a different footing from the reads, and the
+  // difference is worth stating because it is the one that could be argued
+  // the other way: it **writes**, and it drives a browser. What keeps it off
+  // the operation table is not that it is harmless but that it must never be
+  // reachable by a caller — it closes pages across a whole browser, which
+  // §3.13 puts on the administrative surface and `browser_scoped.never`
+  // (§7.3) makes a build rule. §4.3 already holds three operations of exactly
+  // that shape, and §5.4 puts them on this route because a person runs them.
+  //
   // **Named rather than counted, deliberately**: adding a command has to be a
   // visible edit in this list, and a length assertion would go green on a
   // command nobody meant to ship.
@@ -113,6 +122,7 @@ test('the commands with no operation behind them are named, not counted', () => 
     'image',
     'init',
     'login',
+    'reconcile',
     'snapshot',
   ]);
 });

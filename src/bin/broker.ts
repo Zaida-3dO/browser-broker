@@ -95,6 +95,12 @@ if (needsNoService(argv)) {
         broker: runtime.broker,
         store: runtime.store,
         environment: runtime.environment,
+        // `broker reconcile` asks a live browser what it has open (§2.6,
+        // §4.3). It is the runtime's own provider rather than one built in
+        // the dispatcher, so this process decides adoption once — and it is
+        // passed here, from the shipped executable, because a command reached
+        // only by a test is a command that does not exist.
+        session: runtime.session,
       });
     } finally {
       runtime.close();

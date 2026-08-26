@@ -4,7 +4,7 @@ import { readEnvironment, type Environment } from '../config/environment.ts';
 import { prepareStore, type StoreHandle } from '../store/open.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
 import type { BrowserDriver, BrowserId } from '../browser/driver.ts';
-import { browserSessionProvider } from './browser-session.ts';
+import { browserSessionProvider, type BrowserSessionProvider } from './browser-session.ts';
 import { serviceFor } from './bridge.ts';
 import { createBroker, type Broker } from './broker.ts';
 
@@ -48,6 +48,29 @@ export interface Runtime {
   readonly broker: Broker;
   readonly store: StoreHandle;
   readonly environment: Environment;
+  /**
+   * Resolve a live browser session, for the one administrative command that
+   * has to ask a browser a question rather than drive a page (§4.3).
+   *
+   * **The provider this runtime already built, not a second one.** Every
+   * other consumer reaches a browser through the page operations, which get
+   * this same function passed to `createBroker` above. Reconciliation
+   * (`MILESTONES.md` #21a) is the exception because its question — *what do
+   * you actually have open* — is about the browser rather than about any
+   * lease, so there is no lease for it to arrive through.
+   *
+   * Exposing the existing provider is what keeps `browser-session.ts`'s
+   * central claim true: adoption decides once per browser per process, so a
+   * command that built its own provider would be a second launch path racing
+   * the first. It is memoised, so asking for a session a command already has
+   * costs nothing.
+   *
+   * **It does not widen the agent surface.** Nothing reachable from a tool
+   * call can see this field; it is on the runtime, next to `broker`, for the
+   * same reason `broker` is — §5.4's *"they are not on the agent surface and
+   * adding them there fails the build"*.
+   */
+  readonly session: BrowserSessionProvider;
   /** Release the store. Safe to call more than once. */
   readonly close: () => void;
 }
@@ -176,6 +199,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     broker,
     store,
     environment,
+    session: browsers.session,
     close: () => {
       if (closed) {
         return;
