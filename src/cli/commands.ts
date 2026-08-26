@@ -143,6 +143,12 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     words: ['diffs'],
     summary: 'List the recorded comparisons, filtered by lease, tab or outcome.',
     owedBy: 'the row that builds changed-region review',
+    options: [
+      { flag: '--capture <id>', summary: 'Only comparisons made from this capture.' },
+      { flag: '--target <id>', summary: 'Only comparisons made against this earlier capture.' },
+      { flag: '--lease <id>', summary: 'Only comparisons recorded under this lease.' },
+      { flag: '--limit <n>', summary: 'At most this many comparisons.' },
+    ],
   },
   {
     // The bytes of one recorded image, named by the identifier of a row.
@@ -154,6 +160,15 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     words: ['image'],
     summary: 'Write the bytes of one recorded image — a capture, an overlay or a region crop.',
     owedBy: 'the row that builds image delivery',
+    options: [
+      { flag: '--capture <id>', summary: 'The capture whose bytes to write.' },
+      { flag: '--overlay <id>', summary: 'The comparison whose overlay to write.' },
+      { flag: '--region <id>', summary: 'The comparison whose changed region to crop.' },
+      { flag: '--index <n>', summary: 'Which region, largest first; defaults to the largest.' },
+      { flag: '--side <before|after>', summary: 'Which capture a region crop is cut from.' },
+      { flag: '--out <file>', summary: 'The file to write the bytes to. Required.' },
+      { flag: '--lease-key <key>', summary: 'Your lease key; an artifact belongs to its lease.' },
+    ],
   },
   {
     // Reading the ledger back. Standalone for the same reason `diffs` is: it

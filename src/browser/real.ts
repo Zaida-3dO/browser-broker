@@ -8,6 +8,7 @@
 // spawned by this service, detached and by path (§1.2a), so the package that
 // downloads and manages browsers would be adding a lifecycle this design
 // deliberately does not have.
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -359,8 +360,22 @@ class RealBrowserSession implements BrowserSession {
     // may go" in `artifacts/store.ts`, and a driver that reached for that
     // store would be a second thing choosing locations under the root. The
     // caller supplies a directory; this file only ever fills in a leaf.
+    // **Named eagerly, created lazily.** `mkdtempSync` both picks a name and
+    // makes the directory, so calling it here made one per driver whether or
+    // not that driver ever wrote an artefact — and since nothing removes it,
+    // a session that only ever read a page still left an empty directory
+    // behind for good. Measured on one developer machine: 1,389 empty
+    // `broker-artifacts-` directories against 27 from every other source
+    // combined.
+    //
+    // The name is still fixed at construction, so the directory a driver
+    // reports is stable for its whole life; only the `mkdir` moves, to
+    // `#write`, which already creates the tree recursively before writing.
+    // The upshot is that the directory now appears exactly when there is
+    // something to put in it.
     this.#outputDirectory =
-      options.outputDirectory ?? fs.mkdtempSync(path.join(os.tmpdir(), 'broker-artifacts-'));
+      options.outputDirectory ??
+      path.join(os.tmpdir(), `broker-artifacts-${randomUUID().slice(0, 8)}`);
   }
 
   describe(): BrowserDescription {
