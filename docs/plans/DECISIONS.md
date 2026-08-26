@@ -1543,6 +1543,87 @@ One shape, one endpoint, no conditional.
 
 ---
 
+## 13g. Two intermittent test failures, diagnosed (2026-08-26)
+
+`MILESTONES.md` #72. Two failures had each been sighted **once**, during unrelated builds, and
+neither could be reproduced by repeating the failing case on its own. Both were therefore at risk of
+being attributed to whatever change happened to be in front of them. They turned out to have
+**nothing in common except the conditions that expose them**, and one of the two is a defect on a
+shipped route rather than a test fault.
+
+### They do not share a cause; they share a shape
+
+The row asked whether the two shared a cause and whether that cause was shared temporary state
+between cases. The answer to both halves is **no**, and the second half is worth stating plainly
+because it was the leading theory: **no state is shared between cases.** The conformance runner
+builds a fresh subject with its own temporary directory and its own store per case-and-route pair,
+and a subject's live-claim count was measured at zero at birth. Every temporary directory in the
+test tree comes from `mkdtempSync`, so no two runs can collide on a path. Nothing under `src/`
+writes to `process.env`, and nothing binds a fixed port.
+
+What they do share is that **`node --test` runs test files in separate child processes,
+concurrently**, up to the machine's processor count. That is what makes both failures load-dependent,
+and it is the reason repeating a single case never reproduced either: running one case alone removes
+the ~30 concurrent peers that create the conditions. **A single-case loop is the one probe that
+cannot find either of these**, which is worth remembering, because it is the probe both earlier
+investigations reached for.
+
+### The browser suite: a teardown that could not wait
+
+`tests/browser/sign-in-evidence.test.ts` removed its profile directory with
+`fs.rmSync(root, { recursive: true, force: true })` in a `finally`. `force` suppresses `ENOENT` and
+nothing else, so a handle the operating system has not finished releasing surfaces as `EPERM`.
+Thrown from a `finally`, that error is attributed by `node --test` to the **file** rather than to any
+test, which is why the sighting showed every assertion passing and the file failing.
+
+Measured: launch a persistent context, send `Browser.close`, remove the root immediately. Bare
+`rmSync` failed **5 times in 5**; the repository's own `removeDirectory` helper failed **0 times in
+5** over the same race in the same loop. The bare arm is the control that shows the race was present
+on every trial. Under artificial processor contention the unfixed test failed **13 runs out of 13**.
+
+The fix is to use the retrying helper that already existed for exactly this — `removeDirectory`,
+whose own header documents this failure mode, as does `service-subject.ts`. **The three-second wait
+before it is deliberately left alone**: that wait exists so the signed-in assertion can read a
+flushed cookie store, which is a different requirement from removing a directory.
+
+### The conformance suite: a lease key that began with two dashes
+
+This one is a **real defect on the command-line route**, not a test fault, and it would have reached
+users.
+
+A lease key is 32 random bytes rendered as base64url, and **the base64url alphabet contains `-`**.
+So about **one key in 6,250** begins with `--` (measured: 32 in 200,000). The command line's parser
+decided that an option was a boolean whenever the following word started with `--`. A key of that
+shape was therefore read as the next option: `lease_key` arrived as `true`, the key never reached the
+service, and the caller was refused for a **missing key** while holding a perfectly good one, with
+nothing in the message pointing at the cause.
+
+It was caught by instrumenting the runner to print the refusal's rule and then running the
+conformance suite 25 rounds of 16 concurrent processes: two hits, both `key_missing` / `key.present`,
+and both seed keys began with `--`.
+
+Two consequences worth recording:
+
+- **It explains why the failure never named a consistent case.** The seed mints a fresh key per
+  case-and-route pair, so the case that fails is whichever pair happened to draw an unlucky key —
+  observed on `read`, on `evaluate`, and on `tab_replace` across different runs. A reader looking for
+  the bug in the failing case was looking in the wrong place every time.
+- **The tool surface is immune**, because it carries JSON rather than a word list, and this was
+  verified rather than assumed. That asymmetry is the parity suite doing its job: the same input
+  reached the same service through two doors and only one door mangled it.
+
+The parser now decides "is the next word an option?" by **shape rather than by the leading dashes**:
+an option's name is lower-case letters, digits and hyphens, which every option this command line has
+satisfies and no base64url key does. Two real flags in a row still parse as two booleans.
+
+### The finding that named no rule
+
+A contributing cause deserves its own note, because it is what made the conformance failure resist
+two investigations. The runner's `outcome-mismatch` finding recorded only *"expected accepted, got
+refused"* — it discarded the refusal's code and rule one line before reporting them. The rule name
+was the entire diagnosis. It is now carried in the finding, so the next occurrence names its own
+cause.
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because

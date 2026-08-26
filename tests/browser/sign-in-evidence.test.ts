@@ -9,6 +9,7 @@ import { coldStartDetached } from '../../src/browser/launch.ts';
 import { COOKIE_STORE_RELATIVE, inspectProfileSession } from '../../src/doctor/session.ts';
 import { browserAvailable, browserExecutablePath, skipReason } from '../helpers/browser.ts';
 import { temporaryProfileRoot } from '../helpers/browser-fixture.ts';
+import { removeDirectory } from '../helpers/remove-directory.ts';
 
 /**
  * ⚠️ THIS SUITE IS THE EVIDENCE BEHIND THE DOCTOR'S SESSION CHECK. ⚠️
@@ -43,6 +44,34 @@ import { temporaryProfileRoot } from '../helpers/browser-fixture.ts';
  * the teardown here to a kill would make the signed-in assertion fail — and
  * the tempting "fix" would be to weaken the assertion, which would delete the
  * only evidence that the doctor's check works at all.
+ *
+ * ── Why teardown retries, and the intermittent failure it explains ──────
+ *
+ * This suite was sighted failing once during an unrelated build and could not
+ * be reproduced in isolation, which is the shape that gets blamed on whatever
+ * diff is in front of it. It is a **teardown** fault, and the reason it hides
+ * from a single-file run is that it needs the machine to be busy.
+ *
+ * The close call above returns before the operating system has released the
+ * browser's handles on the profile directory. `fs.rmSync` with
+ * `{ force: true }` does **not** wait for that: `force` suppresses `ENOENT`
+ * and nothing else, so a live handle surfaces as `EPERM`. Thrown from a
+ * `finally`, that error is attributed by `node --test` to the **file** rather
+ * than to any test — every assertion reads as passed and the file reads as
+ * failed, which is a fixture fault wearing a test fault's costume.
+ *
+ * Measured: launch a persistent context, send `Browser.close`, then remove
+ * the root immediately. Bare `rmSync` failed **5 times in 5**; the retrying
+ * {@link removeDirectory} failed **0 times in 5** over the same race in the
+ * same loop. The bare arm is the control — it is what shows the race was
+ * genuinely present on every trial, so the passing arm is survival rather
+ * than a window that happened not to open.
+ *
+ * The wait above is a fixed three seconds, and it is left alone deliberately:
+ * it is what the *signed-in* assertion needs in order to read a flushed
+ * cookie store, which is a different requirement from removing the directory.
+ * Teardown is made patient instead, because a cleanup failure must never turn
+ * a passing test red.
  */
 
 const available = browserAvailable();
@@ -123,7 +152,13 @@ test(
         'a profile nobody signed into was reported as carrying a session',
       );
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      // **Not `fs.rmSync` directly.** The browser has been asked to close but
+      // the operating system releases its handles on the profile a moment
+      // later, and `force` suppresses only `ENOENT` — an open handle comes
+      // back as `EPERM`, which escapes this `finally` and is attributed by
+      // `node --test` to the *file* rather than to any test. See this file's
+      // teardown note for the measurement.
+      removeDirectory(root);
     }
   },
 );
@@ -147,7 +182,13 @@ test(
       );
       assert.ok((probe.cookieCount ?? 0) > 0, 'the cookie count came back empty');
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      // **Not `fs.rmSync` directly.** The browser has been asked to close but
+      // the operating system releases its handles on the profile a moment
+      // later, and `force` suppresses only `ENOENT` — an open handle comes
+      // back as `EPERM`, which escapes this `finally` and is attributed by
+      // `node --test` to the *file* rather than to any test. See this file's
+      // teardown note for the measurement.
+      removeDirectory(root);
     }
   },
 );
