@@ -97,10 +97,16 @@ test('the commands with no operation behind them are named, not counted', () => 
   // `broker --help` prints, and a working command absent from it is one a
   // caller has no way to discover.
   //
+  // `captures` is the third of those reads (#37): it adds up what the
+  // `captures` and `comparisons` tables already record — what pictures cost
+  // and what diffs did — and §5.4 puts "list captures" on this surface
+  // alongside the other two.
+  //
   // **Named rather than counted, deliberately**: adding a command has to be a
   // visible edit in this list, and a length assertion would go green on a
   // command nobody meant to ship.
   assert.deepEqual(STANDALONE_COMMANDS.map((command) => command.words.join(' ')).sort(), [
+    'captures',
     'diffs',
     'doctor',
     'events',

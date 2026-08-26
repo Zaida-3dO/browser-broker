@@ -23,6 +23,7 @@ import {
 import { describeSetupReport, runSetupHandshake } from '../browser/setup.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
 import { runDiffs } from './diffs.ts';
+import { runCaptures } from './telemetry.ts';
 import { runImage } from './image.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
 import { explainLoginFailure, runLoginCommand } from './login-command.ts';
@@ -313,6 +314,7 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
         name === 'doctor' ||
         name === 'events' ||
         name === 'diffs' ||
+        name === 'captures' ||
         name === 'image'
       ) {
         return await runOperationsCommand(name, parsed.rest, { streams, json, options });
@@ -885,7 +887,7 @@ async function runLogin(
 }
 
 async function runOperationsCommand(
-  command: 'snapshot' | 'doctor' | 'events' | 'diffs' | 'image',
+  command: 'snapshot' | 'doctor' | 'events' | 'diffs' | 'captures' | 'image',
   rest: readonly string[],
   context: { streams: Streams; json: boolean; options: RunOptions },
 ): Promise<number> {
@@ -935,6 +937,12 @@ async function runOperationsCommand(
       // the other reads do; what it does not take is a lease, because it
       // decides nothing.
       return runDiffs(rest, { db: store.db, streams });
+    }
+    if (command === 'captures') {
+      // The capture telemetry rollups (#37). Same stepped store, same absence
+      // of a lease, and for the same reason: adding up what was recorded
+      // decides nothing.
+      return runCaptures(rest, { db: store.db, streams });
     }
     if (command === 'image') {
       // **Serving the bytes of one recorded image** (§1.9). Unlike `diffs` it

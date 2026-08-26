@@ -149,3 +149,112 @@ export function seedFeedback(
     options.at ?? '2026-01-01T00:00:00.000Z',
   );
 }
+
+export interface SeedCaptureOptions {
+  readonly id?: string;
+  readonly claimId: string;
+  readonly tabId: string;
+  readonly takenAt?: string;
+  readonly kind?: 'viewport' | 'element' | 'full_page';
+  readonly tier?: 'default' | 'detail' | 'max';
+  readonly reason?: string | null;
+  readonly width: number;
+  readonly height: number;
+  /** Defaults to the written dimensions, which is the not-downscaled case. */
+  readonly sourceWidth?: number;
+  readonly sourceHeight?: number;
+  readonly bytes?: number;
+  readonly warned?: boolean;
+  readonly url?: string | null;
+}
+
+/**
+ * Write one capture row exactly as given, with no file behind it.
+ *
+ * Deliberately row-only, unlike `comparison-fixtures.ts`'s `insertCapture`,
+ * which writes a real PNG through the artifact store because a comparison
+ * reads the bytes. **A rollup never opens a file** — it adds up columns — so
+ * encoding an image per row would make these tests slower and would tie a
+ * count to an image codec that has nothing to do with what is being counted.
+ *
+ * It also takes the tier, the kind, the moment and the source dimensions,
+ * which that helper fixes: a rollup test whose rows are all `default`
+ * viewports at one instant cannot tell a working grouping from a broken one.
+ */
+export function seedCapture(db: Database, options: SeedCaptureOptions): string {
+  const id = options.id ?? crypto.randomUUID();
+  const kind = options.kind ?? 'viewport';
+  const tier = options.tier ?? 'default';
+
+  db.prepare(
+    `INSERT INTO captures
+       (id, claim_id, tab_id, taken_at, kind, tier, reason, source_width, source_height,
+        width, height, bytes, path, selector, viewport_width, url, warned)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    options.claimId,
+    options.tabId,
+    options.takenAt ?? '2026-01-01T00:00:00.000Z',
+    kind,
+    tier,
+    // The schema owes a written reason on the top rung and nowhere else.
+    tier === 'max' ? (options.reason ?? 'a seeded escalation') : (options.reason ?? null),
+    options.sourceWidth ?? options.width,
+    options.sourceHeight ?? options.height,
+    options.width,
+    options.height,
+    options.bytes ?? 1000,
+    `claims/${options.claimId}/images/${id}.png`,
+    // The schema constrains: exactly the element captures name an element.
+    kind === 'element' ? '#seeded' : null,
+    options.width,
+    options.url === undefined ? 'https://example.com/a-page' : options.url,
+    options.warned === true ? 1 : 0,
+  );
+
+  return id;
+}
+
+export interface SeedComparisonOptions {
+  readonly id?: string;
+  readonly sourceCaptureId: string;
+  readonly targetCaptureId: string;
+  readonly claimId: string;
+  readonly at?: string;
+  readonly colourTolerance?: number;
+  readonly minimumRegionArea?: number;
+  readonly maximumRegions?: number;
+  readonly changed?: boolean;
+  readonly truncated?: boolean;
+}
+
+/** Write one comparison row exactly as given, with no overlay behind it. */
+export function seedComparison(db: Database, options: SeedComparisonOptions): string {
+  const id = options.id ?? crypto.randomUUID();
+  const changed = options.changed ?? true;
+
+  db.prepare(
+    `INSERT INTO comparisons
+       (id, source_capture_id, target_capture_id, claim_id, at, colour_tolerance,
+        minimum_region_area, maximum_regions, changed_pixels, changed_ratio, changed,
+        regions, overlay_path, truncated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+  ).run(
+    id,
+    options.sourceCaptureId,
+    options.targetCaptureId,
+    options.claimId,
+    options.at ?? '2026-01-01T00:00:00.000Z',
+    options.colourTolerance ?? 0.1,
+    options.minimumRegionArea ?? 16,
+    options.maximumRegions ?? 50,
+    changed ? 100 : 0,
+    changed ? 0.25 : 0,
+    changed ? 1 : 0,
+    `claims/${options.claimId}/images/${id}-overlay.png`,
+    options.truncated === true ? 1 : 0,
+  );
+
+  return id;
+}
