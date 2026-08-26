@@ -582,7 +582,7 @@ registering it fails.
 | **31** | Capture pipeline: take, downscale to the tier, write, return `{path, width, height, bytes}`. **Three tiers, cheapest by default with no parameter**; the highest additionally requires a **free-text** `reason`; full-page off by default. **Settles the page before every shutter** and supports a capture-time mask. **Consults nothing belonging to the diff feature** | 22, 45 | `done` |
 | **32** | Per-capture telemetry: dimensions, bytes, downscaled-from, the tier, the escalation `reason`, estimated token cost | 31, 11 | `done` |
 | **33** | Capture accounting per claim: **a loud warning, never a refusal**, naming the cheaper alternative, fired on **every** capture past the threshold | 31, 12 | `done` |
-| **34** | Resolution-ladder harness and the one-off study; publish the chosen tiers **with their evidence**, superseding the provisional numbers | 32 | |
+| **34** | Resolution-ladder harness and the one-off study; publish the chosen tiers **with their evidence**, superseding the provisional numbers | 32 | `done` |
 | **69** | **The `capture.no_diff_dependency` build check** — no capture path reads anything belonging to the diff feature, with a seeded violation proving it fires (`SCHEMA.md` §7.3) | 31 | `done` |
 
 > **#31 carries the lever, not #33.** The low default is what does nearly all the work, because most
