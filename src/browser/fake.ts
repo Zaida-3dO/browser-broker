@@ -560,6 +560,32 @@ export class FakeBrowserDriver implements BrowserDriver {
         // a leaked tab and not a leaked lease, and the distinction is only
         // observable if the fake keeps the page it could not close.
         if (failure) return Promise.reject(failure);
+
+        // ── The keeper is not closable, and this is the mechanical half ────
+        //
+        // `keeper.never_leased` (§3.15, §7.3): the keeper is never
+        // addressable, and **a caller cannot close what it cannot name.**
+        // `real.ts` gets this structurally — the keeper's page is never put
+        // in its `#pages` map, so `closeTab` cannot resolve the handle and
+        // returns having done nothing.
+        //
+        // This fake mints its keeper through its own `openTab`, so without
+        // this branch the keeper's identifier **is** an ordinary tab name and
+        // closing it works. That is the same divergence the keeper had in
+        // `listTabs`, in its most consequential form: a fixture on which the
+        // destructive act succeeds is a fixture that would validate a service
+        // that performed it, and closing the keeper ends the shared signed-in
+        // browser — a headed browser dies within about half a second of its
+        // last tab closing.
+        //
+        // Returning without closing rather than rejecting, because that is
+        // what `real.ts` does and closing is best effort by design (§2.4b): a
+        // rejection here would be a driver reporting a failure the service is
+        // specified to ignore.
+        if (this.#keeperTabs.get(tab.browser) === tab.driverTabId) {
+          return Promise.resolve();
+        }
+
         this.#tabsFor(tab.browser).delete(tab.driverTabId);
         return Promise.resolve();
       },
