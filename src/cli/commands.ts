@@ -171,6 +171,23 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     ],
   },
   {
+    // The capture telemetry rollups (#37). Standalone for the same reason
+    // `diffs` is: it takes no lease and no tab budget, drives no browser and
+    // decides nothing — it adds up what has already been recorded. §5.4 puts
+    // "list captures" on the operations command surface, which is this one.
+    words: ['captures'],
+    summary: 'What pictures cost, and what diffs did, over a window.',
+    owedBy: 'the row that builds the capture telemetry rollups',
+    options: [
+      { flag: '--since <t>', summary: 'Captures taken at or after this timestamp.' },
+      { flag: '--until <t>', summary: 'Captures taken strictly before this timestamp.' },
+      { flag: '--lease <id>', summary: 'Only captures taken under this lease.' },
+      { flag: '--capture <id>', summary: 'Instead: what diffs ran from and against one capture.' },
+      { flag: '--targets', summary: 'Instead: which captures are most diffed against.' },
+      { flag: '--limit <n>', summary: 'At most this many rows, where a listing is returned.' },
+    ],
+  },
+  {
     // Reading the ledger back. Standalone for the same reason `diffs` is: it
     // takes no lease and no tab budget, drives no browser and decides nothing —
     // it is a read of history. Listed here because this table is what
