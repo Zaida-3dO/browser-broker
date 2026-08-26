@@ -54,6 +54,33 @@ const withALiveLease: CaseSeed = {
     if (granted.outcome !== 'accepted') {
       throw new Error(`the seed could not obtain a lease: ${granted.rule}`);
     }
+    // ── Two different outcomes, and only one of them is a live lease ─────
+    //
+    // `granted.outcome` is the **transport's** answer: the call was accepted
+    // rather than refused. `granted.value['outcome']` is the **service's**:
+    // whether the claim was granted a tab or put in the queue. A full budget
+    // answers `accepted` at the transport and `queued` underneath, and a
+    // queued claim holds a real key with no tab behind it.
+    //
+    // Checking only the first is the shape this suite exists to catch. The
+    // docblock above argues that a key the service never issued would send
+    // the whole matrix green on `key.valid`; a queued key is the same defect
+    // one layer in, and harder to see, because the key is genuine — the
+    // operations would refuse for having no tab while the seed reported
+    // success, and the failure would name a rule that looks like a real
+    // finding about the operation under test.
+    //
+    // The sibling seed below already reads `value['outcome']`, because
+    // reaching a queue placement is the thing it is trying to do. This one
+    // wants the opposite and had not said so.
+    if (granted.value['outcome'] !== 'granted') {
+      throw new Error(
+        `the seed obtained a lease that is not live: the service answered ` +
+          `'${String(granted.value['outcome'])}' rather than 'granted', so the key it ` +
+          `returned has no tab behind it and every keyed case would measure that ` +
+          `instead of the operation it names.`,
+      );
+    }
     // **The key is substituted into the case's input**, so the operation
     // under test is reached rather than being refused for an unknown key.
     return { lease_key: granted.value['key'] };
