@@ -332,7 +332,8 @@ concurrency tests below are green.
 | **54** | **The launch race, arbitrated by the same transaction as claims** — one row, one winner; the loser waits and attaches rather than starting a second browser (`SCHEMA.md` §1.2a) | 20, 12 | `done` |
 | **55** | **Decide what a caller that lost the launch race waits for, and for how long** (`SCHEMA.md` §1.2b, §9.3). Winning the race and having an endpoint that accepts connections are **different moments**, and the gap has no specified signal and no bound. Delivers the readiness signal, the poll, the timeout default and the declare-failed behaviour | 54 | `open` |
 | **56** | **The keeper tab.** One blank, never-leased, never-addressable tab per browser, **never counted against the budget**, present before any lease is granted against that browser (`SCHEMA.md` §3.15, §7.2) | 20 | `done` |
-| **21** | Tab lifecycle: open and close by opaque identifier, the identifier mapping, and **reconciliation against the browser** — a browser that fails either discovery check is gone and every tab row in it is closed | 20, 18, 53 | `done` |
+| **21** | Tab lifecycle: open and close by opaque identifier, and the identifier mapping | 20, 18, 53 | `done` |
+| **21a** | **Reconciliation against a live browser** — ask what it actually has open, close a page no live lease owns, close a row a live lease believes it owns that is not there. The gone-browser half is covered by the sweep; **this half is not built** — no path in `src/` calls `listTabs` | 21, 53, 56 | `todo` |
 | **22** | Navigate and act, tab-addressed, snapshot-to-path on every mutation. **The ordinary page verbs** — click, type, fill, press, select, hover, check, scroll — and the refusal that **lists every action by name** | 21 | `done` |
 | **61** | **`resize` as an action on `browser_act`** — set the tab's viewport, return a fresh snapshot. **Measured: 578 calls across 140 sessions — 58% of every session that used browser automation, and the sixth most-used verb** (`SCHEMA.md` §3.8). **High priority**: responsive review is inexpressible without it | 22 | `done` |
 | **62** | **`emulate` as an action on `browser_act`** — colour scheme, reduced motion and forced colours, returning a fresh snapshot because changing them changes what renders. **Measured: 19 calls across 9 sessions, with no page-side path** (`SCHEMA.md` §3.8) | 22 | `done` |
@@ -1112,6 +1113,14 @@ happen outside it.
 
 **A browser dying ends every lease in it at once.** That is not a degraded mode this design hides —
 with two browsers and no third there is no capacity to fail over to, and it is reported as what it is.
+
+**Which halves are built, stated precisely, because the split is not obvious from the list above.**
+Step 1 and step 3 are covered by the lazy global sweep (#16) in `arbitration.ts`: it runs first on
+every arbitration call, expires every lapsed claim across the whole store, moves their tabs to the
+state that is true of each, and schedules the close after the commit. **Step 2 is not built.** No
+path in `src/` calls `listTabs`, so a live browser is never asked what it actually has open, and a
+page that no live lease owns is never closed on that basis. It is #21a, and it is `todo` rather than
+absorbed into this row — a requirement listed under a `done` row is a requirement nobody schedules.
 
 ### #65 — the seed is written through a storage interface, and never evaluated
 

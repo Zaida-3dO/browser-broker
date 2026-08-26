@@ -37,18 +37,18 @@ import type { ResolvedLease } from './leases.ts';
  * distinguishing *"no such tab"* from *"not yours"* is an oracle: a caller
  * could walk identifiers and learn which ones are real.
  *
- * ── The name says which of the two tab resolvers this is ────────────────
+ * ── This is the only tab resolver, and the name carries a warning ───────
  *
- * `tabs.ts` has a sibling, {@link findOpenOwnedTab}, and the two are **not**
- * interchangeable: this one throws a {@link CallRefusal} and writes a ledger
- * row, and it resolves a tab in **any** state; that one returns `undefined`
- * and requires the tab to be `open`.
+ * It resolves a tab in **any** state, throws a {@link CallRefusal} and writes
+ * a ledger row. The name says `OrRefuse` because that is the whole contract.
  *
- * Both were called `resolveOwnedTab`. Under lazy opening the difference is not
- * cosmetic — a caller reaching for the wrong one would get `undefined` on every
- * first call, because the tab is not open yet, and no tab could ever be driven.
- * The names now say which is which rather than leaving the next reader to
- * compare signatures.
+ * A sibling that resolved only tabs in state `open` and answered `undefined`
+ * instead of throwing is a tempting thing to add, and it is a trap worth
+ * naming here so it is not rediscovered by experiment. **Under lazy opening a
+ * resolver requiring `open` returns nothing on every first call**, because
+ * the tab has not been opened yet — so a caller reaching for it to authorise
+ * an operation finds that no tab can ever be driven at all. If a call site
+ * seems to want that behaviour, the call site is the thing to look hard at.
  */
 export function resolveOwnedTabOrRefuse(
   db: Database,

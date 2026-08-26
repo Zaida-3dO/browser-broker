@@ -34,29 +34,6 @@ import type { Database } from 'better-sqlite3';
  */
 
 /**
- * Count the live claims.
- *
- * **`queued` counts as live and that is not an error.** A queued lease holds
- * no tab, so counting it would refuse capacity to somebody on the strength of
- * a lease holding nothing — but §2.1 calls both states live and the sweep
- * treats them alike, so the distinction has to be made *here*, in the one
- * place it matters, rather than by hoping every caller remembers it.
- * {@link countActiveClaims} is what admission uses; this is what the queue
- * and the ledger use.
- *
- * Both read `state` directly, which is safe **only** because every caller is
- * inside the arbitration transaction after the sweep has run (§2.4). Outside
- * that, `state` alone reports leases that do not exist — the standing rule
- * that stored state is provisional and derived state is the truth.
- */
-export function countLiveClaims(db: Database): number {
-  const row = db
-    .prepare("SELECT count(*) AS n FROM claims WHERE state IN ('queued', 'active')")
-    .get() as { n: number };
-  return row.n;
-}
-
-/**
  * Count the claims that hold a tab, which is what capacity is a count of.
  *
  * Reads the index-only partial index over the live claims (§1.11), which is
