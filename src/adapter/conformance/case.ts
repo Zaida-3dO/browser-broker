@@ -24,8 +24,28 @@ export interface CaseSeed {
    * **every** route the case is crossed with — otherwise the second route in
    * the matrix runs against the first one's leftovers and the two are not
    * being asked the same question.
+   *
+   * ── Why it returns values rather than only causing effects ─────────────
+   *
+   * Some of what a seed establishes is **only knowable after it has run**, and
+   * a lease key is the example that forces this: it is minted by the claim, is
+   * returned exactly once, and is not recoverable from anywhere (§2.2). So a
+   * case needing a live lease cannot write the key into its input — nothing
+   * knows it yet — and a case that wrote a placeholder would be asking the
+   * service about a key it never issued.
+   *
+   * What comes back is merged over {@link ConformanceCase.input} before the
+   * route is driven. Returning nothing is the ordinary case, for a seed whose
+   * whole effect is on the service.
+   *
+   * **The merge happens once, in the runner**, so every route receives the
+   * same substituted input. A driver doing its own substitution would be a
+   * route deciding what it was asked — which is the shape the neutral-input
+   * rule exists to prevent.
    */
-  readonly apply: (service: BrokerService) => Promise<void> | void;
+  readonly apply: (
+    service: BrokerService,
+  ) => Promise<Readonly<Record<string, unknown>> | void> | Readonly<Record<string, unknown>> | void;
 }
 
 /** The case expects the operation to be allowed. */

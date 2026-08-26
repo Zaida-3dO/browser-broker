@@ -13,6 +13,7 @@ import { resolveOwnedTabOrRefuse } from '../ownership.ts';
 import {
   disposeEvaluationResult,
   MAX_INLINE_RESULT_BYTES,
+  validateCaptureMode,
   resolveReadArtifacts,
   validateAction,
   validateExpression,
@@ -982,6 +983,11 @@ export function decideCapture(
   input: CaptureInput,
 ): ArbitrationOutcome<CaptureResult> {
   const fullPage = input.fullPage === true;
+  // **Before `admit`, like every other argument validation in this file.** A
+  // capture that contradicts itself is refused before the lease is resolved,
+  // before ownership is checked and before a single row is written, so the
+  // refusal leaves nothing behind but its own ledger entry.
+  validateCaptureMode({ fullPage, selector: input.selector });
   const request: CaptureRequest = {
     fullPage,
     ...(input.selector === undefined ? {} : { selector: input.selector }),

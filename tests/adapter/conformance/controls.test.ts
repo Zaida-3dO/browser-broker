@@ -10,9 +10,9 @@ import type {
 import { CONFORMANCE_CASES } from '../../../src/adapter/conformance/cases.ts';
 import { OPERATION_NAMES } from '../../../src/adapter/operations.ts';
 import {
-  DOUBLE_RULE_REGISTRY,
-  makeServiceDouble,
-} from '../../../src/adapter/conformance/service-double.ts';
+  SERVICE_RULE_REGISTRY,
+  makeServiceSubject,
+} from '../../../src/adapter/conformance/service-subject.ts';
 import {
   runConformance,
   type Finding,
@@ -65,10 +65,19 @@ function driverOver(adapter: Adapter): ConformanceDriver {
   return { ...cliConformanceDriver, adapter };
 }
 
+/**
+ * The honest configuration every control is measured against.
+ *
+ * **The subject is the real service**, the same one the suite next door runs.
+ * A control measured against a different subject would be measuring a
+ * different baseline: the point of a control is that it differs from the
+ * green run in exactly one respect, and the subject has to be that one thing
+ * held constant rather than a second variable.
+ */
 const baseline = {
   cases: CONFORMANCE_CASES,
-  rules: DOUBLE_RULE_REGISTRY,
-  makeService: makeServiceDouble,
+  rules: SERVICE_RULE_REGISTRY,
+  makeService: makeServiceSubject,
 };
 
 test('the suite is GREEN over the real routes — the control every control below is measured against', async () => {
@@ -115,7 +124,7 @@ test('CONTROL — a registered rule with no case is caught', async () => {
   const report = await runConformance({
     ...baseline,
     drivers: driversWith(cliConformanceDriver),
-    rules: { names: [...DOUBLE_RULE_REGISTRY.names, 'a.rule_no_case_produces'] },
+    rules: { names: [...SERVICE_RULE_REGISTRY.names, 'a.rule_no_case_produces'] },
   });
 
   const finding = report.findings.find((entry) => entry.kind === 'rule-without-a-case');
@@ -139,7 +148,7 @@ test('CONTROL — a rule is only satisfied by a refusal the service PRODUCED, no
     ...baseline,
     drivers: driversWith(cliConformanceDriver),
     cases: [...CONFORMANCE_CASES, declaredButNeverProduced],
-    rules: { names: [...DOUBLE_RULE_REGISTRY.names, 'a.rule_only_declared'] },
+    rules: { names: [...SERVICE_RULE_REGISTRY.names, 'a.rule_only_declared'] },
   });
 
   assert.ok(

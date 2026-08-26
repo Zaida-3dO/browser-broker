@@ -210,3 +210,64 @@ test('an evaluation that reaches no browser reports no value at all', async () =
     assert.equal(result.claimId, lease.claimId);
   });
 });
+
+/* ── `capture.exclusive_mode` (§7.1), which had no implementation ── */
+
+test('a capture naming a selector and the whole page is refused', async () => {
+  // The rule is specified in §7.1 and was enforced nowhere: a capture asking
+  // for both was accepted, and which picture it took was decided by whichever
+  // argument the pipeline read first.
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = new FakeBrowserDriver();
+
+    await assert.rejects(
+      fixture.broker.capture({
+        key: lease.key,
+        tabId: lease.tabId,
+        fullPage: true,
+        selector: '.thing',
+        session: () => driver.attach('regular', RECORD),
+        artifacts: fixture.artifacts,
+      }),
+      (error: unknown) => error instanceof Error && /both/i.test(error.message),
+    );
+
+    // **The physical side-effect, not only the throw.** A refusal that fires
+    // after the shutter has already been pressed is not a refusal — the
+    // picture exists and the caller was told it does not.
+    assert.deepEqual(driver.callsOf('capture'), [], 'the refused capture still took a picture');
+    assert.equal(
+      fixture.readCommitted<{ n: number }>('SELECT count(*) AS n FROM captures')[0]?.n,
+      0,
+      'the refused capture wrote a row',
+    );
+  });
+});
+
+test('each mode alone is still accepted, so the rule refuses the pair and not the arguments', async () => {
+  // Without this pair the test above would pass against a handler that
+  // refused every capture, or refused any capture naming a selector at all.
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = new FakeBrowserDriver();
+
+    const wholePage = await fixture.broker.capture({
+      key: lease.key,
+      tabId: lease.tabId,
+      fullPage: true,
+      session: () => driver.attach('regular', RECORD),
+      artifacts: fixture.artifacts,
+    });
+    assert.equal(wholePage.pageDriven, true);
+
+    const element = await fixture.broker.capture({
+      key: lease.key,
+      tabId: lease.tabId,
+      selector: '.thing',
+      session: () => driver.attach('regular', RECORD),
+      artifacts: fixture.artifacts,
+    });
+    assert.equal(element.pageDriven, true);
+  });
+});
