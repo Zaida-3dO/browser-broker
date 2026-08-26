@@ -663,6 +663,48 @@ export async function runOperationsCheck() {
         `release answered ${JSON.stringify(release)}`,
       );
 
+      // ── Reconciliation is reachable from the shipped executable ──────
+      //
+      // **This is the assertion this check exists for, applied to the one
+      // command most likely to fail it.** The whole rationale at the head of
+      // this file is that a service handed in by a test cannot notice that
+      // nobody else hands it in; `broker reconcile` has the same exposure one
+      // layer along, because it needs a *browser session provider* and the
+      // only thing that supplies one is `src/bin/broker.ts`. A dispatcher
+      // wired correctly and a binary that forgot to pass `session` produces a
+      // command that every in-process test passes and every real invocation
+      // refuses.
+      //
+      // So the assertion is specifically that it does **not** answer
+      // `browser.unreachable` — the refusal the command gives when it was
+      // handed no way to ask a browser anything.
+      //
+      // What this deliberately does not assert is that a browser was reached.
+      // This check runs where no browser may be installed, so requiring a
+      // successful attach would make it fail for a reason that is not about
+      // the wiring. The refusal above is produced *before* any browser is
+      // contacted, which is exactly what makes it the right thing to look
+      // for: its absence proves the provider arrived.
+      const reconcile = await spawnBinary(COMMAND_LINE, ['reconcile', 'regular', '--json'], {
+        env: environment,
+      });
+
+      check(
+        'the shipped command line hands reconciliation a way to ask a browser',
+        !reconcile.stderr.includes('browser.unreachable'),
+        `\`broker reconcile\` was not given a browser session by the executable.\n         exit ${String(reconcile.code)}\n         stdout: ${reconcile.stdout.trim()}\n         stderr: ${reconcile.stderr.trim()}`,
+      );
+
+      // And the command is one a person can find. A command wired into the
+      // dispatcher but missing from the table works and is undiscoverable,
+      // which §5.4 names as the failure of a command absent from the help.
+      const help = await spawnBinary(COMMAND_LINE, ['--help'], { env: environment });
+      check(
+        'the shipped command line lists reconcile among its commands',
+        help.code === 0 && help.stdout.includes('reconcile'),
+        `\`broker --help\` did not name reconcile; stdout: ${help.stdout.trim()}`,
+      );
+
       // ── The decisions were written down ──────────────────────────────
       //
       // §1.6 keeps one row per decision and records which door it came in

@@ -27,7 +27,9 @@ import { runCaptures } from './telemetry.ts';
 import { runImage } from './image.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
 import { explainLoginFailure, runLoginCommand } from './login-command.ts';
+import { runReconcileCommand } from './reconcile-command.ts';
 import type { Broker } from '../service/broker.ts';
+import type { BrowserSessionProvider } from '../service/browser-session.ts';
 
 /**
  * Argument parsing and command dispatch.
@@ -81,6 +83,26 @@ export interface RunOptions {
   readonly broker?: Broker;
   /** The open store, for the commands that need the setup handshake. */
   readonly store?: StoreHandle;
+
+  /**
+   * Resolve a live browser session, for `broker reconcile`.
+   *
+   * A third field alongside {@link RunOptions.service} and
+   * {@link RunOptions.broker}, and for the same reason those two are separate
+   * from each other: it carries a different surface on purpose. Neither of
+   * the other two can answer *what does this browser actually have open* —
+   * `service` is the ten agent operations, and every one of them is about a
+   * lease. Reconciliation is about the browser (§2.6), so it arrives here.
+   *
+   * **Injected rather than constructed, exactly like the other two.** A
+   * dispatcher that built its own session provider would be a second adoption
+   * path racing the runtime's, and could only be tested by spawning.
+   *
+   * When it is absent, `reconcile` refuses and says so, rather than treating
+   * an unasked browser as one that answered with nothing — which would settle
+   * every live lease on it.
+   */
+  readonly session?: BrowserSessionProvider;
   /** The environment snapshot the runtime already read (§6.3: one per process). */
   readonly environment?: Environment;
 
@@ -315,7 +337,8 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
         name === 'events' ||
         name === 'diffs' ||
         name === 'captures' ||
-        name === 'image'
+        name === 'image' ||
+        name === 'reconcile'
       ) {
         return await runOperationsCommand(name, parsed.rest, { streams, json, options });
       }
@@ -887,7 +910,7 @@ async function runLogin(
 }
 
 async function runOperationsCommand(
-  command: 'snapshot' | 'doctor' | 'events' | 'diffs' | 'captures' | 'image',
+  command: 'snapshot' | 'doctor' | 'events' | 'diffs' | 'captures' | 'image' | 'reconcile',
   rest: readonly string[],
   context: { streams: Streams; json: boolean; options: RunOptions },
 ): Promise<number> {
@@ -960,6 +983,23 @@ async function runOperationsCommand(
         db: store.db,
         artifacts: new ArtifactStore(environment.artifactsRoot),
         streams,
+      });
+    }
+    if (command === 'reconcile') {
+      // **The one command on this route that asks a browser anything.** It is
+      // here rather than beside `login` because it takes the same stepped
+      // store every other operations command takes, and its refusal path is
+      // the same one — see `reconcile-command.ts` for why it is an
+      // administrative command at all rather than an agent operation.
+      //
+      // The session provider is the runtime's own, passed through rather than
+      // rebuilt: `browser-session.ts` decides adoption once per browser per
+      // process, so a second provider here would be a second launch path.
+      return await runReconcileCommand(rest, {
+        db: store.db,
+        ...(context.options.session === undefined ? {} : { session: context.options.session }),
+        streams,
+        json,
       });
     }
     return runEventsCommand(rest, { db: store.db, streams, json });
