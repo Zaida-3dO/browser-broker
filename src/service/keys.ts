@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 /**
  * The lease key: minted once, returned once, and never stored.
@@ -69,26 +69,4 @@ export function mintKey(): string {
  */
 export function hashKey(key: string): string {
   return createHash('sha256').update(key, 'utf8').digest('hex');
-}
-
-/**
- * Compare two hashes without leaking where they first differ.
- *
- * **The timing argument is weak here and the function is used anyway**, which
- * is worth stating rather than implying a threat this defends against: the
- * ordinary lookup is a database index probe on the hash, and that is not
- * constant time by any stretch. What this covers is the comparison a guard
- * writes by hand — ownership checks and the like — where the equality
- * operator would be the obvious thing and where making the safe spelling the
- * available one costs nothing.
- */
-export function hashesMatch(left: string, right: string): boolean {
-  const a = Buffer.from(left, 'utf8');
-  const b = Buffer.from(right, 'utf8');
-  // Lengths differ only if something other than this module produced one of
-  // them; the comparison below requires equal lengths and throws otherwise.
-  if (a.length !== b.length) {
-    return false;
-  }
-  return timingSafeEqual(a, b);
 }

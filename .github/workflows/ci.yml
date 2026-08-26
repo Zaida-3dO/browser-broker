@@ -43,6 +43,20 @@ jobs:
       # tree with nothing installed can still be checked.
       - run: npm run check:external-refs
 
+  # The dangling-documentation-link gate, as its own job for the same reason
+  # the hygiene gate is one: a failure should name the rule that fired.
+  doc-links:
+    name: doc-links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      # No install step, deliberately: the scan reads the tree off disk, so a
+      # checkout with nothing installed is exactly what it needs.
+      - run: npm run check:doc-links
+
   arbitration:
     name: arbitration
     runs-on: ubuntu-latest
