@@ -83,7 +83,7 @@ test('every code names a rule, a summary and a retry answer', () => {
   // shipped a check that iterated a list rather than naming its entries, so
   // deleting an entry stayed green. The count is asserted first, so removing
   // a code fails here even though the loop below would happily skip it.
-  assert.equal(REFUSAL_CODES.length, 10, 'a refusal code was added or removed without a test');
+  assert.equal(REFUSAL_CODES.length, 11, 'a refusal code was added or removed without a test');
   assert.deepEqual([...REFUSAL_CODES].sort(), [
     'browser_unavailable',
     // Added with the sign-in path. It shares `browser.serving` with the code
@@ -99,6 +99,11 @@ test('every code names a rule, a summary and a retry answer', () => {
     // line and `unexpected_failure` on the tool surface.
     'purpose_out_of_bounds',
     'reason_required',
+    // The same coercion as `purpose_out_of_bounds` with no column standing
+    // behind it: `claims.session_id` has no CHECK, so the empty string a
+    // surface produces from a missing argument was written as a granted,
+    // anonymous lease rather than crashing.
+    'session_id_missing',
     'tab_not_found',
     'unknown_browser',
     'unknown_operation',
