@@ -21,6 +21,25 @@ import { run } from '../../src/cli/index.ts';
  * conformance suite; what is here is everything this route decides on its
  * own, which is precisely the surface that could hold a rule of its own if
  * nobody looked.
+ *
+ * ── Why this suite injects a service ───────────────────────────────
+ *
+ * What is under test is the adapter's own decisions — which exit code a
+ * refusal produces, what the JSON shape looks like, and which fields are
+ * never printed. Those are decisions the adapter makes about a RESULT, so
+ * the test has to choose the result: an outcome the real service refuses to
+ * produce on demand cannot be arranged through a spawn at all. The service
+ * seam is the adapter's declared input, so supplying one is using the
+ * boundary rather than reaching past it.
+ *
+ * The spawn-driven gate owns the complementary claim — that the shipped
+ * binaries build a real service and reach it — and nothing here duplicates
+ * it. This suite never asserts that the wiring exists; it asserts what the
+ * adapter does once a result arrives.
+ *
+ * injected-test-ok: the adapter's exit codes and redaction must be driven from
+ * chosen outcomes a real spawn cannot be made to produce on demand, and the
+ * seam supplying them is this route's own declared input.
  */
 
 interface Captured {

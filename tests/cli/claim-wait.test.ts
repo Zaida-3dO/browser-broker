@@ -29,6 +29,21 @@ import { run } from '../../src/cli/index.ts';
  * asked to sleep for* is the assertion — that the loop honours the number the
  * service handed it, rather than one of its own. This is the
  * measure-the-mechanism rule: the property is the schedule, not the delay.
+ *
+ * ── Why the injection is the only way to reach this ─────────────────
+ *
+ * The states under test are a queued claim that later becomes active, and a
+ * place in the queue that is lost. Both are properties of a contended queue,
+ * and a spawn-driven gate cannot arrange either on demand — it would have to
+ * manufacture a second contender and win a race, which is the flake this
+ * repository has already been bitten by twice. The scripted service puts the
+ * transition exactly where the test needs it and, by running out rather than
+ * repeating, turns "the loop polled once too often" into a named error
+ * instead of a hang.
+ *
+ * injected-test-ok: a queued claim becoming active, and a lost place in the
+ * queue, are contended-queue states no spawn can arrange on demand without
+ * manufacturing a race.
  */
 
 /** What a fake service was asked to do, in order. */

@@ -209,6 +209,22 @@ jobs:
       - run: npm ci
       - run: npm run check:argument-refusals
 
+  # The injected-test rule was prose in a test header until it went stale, so
+  # it earns a job of its own rather than riding along inside another. A rule
+  # that is only enforced when somebody remembers to run the aggregate script
+  # is the same rule that drifted in the first place.
+  injected-tests:
+    name: injected-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      - run: npm run check:injected-tests
+
   # Windows earns a job because the network-location refusal has a
   # platform-specific path that would otherwise never execute in continuous
   # integration at all. A hosted runner has nothing mapped, so this proves the
