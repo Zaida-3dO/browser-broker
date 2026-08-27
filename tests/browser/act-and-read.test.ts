@@ -61,7 +61,7 @@ const FIXTURE_HTML = [
   '<input id="txt" type="text">',
   '<input id="chk" type="checkbox">',
   '<select id="sel"><option value="a">A</option><option value="b">B</option></select>',
-  '<div id="hov" onmouseover="window.__hovered = true">hover target</div>',
+  '<div id="hov" onmouseover="window.__hovered = true" onclick="window.__hovClicks = (window.__hovClicks || 0) + 1">hover target</div>',
   '<input id="one"><input id="two">',
   '<div id="src" draggable="true">DRAGME</div><div id="dst">DROPHERE</div>',
   '<div style="height:3000px"></div>',
@@ -274,11 +274,30 @@ test(
       });
       assert.equal(await inPage(fixture, "document.getElementById('sel').value"), 'b');
 
+      // Hover puts the pointer over the element WITHOUT pressing it.
+      //
+      // ── Why the click counter is read too, and why that is the whole test ─
+      //
+      // **Measured: without the second assertion this test could not fail.** A
+      // mutation implementing `hover` as a click SURVIVED against
+      // `window.__hovered` alone, because **a click hovers on its way in** —
+      // the browser dispatches `mouseover` before `mousedown`, so the correct
+      // and the incorrect verb both set that flag. The assertion could not
+      // tell them apart.
+      //
+      // The target therefore counts its clicks as well, the same way the
+      // button at the top of the fixture does, and the count staying at zero
+      // is what makes "hovered" and "clicked" observably different outcomes.
       await fixture.session.act(fixture.tab, {
         action: 'hover',
         ref: referenceFor(snapshot, 'hover target'),
       });
       assert.equal(await inPage(fixture, 'window.__hovered'), true);
+      assert.equal(
+        await inPage(fixture, 'window.__hovClicks || 0'),
+        0,
+        'hover must not press the element; a click would have registered here',
+      );
     } finally {
       await stopFixture(fixture);
     }

@@ -235,14 +235,35 @@ test('the executable entry point spawns, creates the store and exits zero', asyn
  * that the build a person installs tells the truth. That is the stronger
  * claim and it is not duplicated here.
  *
- * What it structurally cannot reach is the other branch. This build attaches
- * no session source anywhere, so **no binary can produce `pageDriven: true`**
- * — which means a renderer that printed the note unconditionally would look
- * identical to a correct one through every spawn-based gate. That gap is not
- * hypothetical: a condition of `pageDriven !== undefined` rather than
- * `pageDriven === false` is the one planted mutation the operations check
- * cannot kill, and it is a real defect — it would tell a person no page was
- * driven on a call where one was.
+ * **What it cannot reach reliably is the other branch**, which is why these
+ * two tests exist. `src/bin/broker.ts:103` passes `session: runtime.session`,
+ * so `pageDriven: true` is reachable through a real spawn, and the
+ * justification for injecting here is therefore measured rather than assumed.
+ * It holds, for a reason worth writing down.
+ *
+ * `scripts/check-operations.mjs` asserts this spawn-side, but its assertion
+ * is a **biconditional** between the prose and `pageDriven: false`.
+ * The contradiction it can detect — `pageDriven: true` printed beside "no
+ * browser was reached" — only exists on a run where a browser was actually
+ * reached. On a run with none, a note printed unconditionally is
+ * indistinguishable from a correct one, and the gate passes.
+ *
+ * **The faithful mutation these kill**, named as the rule requires: the
+ * no-browser note rendered on `pageDriven !== undefined` instead of
+ * `pageDriven === false` (`src/cli/index.ts`), which tells a person no page
+ * was driven on a call where one was.
+ *
+ * **Measured, not reasoned:** with that mutation planted, five consecutive
+ * local runs of the operations check caught it twice. And continuous
+ * integration has no browser at all, so there the gate never observes the
+ * branch that would expose it — it would catch this essentially never.
+ *
+ * These two tests kill it on every run, on every machine, which is why they
+ * stay rather than being folded into the gate and deleted.
+ *
+ * injected-test-ok: the operations gate only observes the no-browser branch on
+ * a runner without a browser, so an unconditionally printed note survives it
+ * there; these reach the driven branch deterministically at the adapter seam.
  *
  * So this reaches the unreachable state the only way it can be reached, at
  * the adapter's declared seam, and asserts the note is **absent**. It is
