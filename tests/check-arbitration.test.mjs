@@ -10,6 +10,7 @@ import {
   FORBIDDEN_SQL_KEYWORDS,
   REQUIRED_BEGIN,
   TRANSACTION_SOURCE,
+  afterCommitRegions,
   browserSessionMethods,
   checkImmediateTransaction,
   checkNoBrowserIo,
@@ -17,6 +18,7 @@ import {
   registeredNamesIn,
   stringLiterals,
   stripComments,
+  stripCommentsKeepingLines,
 } from '../scripts/check-arbitration.mjs';
 
 /**
@@ -364,6 +366,106 @@ test('comments are stripped before scanning, and literals are found within lines
   );
 });
 
+test('a pair of slashes inside a string literal is not a comment', () => {
+  // ── `MILESTONES.md` #73 ─────────────────────────────────────────────
+  //
+  // The strippers were two regexes with no string awareness, so the slashes
+  // in a URL were blanked as though they opened a line comment. The literal
+  // was left unterminated and the rest of the line vanished.
+  //
+  // Both strippers are asserted because they had the same defect and their
+  // consequences differ: the line-preserving one feeds the positional scans,
+  // and the collapsing one feeds `stringLiterals`.
+  const line = "const a = 'file:///opt/seed/target';";
+  assert.equal(stripCommentsKeepingLines(line), line, 'the literal was truncated at its slashes');
+  assert.equal(stripComments(line), line, 'the literal was truncated at its slashes');
+
+  // Length is preserved exactly, which is what keeps reported lines true.
+  const across = "const a = 'file:///opt/seed/target';\nconst b = 2;";
+  assert.equal(stripCommentsKeepingLines(across).length, across.length);
+
+  // A real comment on the same line as such a literal is still stripped —
+  // the fix must not have been "stop stripping after a quote".
+  assert.equal(
+    stripCommentsKeepingLines("const a = 'x://y'; // BEGIN").includes('BEGIN'),
+    false,
+    'a genuine line comment after a scheme-bearing literal survived stripping',
+  );
+  assert.equal(
+    stripCommentsKeepingLines("const a = 'x://y'; /* BEGIN */ b").includes('BEGIN'),
+    false,
+    'a genuine block comment after a scheme-bearing literal survived stripping',
+  );
+});
+
+test('a forbidden literal after a scheme-bearing one is still seen by scan A', () => {
+  // ── Why #73 was not the harmless over-firing it was filed as ────────
+  //
+  // The row recorded the failure direction as safe, reasoning that a dropped
+  // region makes the positional scans fire *more*. That is true of the
+  // line-preserving stripper and false of the other one. `stringLiterals`
+  // strips comments first, so a truncated literal swallows whatever follows
+  // it — including the next literal — and rule one's scan A looks **inside
+  // string literals only**.
+  //
+  // The result was a forbidden-SQL literal that no scan could see. This is
+  // the unsafe direction, and it is the reason both strippers were fixed
+  // together rather than one being left to its own row.
+  const hidden = "const url = 'x://y'; const sql = 'COMMIT';";
+  assert.ok(
+    stringLiterals(hidden).some((literal) => /\bCOMMIT\b/.test(literal.text)),
+    'a forbidden literal following a scheme-bearing one on the same line was invisible to scan A',
+  );
+
+  // The control that proves the assertion above is about the scheme and not
+  // about the shape of the line: the same two literals, no scheme.
+  assert.ok(
+    stringLiterals("const url = 'plain'; const sql = 'COMMIT';").some((literal) =>
+      /\bCOMMIT\b/.test(literal.text),
+    ),
+  );
+
+  // And end to end, through the rule itself rather than through its helper.
+  const sources = {
+    [ARBITRATION_SOURCE]: `const url = 'x://y'; const sql = 'COMMIT';\n${readFileSync(ARBITRATION_SOURCE, 'utf8')}`,
+    [TRANSACTION_SOURCE]: readFileSync(TRANSACTION_SOURCE, 'utf8'),
+  };
+  assert.ok(
+    checkImmediateTransaction(sources).some((failure) => failure.scan === 'A'),
+    'the seeded COMMIT did not fire scan A, so a scheme-bearing literal still hides the literal after it',
+  );
+});
+
+test('an after-commit region survives a nested template literal inside it', () => {
+  // ── The false positive the shared scanner also closes ───────────────
+  //
+  // `endOfString` stopped at the next backtick, which for a `${…}` holding
+  // its own template literal is the *inner* one's opening quote. The text
+  // after it was then read as source, so braces inside the inner literal
+  // unbalanced `matchingBracket` and the region ended early — putting genuine
+  // after-commit work outside its own exemption.
+  //
+  // The seed below is that shape. The `session.navigate(…)` sits after the
+  // nested template, so a region that ends early leaves it exposed to scan B.
+  const code = [
+    'const outcome = {',
+    '  afterCommit: async (session, page) => {',
+    '    const label = `a ${x === 1 ? `one}}}` : `many`} b`;',
+    '    await session.navigate(page, label);',
+    '  },',
+    '};',
+  ].join('\n');
+
+  const regions = afterCommitRegions(stripCommentsKeepingLines(code));
+  assert.equal(regions.bothScans.length, 1, 'the after-commit region was not found at all');
+
+  const [from, to] = regions.bothScans[0];
+  assert.ok(
+    code.slice(from, to).includes('session.navigate(page, label)'),
+    'the region ended before the after-commit work it exists to cover, so scan B would fire on correct code',
+  );
+});
+
 test('the registry parser counts operations, not the keys inside them', () => {
   // A real defect this caught rather than a hypothetical one: an operation is
   // an object with its own `kind`, `summary` and `handler` keys, and a flat
@@ -520,17 +622,17 @@ test('a seam call inside that same helper still does not fire, so the exemption 
   // latent hole for a live false positive on correct code, which is how a
   // check gets waived.
   //
-  // **The seeded URL is deliberately scheme-less.** `stripCommentsKeepingLines`
-  // is not string-aware, so a `//` inside a string literal is blanked as
-  // though it opened a line comment — which unterminates the string, makes
-  // `matchingBracket` fail, and drops the enclosing region. That is a real
-  // pre-existing defect and it is filed separately; writing `'https://…'`
-  // here would make this control fail for that reason instead of for the one
-  // it is testing.
+  // **The seeded target carries a scheme, and that is load-bearing.** The
+  // pair of slashes inside the literal is exactly the shape that the comment
+  // strippers must not mistake for a line comment: blanking it unterminates
+  // the string, unbalances `matchingBracket` and drops the enclosing region,
+  // so this control would fail for that reason rather than the one it tests.
+  // `MILESTONES.md` #73. The scheme therefore does double duty — a realistic
+  // navigation target, and a regression test for the stripper.
   const sources = seededOperation('src/service/operations/pages.ts', (source) =>
     source.replace(
       NAVIGATE_BODY,
-      `${NAVIGATE_BODY}\nfunction drive(handed: BrowserSession, page: TabHandle): Promise<void> {\n  return handed.navigate(page, 'example-target');\n}`,
+      `${NAVIGATE_BODY}\nfunction drive(handed: BrowserSession, page: TabHandle): Promise<void> {\n  return handed.navigate(page, 'file:///opt/seed/target');\n}`,
     ),
   );
   assert.deepEqual(

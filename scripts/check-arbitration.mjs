@@ -167,9 +167,99 @@ export const FORBIDDEN_DRIVER_TRANSACTIONS = [
   '\\.exclusive\\s*\\(',
 ];
 
+/**
+ * Walk `source` once, classifying every character as comment or not.
+ *
+ * Both strippers below are this walk with a different replacement, because
+ * **two spellings of "where does a comment start" is the hazard this file is
+ * written against.** The regex pair these replaced could not see string
+ * literals at all, so a `//` inside one was blanked as though it opened a line
+ * comment: the literal was left unterminated and everything to end-of-line
+ * disappeared. `MILESTONES.md` #73.
+ *
+ * The reason that mattered is that it was **not** the harmless over-firing the
+ * row assumed. Measured, both directions:
+ *
+ * - **A violation went missing.** {@link stringLiterals} strips comments
+ *   first, so a scheme-bearing literal followed on the same line by a
+ *   forbidden-SQL literal truncated the first and swallowed the second, and
+ *   rule one's scan A saw no literals at all where the same line without a
+ *   scheme reported two.
+ * - **Correct code failed.** A truncated literal unbalances
+ *   {@link matchingBracket}, which drops or shortens an after-commit region —
+ *   so a seam call that really is after-commit falls outside its exemption and
+ *   rule three's scan B fires on it.
+ *
+ * String tracking is delegated to {@link endOfString} rather than written a
+ * second time here, so the comment stripper and the bracket matchers agree
+ * about where a literal ends by construction rather than by coincidence.
+ *
+ * ── What this does not handle, stated rather than hidden ────────────────
+ *
+ * **Regular-expression literals.** `/ab//cd/` is a regex containing a `//`,
+ * and this treats that `//` as a line comment. Distinguishing a regex from a
+ * division needs the preceding token's grammatical class, which is a real
+ * parse — so this does not try, and the limitation is recorded here instead.
+ * The files named in {@link OPERATION_SOURCES}, {@link ARBITRATION_SOURCE} and
+ * {@link TRANSACTION_SOURCE} hold no regex literal, so nothing here depends on
+ * the distinction. One that did would strip too much, which is the direction
+ * that produces a loud failure rather than a quiet pass.
+ *
+ * **Escapes are handled; interpolation is walked.** `endOfString` steps over
+ * backslash escapes, and a `${…}` inside a template literal is walked as code
+ * rather than skipped as text, so a comment inside an interpolation is still
+ * stripped and a nested template inside one still terminates correctly.
+ *
+ * @param source The source text.
+ * @param replace Called with each comment's text; returns its replacement.
+ */
+function replaceComments(source, replace) {
+  let output = '';
+  let index = 0;
+
+  while (index < source.length) {
+    const character = source[index];
+
+    if (character === "'" || character === '"' || character === '`') {
+      const end = endOfString(source, index);
+      // An unterminated literal is the file failing to parse, not a comment.
+      // Emitting the remainder unchanged keeps positions true and leaves the
+      // resulting imbalance for the bracket matchers to refuse.
+      if (end === -1) {
+        output += source.slice(index);
+        break;
+      }
+      output += source.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+
+    if (character === '/' && source[index + 1] === '*') {
+      const close = source.indexOf('*/', index + 2);
+      const end = close === -1 ? source.length : close + 2;
+      output += replace(source.slice(index, end));
+      index = end;
+      continue;
+    }
+
+    if (character === '/' && source[index + 1] === '/') {
+      let end = source.indexOf('\n', index);
+      if (end === -1) end = source.length;
+      output += replace(source.slice(index, end));
+      index = end;
+      continue;
+    }
+
+    output += character;
+    index += 1;
+  }
+
+  return output;
+}
+
 /** Strip line and block comments, so prose about a keyword is not a match. */
 export function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  return replaceComments(source, () => ' ');
 }
 
 /**
@@ -184,8 +274,7 @@ export function stripComments(source) {
  * its reader to innocent code**. Every newline is kept here so the two agree.
  */
 export function stripCommentsKeepingLines(source) {
-  const blank = (match) => match.replace(/[^\n]/g, ' ');
-  return source.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/\/\/[^\n]*/g, blank);
+  return replaceComments(source, (comment) => comment.replace(/[^\n]/g, ' '));
 }
 
 /**
@@ -815,16 +904,47 @@ function matchingBracket(code, start) {
   return null;
 }
 
-/** The index of the closing quote of the string starting at `start`. */
+/**
+ * The index of the closing quote of the string starting at `start`.
+ *
+ * Returns `-1` for a literal that is never closed, which every caller treats
+ * as the file failing to parse rather than as a region running to end-of-file.
+ *
+ * ── Why a template literal is not just "scan to the next backtick" ──────
+ *
+ * A `${…}` interpolation contains **code**, and that code may itself contain a
+ * template literal. Stopping at the next backtick therefore ends the outer
+ * literal at the inner one's *opening* quote, and the text after it is read as
+ * source: braces inside the inner literal then unbalance
+ * {@link matchingBracket}, which shortens an after-commit region and fires
+ * rule three's scan B on correct after-commit work.
+ *
+ * That was measured, not supposed. The scanned files hold no nested template,
+ * but several modules elsewhere under `src/` do, and {@link OPERATION_SOURCES}
+ * is a hand-maintained list that grows — so the interpolation is walked rather
+ * than skipped, and the recursion handles the nesting to any depth.
+ */
 function endOfString(code, start) {
   const quote = code[start];
+
   for (let index = start + 1; index < code.length; index += 1) {
     if (code[index] === '\\') {
       index += 1;
       continue;
     }
+
+    // Interpolation holds code, not text. Walk it so that a nested literal
+    // terminates on its own terms and a brace inside one cannot leak out.
+    if (quote === '`' && code[index] === '$' && code[index + 1] === '{') {
+      const end = matchingBracket(code, index + 1);
+      if (end === null) return -1;
+      index = end - 1;
+      continue;
+    }
+
     if (code[index] === quote) return index;
   }
+
   return -1;
 }
 
