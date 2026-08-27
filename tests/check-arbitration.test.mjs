@@ -485,6 +485,61 @@ test('the same call inside an after-commit closure does not fire, so the rule is
   );
 });
 
+test('scan A fires on a session resolved inside a helper the exemption covers', () => {
+  // ── The hole the two-tier split closes ──────────────────────────────
+  //
+  // `afterCommitRegions` exempts the whole body of a function declaring a
+  // `BrowserSession` parameter, and that exemption is sound only because
+  // *acquiring* a session is what scan A catches. While both scans read one
+  // flat region list, the acquisition could be written **inside the exempted
+  // body**, where scan A had just been switched off — so the helper resolved
+  // its own session and drove it, and the rule said nothing.
+  //
+  // The seed below is exactly that shape: a helper that receives a session it
+  // never uses while resolving another one. Scan A must see the resolution,
+  // because the region it sits in is only ever exempt from scan B.
+  const sources = seededOperation('src/service/operations/pages.ts', (source) =>
+    source.replace(
+      NAVIGATE_BODY,
+      `${NAVIGATE_BODY}\nfunction smuggle(handed: BrowserSession, source: SessionSource): void {\n  void handed;\n  const live = source.session();\n  void live;\n}`,
+    ),
+  );
+  const failures = checkNoBrowserIo(sources, seam);
+  assert.ok(
+    failures.some((failure) => failure.scan === 'A'),
+    `a session resolved inside a BrowserSession-taking helper did not fire scan A, so the helper exemption still silences the scan that keeps it sound; scans that fired: ${failures.map((f) => f.scan).join(', ') || 'none'}`,
+  );
+});
+
+test('a seam call inside that same helper still does not fire, so the exemption survives the split', () => {
+  // ── The control for the split ───────────────────────────────────────
+  //
+  // The tier above must narrow the exemption without abolishing it. A helper
+  // *handed* a session calling a seam method on it is the case the exemption
+  // was written for, and it has to stay silent — otherwise the fix trades a
+  // latent hole for a live false positive on correct code, which is how a
+  // check gets waived.
+  //
+  // **The seeded URL is deliberately scheme-less.** `stripCommentsKeepingLines`
+  // is not string-aware, so a `//` inside a string literal is blanked as
+  // though it opened a line comment — which unterminates the string, makes
+  // `matchingBracket` fail, and drops the enclosing region. That is a real
+  // pre-existing defect and it is filed separately; writing `'https://…'`
+  // here would make this control fail for that reason instead of for the one
+  // it is testing.
+  const sources = seededOperation('src/service/operations/pages.ts', (source) =>
+    source.replace(
+      NAVIGATE_BODY,
+      `${NAVIGATE_BODY}\nfunction drive(handed: BrowserSession, page: TabHandle): Promise<void> {\n  return handed.navigate(page, 'example-target');\n}`,
+    ),
+  );
+  assert.deepEqual(
+    checkNoBrowserIo(sources, seam).filter((failure) => failure.scan === 'B'),
+    [],
+    'a seam call inside a helper handed a session fired scan B, so the split abolished the exemption rather than narrowing it',
+  );
+});
+
 test('scan C refuses an operation module that is not there', () => {
   const sources = operationSources();
   delete sources['src/service/operations/pages.ts'];

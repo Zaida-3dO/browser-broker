@@ -52,6 +52,8 @@
  * | The seam's method list is read from the seam, including inherited methods | **Checked.** Rule three, scan D — refuses rather than scanning for nothing |
  * | *A handler that constructed a driver for itself* | **NOT checked.** Reaching a browser that way takes a launch or an attach, which rule three does not look for. What stands against it is that `ArbitrationScope` carries no driver, so there is nothing to reach for by accident |
  * | *A browser reached through a value rule three cannot recognise* | **NOT checked, and not checkable this way.** A session smuggled through a differently-typed field matches no shape here |
+ * | *A session resolved inside a `BrowserSession`-taking helper's body* | **Checked, since the exemption was split in two.** That body is exempt from scan B only; scan A runs inside it, because a helper handed a session has no reason to resolve another |
+ * | *Seam calls in a helper handed a session that never came from a real one* | **NOT checked.** Scan B is off inside such a body by design. Passing a fabricated `BrowserSession` — a cast, or a stub — reaches a real browser only if the value is real, so what this rests on is that a genuine one still has to be acquired somewhere scan A can see |
  * | *Nothing anywhere in the tree can ever write outside a transaction* | **NOT checked, and not checkable this way.** A statement run on a raw handle takes its lock at statement time and matches no shape here |
  * | *A future module could not open its own deferred transaction* | **NOT checked.** These scans cover the arbitration module. A new module calling itself something else is outside them by construction |
  * | *The sweep is correct* | **NOT checked.** That it runs is a source fact; that it expires the right rows is a test, and the concurrency suite in #12–#17 is where the global-sweep assertion lives |
@@ -580,8 +582,25 @@ function scanOneOperationModule(file, rawSource, methods) {
   const failures = [];
   // Line-preserving, because every failure this produces reports a position.
   const code = stripCommentsKeepingLines(rawSource);
+
+  // ── Two tiers of exemption, and each scan gets only the one it is owed ──
+  //
+  // `afterCommit` closures are after-commit work outright, so both scans are
+  // off inside them. The type-directed helper exemption is **narrower than
+  // that and must stay narrower**: it exists so that a helper *handed* a
+  // session may call seam methods on it (scan B), and its soundness argument
+  // is that reaching the helper at all requires acquiring a session, which is
+  // the thing scan A catches. Exempting scan A inside the same body destroys
+  // that argument — the acquisition can then be written *in the body*, where
+  // scan A has just been switched off, and neither scan sees it.
+  //
+  // A helper that receives a session has no legitimate reason to resolve
+  // another one, so scan A is applied everywhere except real closures.
   const safe = afterCommitRegions(code);
-  const inSafeRegion = (index) => safe.some(([from, to]) => index >= from && index < to);
+  const within = (regions, index) => regions.some(([from, to]) => index >= from && index < to);
+  const inSafeRegionForA = (index) => within(safe.bothScans, index);
+  const inSafeRegionForB = (index) =>
+    within(safe.bothScans, index) || within(safe.scanBOnly, index);
   const lineAt = (index) => code.slice(0, index).split('\n').length;
 
   // Scan A. A session taken off the operation input, outside a closure.
@@ -591,7 +610,7 @@ function scanOneOperationModule(file, rawSource, methods) {
   // body is how the real code hands it to the closure — so what is caught is
   // **invoking** it, which is what turns the source into a live session.
   for (const call of code.matchAll(/\b(?:await\s+)?(\w+\s*\.\s*)?session\s*\(\s*\)/g)) {
-    if (inSafeRegion(call.index)) continue;
+    if (inSafeRegionForA(call.index)) continue;
     failures.push({
       rule: 'arbitration.no_browser_io',
       scan: 'A',
@@ -611,7 +630,7 @@ function scanOneOperationModule(file, rawSource, methods) {
   // receiver-name check would miss.
   for (const method of methods) {
     for (const call of code.matchAll(new RegExp(`\\.\\s*${method}\\s*\\(`, 'g'))) {
-      if (inSafeRegion(call.index)) continue;
+      if (inSafeRegionForB(call.index)) continue;
       failures.push({
         rule: 'arbitration.no_browser_io',
         scan: 'B',
@@ -645,14 +664,29 @@ function scanOneOperationModule(file, rawSource, methods) {
  * does not parse — is dropped rather than extended to the end of the file. An
  * unclosed region would mark the whole remainder safe, which is the failure
  * mode where a scan silently stops scanning.
+ *
+ * ── Why the return is two lists rather than one ─────────────────────────
+ *
+ * **The two shapes above do not earn the same exemption, and returning them
+ * flat gave the weaker one the stronger one's privileges.** A real closure
+ * runs after the commit, so nothing inside it is in the transaction and both
+ * scans are correctly off. The helper exemption below is an *inference* about
+ * where a helper's body must run, and that inference is only sound while the
+ * helper cannot obtain a session for itself — so it exempts scan B, which is
+ * what it is for, and never scan A, which is what keeps it sound.
+ *
+ * @returns {{ bothScans: Array<[number, number]>, scanBOnly: Array<[number, number]> }}
  */
 export function afterCommitRegions(code) {
-  const regions = [];
+  /** After-commit closures: in the transaction's future, so no scan applies. */
+  const bothScans = [];
+  /** Helper bodies: a seam call is expected, a session resolution is not. */
+  const scanBOnly = [];
 
   for (const start of code.matchAll(/\bafterCommit\s*:|\bafterCommitWork\s*\(/g)) {
     const from = start.index;
     const end = closingIndexFrom(code, from);
-    if (end !== null) regions.push([from, end]);
+    if (end !== null) bothScans.push([from, end]);
   }
 
   // ── Helpers that are handed a session ────────────────────────────────
@@ -669,15 +703,30 @@ export function afterCommitRegions(code) {
   // choosing a name. A handler that wanted to smuggle browser work into the
   // transaction this way would have to *acquire* a `BrowserSession` to pass
   // in, and acquiring one is the thing scan A catches.
+  //
+  // **That last sentence is the whole soundness argument, and it only holds
+  // while scan A still runs inside the body.** These regions therefore go on
+  // `scanBOnly`. When they went on one flat list shared with the closures
+  // above, the acquisition could simply be written inside the exempted body —
+  // scan A off because the region said so, scan B off for the same reason —
+  // and a helper taking a session it ignores while resolving another passed
+  // the whole rule in silence. Measured, not theorised: `input.session()`
+  // inside such a body reported as being in a safe region.
+  //
+  // **The match is stricter than the prose above suggests, deliberately.**
+  // The trailing `\)\s*:` requires a *declared return-type annotation*, so a
+  // helper written without one is not exempted at all and is scanned like any
+  // handler body. That is the safe direction to err in — do not "fix" it to
+  // accept a bare `)`, which would widen the exemption silently.
   for (const declaration of code.matchAll(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(([\s\S]*?)\)\s*:/g)) {
     if (!/:\s*BrowserSession\b/.test(declaration[1])) continue;
     const bodyStart = code.indexOf('{', declaration.index + declaration[0].length);
     if (bodyStart === -1) continue;
     const end = matchingBracket(code, bodyStart);
-    if (end !== null) regions.push([bodyStart, end]);
+    if (end !== null) scanBOnly.push([bodyStart, end]);
   }
 
-  return regions;
+  return { bothScans, scanBOnly };
 }
 
 /**
