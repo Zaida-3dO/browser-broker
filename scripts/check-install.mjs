@@ -77,6 +77,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { temporaryPrefix } from './temp-prefix.mjs';
+
 /** The repository root, derived from this file rather than from the caller's directory. */
 export const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -234,7 +236,7 @@ export async function runInstallCheck() {
   // A directory that does not exist yet, inside one that does: the clean
   // case is a caller who has set nothing up, so the spawn has to create its
   // own home rather than find one.
-  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'broker-install-check-'));
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), temporaryPrefix('install-check')));
   const storeDirectory = path.join(temporaryRoot, 'state', 'nested');
   const storeLocation = path.join(storeDirectory, 'broker.db');
 

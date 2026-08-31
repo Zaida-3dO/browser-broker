@@ -37,10 +37,14 @@
  *   node scripts/check-operations.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import DatabaseConstructor from 'better-sqlite3';
+
+import { temporaryPrefix } from './temp-prefix.mjs';
 
 export const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -53,8 +57,17 @@ export const SPAWN_TIMEOUT_MS = 120_000;
 
 const PASSTHROUGH_KEYS = ['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'TEMP', 'TMP'];
 
-/** Either spelling of a line ending, since the record is written by the browser. */
-const LINE_BREAK = /\r?\n/u;
+/**
+ * How long a browser gets to finish exiting after being asked to close.
+ *
+ * Generous, because the cost of being wrong is asymmetric: waiting longer
+ * than necessary costs a teardown some seconds, while giving up too early
+ * severs a browser mid-flush. The kill only happens once this is spent.
+ */
+const CLEAN_CLOSE_BUDGET_MS = 10_000;
+
+/** How often the wait asks whether the process has gone. */
+const EXIT_POLL_INTERVAL_MS = 50;
 
 /**
  * The variables a child needs to start, and nothing that configures this
@@ -212,7 +225,7 @@ export const KEYED_COMMANDS = [
 ];
 
 export async function runOperationsCheck() {
-  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'broker-operations-check-'));
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), temporaryPrefix('operations-check')));
   const environment = {
     ...ambientEnvironment(),
     BROKER_DB: path.join(temporaryRoot, 'state', 'broker.db'),
@@ -739,7 +752,7 @@ export async function runOperationsCheck() {
     // ending a browser: the service never does that, which is why there is no
     // operation for it and why this reads the identifier out of the store
     // rather than asking the service to help.
-    await endBrowsersStartedBy(temporaryRoot);
+    await endBrowsersStartedBy(temporaryRoot, environment.BROKER_DB);
     await removeWhenReleased(temporaryRoot);
   }
 
@@ -747,57 +760,182 @@ export async function runOperationsCheck() {
 }
 
 /**
- * End any browser running against a profile under this check's own root.
+ * End every browser this check started, and do not return until they are gone.
  *
- * ── Only ever this check's own browsers ─────────────────────────────────
+ * ── Why this is not just a close ────────────────────────────────────────
  *
- * The address comes from the record the browser wrote **inside a profile
- * directory this check created**, under a temporary root of its own. A browser
- * somebody else is running lives somewhere else and is never read, never
- * addressed and never ended. That scoping is the whole safety argument, and it
- * is why this walks the root rather than looking for browsers by name.
+ * It used to be. It read `DevToolsActivePort` out of each profile, connected
+ * over the protocol, called `close()`, and swallowed every failure with a
+ * comment saying that a failure meant the browser was "already gone, never
+ * there, or the package is not installed". **That inference is false**, and it
+ * is the whole defect: a close that does not take is indistinguishable, from
+ * inside that `catch`, from a browser that was never there. The check went
+ * green either way.
  *
- * Asked to close rather than signalled, which is both gentler and simpler:
- * the record carries an address, not a process identifier, and a browser told
- * to close releases the directory it is holding — which is the thing standing
- * between this and a clean removal.
+ * Measured on 2026-08-31: one green run of this check left **one root browser
+ * and twelve child processes** alive, holding a profile directory open, which
+ * is why `removeWhenReleased` below then exhausted its retries and left the
+ * directory behind. Over one morning that reached 22 orphaned root windows,
+ * 205 processes and 60 stale directories, on Ope's own desktop.
  *
- * Every failure is ignored. On the ordinary path — a machine with no browser
- * installed — nothing was started, no record exists, and this does nothing at
- * all.
+ * The close is kept, because a browser asked to shut itself down flushes its
+ * state and releases its handles properly. What is added is the part that
+ * makes the close *verifiable*: the identifier of the process, a bounded wait
+ * for it to actually exit, and a kill if it does not.
+ *
+ * ── Where the identifier comes from ─────────────────────────────────────
+ *
+ * From `browsers.pid` in **this check's own database** — the row
+ * `recordLaunched` writes when the service launches a browser
+ * (`src/browser/adoption.ts`). That is the isolation fact `SCHEMA.md` §1.2
+ * names: the service acts on processes it has recorded and on nothing else.
+ * This check sets `BROKER_DB` to a path under its own temporary root, so
+ * every row in that file describes a browser **this run caused**. A browser
+ * somebody else is running was never recorded there and is never read, never
+ * signalled and never ended.
+ *
+ * That scoping is the entire safety argument, and it is why this reads a
+ * store rather than looking for browsers by image name. Ope runs his own
+ * Chrome and a separate Playwright pool on this machine; a name match takes
+ * those out too.
+ *
+ * Every failure is still ignored. On the ordinary path — a machine with no
+ * browser installed — nothing was launched, no row exists, and this does
+ * nothing at all.
  */
-async function endBrowsersStartedBy(temporaryRoot) {
-  const profiles = path.join(temporaryRoot, 'profiles');
-  let entries;
-  try {
-    entries = readdirSync(profiles, { withFileTypes: true });
-  } catch {
-    // No profile root means nothing was ever started.
+async function endBrowsersStartedBy(temporaryRoot, databasePath) {
+  // The addresses, so a browser can be asked to close cleanly, keyed by the
+  // identifier that lets the exit be confirmed afterwards.
+  const launched = launchedBrowsers(databasePath);
+  if (launched.length === 0) {
     return;
   }
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  for (const { pid, endpoint } of launched) {
+    // ── The clean close ────────────────────────────────────────────────
+    //
+    // First, and over the protocol, so the browser shuts itself down and
+    // releases the profile directory rather than being severed from it.
+    if (endpoint !== undefined) {
+      try {
+        const { chromium } = await import('playwright-core');
+        const connection = await chromium.connectOverCDP(endpoint);
+        await connection.close();
+      } catch {
+        // Unreachable, already gone, or the package is not installed. This is
+        // no longer load-bearing: the wait below decides what happened, and
+        // the kill after it is what makes ignoring this safe.
+      }
+    }
 
-    let port;
-    try {
-      const contents = readFileSync(path.join(profiles, entry.name, 'DevToolsActivePort'), 'utf8');
-      const firstLine = contents.split(LINE_BREAK)[0];
-      port = Number.parseInt(firstLine ?? '', 10);
-    } catch {
-      // No record: this profile never had a browser, which is the state on
-      // any machine without one installed.
+    // ── The wait, on the actual condition ──────────────────────────────
+    //
+    // Polls the process rather than sleeping a fixed duration, because the
+    // thing that releases the profile's handles is the process *finishing*
+    // its exit — which is a moment after `close()` returns, not the same
+    // instant. Polling it is therefore also what makes the directory removal
+    // below reliable rather than a race.
+    if (await waitForExit(pid)) {
       continue;
     }
-    if (!Number.isInteger(port) || port <= 0) continue;
 
+    // ── The last resort ────────────────────────────────────────────────
+    //
+    // The budget is spent and the process is still there, so the clean close
+    // did not take. Signalled **by the identifier the store recorded for this
+    // run and by nothing else** — never by image name, for the reason in this
+    // function's header.
     try {
-      const { chromium } = await import('playwright-core');
-      const connection = await chromium.connectOverCDP(`http://127.0.0.1:${String(port)}`);
-      await connection.close();
+      process.kill(pid);
     } catch {
-      // Already gone, never there, or the package is not installed — all of
-      // which mean there is nothing here to end.
+      // Exited between the last poll and here, or not ours to signal. Both
+      // mean there is nothing further to do, and neither is worth failing a
+      // teardown over.
+    }
+  }
+}
+
+/**
+ * Wait for a process to exit, and say whether it did.
+ *
+ * `false` is the answer that costs something — it is what makes the caller
+ * reach for a kill — so the unsafe direction is concluding *gone*. A signal
+ * that fails for any reason other than "no such process" is therefore read as
+ * still-running, which at worst spends a redundant kill on something already
+ * dead.
+ */
+async function waitForExit(pid) {
+  const deadline = Date.now() + CLEAN_CLOSE_BUDGET_MS;
+  while (Date.now() < deadline) {
+    if (!processIsRunning(pid)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, EXIT_POLL_INTERVAL_MS));
+  }
+  return !processIsRunning(pid);
+}
+
+/**
+ * Is this process still running?
+ *
+ * The zero signal asks the operating system about a process without doing
+ * anything to it. `ESRCH` is the only error that means *gone*; `EPERM` means
+ * it exists and is not ours, and anything else is unexplained — both are
+ * reported as running, per {@link waitForExit}'s asymmetry.
+ *
+ * A non-positive identifier is not a process, and is guarded rather than
+ * passed through: on a POSIX system zero and the negatives address process
+ * *groups*, so `kill(0, 0)` asks about the caller's own group and would
+ * answer "alive" about whatever is asking.
+ *
+ * This mirrors `processIsRunning` in `src/service/signin-recovery.ts`.
+ * Duplicated rather than imported because this script is plain JavaScript run
+ * by `node` with no loader, and importing a TypeScript module here would make
+ * the check depend on the build it exists to be independent of.
+ */
+function processIsRunning(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
+  }
+}
+
+/**
+ * The browsers this run launched, read from its own store.
+ *
+ * Only rows carrying a process identifier are returned: a row without one
+ * describes a browser that never came up, and there is nothing to end.
+ *
+ * Failure to open or read the database yields an empty list rather than
+ * throwing. This runs in a `finally` on every path including the failing
+ * ones, where the database may legitimately not exist — and a teardown that
+ * throws would replace a real assertion failure with a misleading one.
+ */
+function launchedBrowsers(databasePath) {
+  let db;
+  try {
+    db = new DatabaseConstructor(databasePath, { readonly: true, fileMustExist: true });
+    const rows = db.prepare(`SELECT pid, endpoint FROM browsers WHERE pid IS NOT NULL`).all();
+    return rows
+      .filter((row) => Number.isInteger(row.pid) && row.pid > 0)
+      .map((row) => ({
+        pid: row.pid,
+        endpoint: typeof row.endpoint === 'string' && row.endpoint !== '' ? row.endpoint : undefined,
+      }));
+  } catch {
+    // No database, no `browsers` table, or an unreadable file. On a machine
+    // with no browser installed this is the ordinary state.
+    return [];
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Nothing to do about a close that fails on a read-only handle.
     }
   }
 }

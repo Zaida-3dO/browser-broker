@@ -74,6 +74,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { temporaryPrefix } from './temp-prefix.mjs';
+
 import {
   ambientEnvironment,
   callLine,
@@ -325,7 +327,7 @@ export async function runArgumentRefusalCheck({ root = repositoryRoot } = {}) {
     }
   };
 
-  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'broker-argument-check-'));
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), temporaryPrefix('argument-check')));
   const commandLine = path.join(root, 'src', 'bin', 'broker.ts');
   const toolShim = path.join(root, 'src', 'bin', 'broker-tool.ts');
 
@@ -428,7 +430,7 @@ export async function runArgumentRefusalCheck({ root = repositoryRoot } = {}) {
  * the process dies in between.
  */
 export async function runSelfTest() {
-  const broken = mkdtempSync(path.join(tmpdir(), 'broker-argument-selftest-'));
+  const broken = mkdtempSync(path.join(tmpdir(), temporaryPrefix('argument-selftest')));
   try {
     // A checkout copy, minus the directories that make it enormous and that
     // nothing here reads.

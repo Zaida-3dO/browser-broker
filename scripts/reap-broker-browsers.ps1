@@ -20,10 +20,28 @@
 # be, and against a machine that is already in the frozen state it exists to
 # recover from.
 #
+# WHAT IT MATCHES, AND WHY THAT IS THE FAMILY RATHER THAN A LIST
+# It used to match ONLY 'broker-browser-', the prefix the test fixture uses.
+# On 2026-08-31 that turned out to be one of THIRTY-FIVE 'broker-*' temp
+# prefixes this repository can create, and the leak actually on the machine --
+# 22 orphaned root windows over one morning -- was under
+# 'broker-operations-check-', from the `check:operations` build gate. The
+# sweeper could not see it. Neither could any of the audits, which all counted
+# processes matching 'broker-browser-' and correctly reported zero.
+#
+# So the marker is now the FAMILY, 'broker-', not an enumeration. A list of
+# known prefixes is exactly what failed: it is only ever as current as the last
+# incident, and a new caller inventing a thirty-sixth spelling would again be
+# invisible to the thing meant to catch it. Every prefix in this repository is
+# created by an `mkdtempSync(path.join(tmpdir(), 'broker-...'))`, so the shared
+# stem is the real invariant -- and `scripts/temp-prefix.mjs` now states it
+# once so a caller cannot drift out of the family without noticing.
+#
 # SAFETY
-#  - Matches ONLY processes whose command line contains 'broker-browser-'.
-#    Your real Chrome/Edge and the Playwright MCP pool (which uses msedge.exe
-#    and playwright-review-*/playwright-stateful-* profiles) are NOT touched.
+#  - Matches ONLY processes whose command line contains 'broker-' AND whose
+#    profile path is under the user's TEMP directory. Your real Chrome/Edge and
+#    the Playwright MCP pool (which uses msedge.exe and
+#    playwright-review-*/playwright-stateful-* profiles) are NOT touched.
 #  - Kills by explicit PID, never by image name, so it satisfies
 #    kill-others-prevention-guard and cannot take out a sibling agent's work.
 #  - Default is a DRY RUN. Pass -Execute to actually terminate.
@@ -44,10 +62,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$marker = 'broker-browser-'
+# The family stem shared by every temp profile root this repository creates.
+# See the note above for why this is deliberately not a list of prefixes.
+$marker = 'broker-'
+
+# Anchored to the temporary directory as well as the stem, so the match is
+# "a browser running out of a scratch profile this repo made" rather than
+# "a command line with the word broker in it somewhere". A person browsing a
+# page whose URL happens to contain the stem is not swept.
+$tempPattern = [regex]::Escape($env:TEMP)
 
 $procs = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match $marker })
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $marker -and $_.CommandLine -match $tempPattern })
 
 if ($OlderThanHours -gt 0) {
     $cutoff = (Get-Date).AddHours(-$OlderThanHours)
@@ -62,6 +88,17 @@ $rootPids = @($procs | Where-Object {
 
 Write-Output "Leaked broker browser processes : $($procs.Count)"
 Write-Output "Root browsers to terminate      : $($rootPids.Count)"
+
+# Which prefixes these actually came from. Printed because the failure this
+# script exists to survive is a prefix nobody knew about: naming what was
+# found turns the next unknown one into a line of output rather than a silent
+# miss. Derived from the command line, not from any expected list.
+if ($procs.Count -gt 0) {
+    $seen = @($procs | ForEach-Object {
+            if ($_.CommandLine -match "(broker-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?-)[A-Za-z0-9]{6}") { $Matches[1] } else { 'broker-<unparsed>' }
+        } | Sort-Object -Unique)
+    Write-Output "Prefixes found                  : $($seen -join ', ')"
+}
 
 if (-not $Execute) {
     Write-Output ''
@@ -96,7 +133,7 @@ else {
 
     Start-Sleep -Seconds 2
     $left = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -match $marker })
+        Where-Object { $_.CommandLine -and $_.CommandLine -match $marker -and $_.CommandLine -match $tempPattern })
     Write-Output "Remaining after sweep           : $($left.Count)"
 }
 
@@ -106,6 +143,10 @@ else {
 # being cleared, and an operator who asked for a prune should get one even if
 # a kill failed for a reason this script did not anticipate.
 if ($PruneDirs) {
+    # "$marker*" is now 'broker-*', so this prunes the whole family rather than
+    # the one prefix -- which is the directory-side half of the same blindness:
+    # 60 stale 'broker-operations-check-' directories were on this machine while
+    # a prune reported nothing to do.
     $dirs = @(Get-ChildItem -Path $env:TEMP -Directory -Filter "$marker*" -ErrorAction SilentlyContinue)
     if ($OlderThanHours -gt 0) {
         $cutoff = (Get-Date).AddHours(-$OlderThanHours)
