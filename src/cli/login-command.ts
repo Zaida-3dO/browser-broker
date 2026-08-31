@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 import { browserIsRunning, RealBrowserDriver, modeFor } from '../browser/real.ts';
-import { BROWSER_IDS, type BrowserId, type BrowserSession } from '../browser/driver.ts';
+import { DEFAULT_BROWSER_IDS, type BrowserId, type BrowserSession } from '../browser/driver.ts';
 import type { Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
 import type { Broker } from '../service/broker.ts';
@@ -334,7 +334,9 @@ export async function runLoginCommand(options: LoginOptions): Promise<number> {
   // in `signing-in` over a directory that was never there. It creates what is
   // absent and leaves alone what is present — never recreating one that
   // exists, which is the whole of `setup.profile_never_destroyed`.
-  await runSetupHandshake(options.store, environment.profileRoot);
+  await runSetupHandshake(options.store, environment.profileRoot, {
+    browsers: [...environment.regularBrowsers, ...environment.privateBrowsers],
+  });
 
   // Step 1. Every refusal is the service's; this route adds none of its own.
   //
@@ -537,4 +539,4 @@ export function profileExists(profileRoot: string, browser: BrowserId): boolean 
 }
 
 /** The browsers this command will answer for, for a usage message. */
-export const LOGIN_BROWSERS: readonly BrowserId[] = BROWSER_IDS;
+export const LOGIN_BROWSERS: readonly BrowserId[] = DEFAULT_BROWSER_IDS;

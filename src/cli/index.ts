@@ -840,7 +840,9 @@ async function runInitCommand(context: {
     opened = await storeForRun(context.options, environment);
     const store = opened.store;
 
-    const report = await runSetupHandshake(store, environment.profileRoot);
+    const report = await runSetupHandshake(store, environment.profileRoot, {
+      browsers: [...environment.regularBrowsers, ...environment.privateBrowsers],
+    });
 
     if (json) {
       streams.out(JSON.stringify(report, null, 2));
@@ -1020,6 +1022,7 @@ async function runOperationsCommand(
         ...(context.options.session === undefined ? {} : { session: context.options.session }),
         streams,
         json,
+        browsers: [...environment.regularBrowsers, ...environment.privateBrowsers],
       });
     }
     return runEventsCommand(rest, { db: store.db, streams, json });

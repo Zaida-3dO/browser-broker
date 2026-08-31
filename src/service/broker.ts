@@ -142,6 +142,8 @@ export function createBroker(options: BrokerOptions): Broker {
     tabBudget: options.environment.tabBudget,
     leaseSeconds: options.environment.leaseSeconds,
     queueSeconds: options.environment.queueSeconds,
+    regularBrowsers: options.environment.regularBrowsers,
+    privateBrowsers: options.environment.privateBrowsers,
   };
 
   // The same one-per-process snapshot the arbitration settings are, taken

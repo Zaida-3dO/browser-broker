@@ -24,6 +24,7 @@ import {
 } from 'playwright-core';
 
 import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
+import type { BrowserEngine } from '../config/environment.ts';
 import { BrokerError, StartupRefusal } from '../errors.ts';
 import { readDiscoveryRecord, verifyDiscoveryRecord } from './discovery.ts';
 import type {
@@ -1510,6 +1511,24 @@ class RealBrowserSession implements BrowserSession {
 export interface RealDriverOptions {
   /** Where the browser binary is. Injected so a test can point at its own. */
   readonly executablePath?: string;
+  /**
+   * Which browser binary to launch (`DECISIONS.md` §13i).
+   *
+   * **Outranked by {@link RealDriverOptions.executablePath}**, which a test
+   * uses to point at a binary it fetched itself; this is the configured
+   * choice for a process that has not been given one.
+   */
+  readonly engine?: BrowserEngine;
+  /**
+   * Where each engine's binary is, for the engines this process was told
+   * about.
+   *
+   * **Supplied, never discovered** — see {@link executablePathForEngine} for
+   * why finding an installation is out of scope, and `DECISIONS.md` §13i for
+   * the decision. An engine with no entry falls back to the automation
+   * library's own Chromium.
+   */
+  readonly enginePaths?: EnginePaths;
   readonly launch?: LaunchOptions;
   readonly fetchImpl?: typeof fetch;
   /**
@@ -1592,6 +1611,47 @@ async function connect(options: {
 }
 
 /**
+ * Where a configured engine's binary lives, if this process was told.
+ *
+ * ── What is built here, and what is deliberately not ────────────────
+ *
+ * All three engines are Chromium over the same remote-debugging protocol, so
+ * choosing between them is choosing a binary — which is what makes the hook
+ * cheap, and it is the hook `DECISIONS.md` §13i asks for. **The expensive
+ * half is explicitly out of scope there**: per-engine executable discovery,
+ * per-engine discovery-record locations, per-engine health checks.
+ *
+ * **So resolution is a lookup of what a caller supplied, never a search.**
+ * The engine selects among paths this process was given; it does not go
+ * looking for an installation, and it never carries a path of its own.
+ * Writing a per-engine install location into this file would name one machine
+ * — §1.0's rule forbids that outright, and `check-external-refs` fails on the
+ * shape.
+ *
+ * **What happens when nothing supplied a path for the configured engine** is
+ * the case worth being exact about: the launch falls back to the automation
+ * library's own Chromium, which is what an unconfigured build launches. That
+ * is a real limit and it is named in §13i rather than hidden here — the
+ * variables are validated and carried, and the row that resolves an engine to
+ * an installed binary is separable work.
+ */
+export function executablePathForEngine(
+  engine: BrowserEngine,
+  supplied: EnginePaths | undefined,
+): string | undefined {
+  return supplied?.[engine];
+}
+
+/**
+ * A path per engine, supplied by whatever knows where binaries are on this
+ * machine.
+ *
+ * Partial on purpose: a machine has the browsers it has, and an engine with
+ * no entry is one this process cannot launch by name.
+ */
+export type EnginePaths = Partial<Record<BrowserEngine, string>>;
+
+/**
  * The real driver.
  *
  * Holds no state between calls: every fact two callers share lives in the
@@ -1609,7 +1669,13 @@ export class RealBrowserDriver implements BrowserDriver {
     // attaches never needs a binary path, and a driver that refused to
     // construct without one would make an attach-only caller depend on a
     // browser installation it is not going to use.
-    return this.#options.executablePath ?? chromium.executablePath();
+    if (this.#options.executablePath !== undefined) {
+      return this.#options.executablePath;
+    }
+    const engine = this.#options.engine;
+    const resolved =
+      engine === undefined ? undefined : executablePathForEngine(engine, this.#options.enginePaths);
+    return resolved ?? chromium.executablePath();
   }
 
   /**

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { BROWSER_IDS, PAGE_ACTIONS, type BrowserId } from '../../src/browser/driver.ts';
+import {
+  BROWSER_KINDS,
+  DEFAULT_BROWSER_IDS,
+  PAGE_ACTIONS,
+  type BrowserKind,
+} from '../../src/browser/driver.ts';
 import { FakeBrowserDriver } from '../../src/browser/fake.ts';
 import { decodePng } from '../../src/capture/image.ts';
 
@@ -271,12 +276,19 @@ test('clearing the log leaves the browser state alone', async () => {
   assert.equal(driver.openTabCount('regular'), 1, 'a cleared log is not a closed tab');
 });
 
-test('there are exactly two browsers and the fake serves both', () => {
-  assert.deepEqual([...BROWSER_IDS], ['regular', 'private']);
-  // Typed as the union, so a third is a compile error rather than a runtime
-  // check. This asserts the runtime list agrees with it.
-  const ids: BrowserId[] = [...BROWSER_IDS];
-  assert.equal(ids.length, 2);
+test('there are exactly two browser kinds, and the default configuration names two browsers', () => {
+  // **The bound that is still structural is the KIND, not the count.**
+  // `BrowserKind` is a union of two literals, so a third kind is a compile
+  // error; this asserts the runtime list agrees with the type.
+  const kinds: BrowserKind[] = [...BROWSER_KINDS];
+  assert.deepEqual(kinds, ['regular', 'private']);
+
+  // The default configuration's browsers, which is what an installation that
+  // has set nothing runs. **Deliberately not asserted to be the permitted
+  // set** — a bounded list per kind is configurable up to its cap
+  // (`DECISIONS.md` §13i), so an assertion that this were the whole of what
+  // may exist would be asserting the reversed decision.
+  assert.deepEqual([...DEFAULT_BROWSER_IDS], ['regular', 'private']);
 });
 
 test('the action list is the fixed set §3.8 names, with no way to move the foreground', () => {

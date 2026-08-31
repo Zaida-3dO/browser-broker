@@ -4,7 +4,7 @@ import path from 'node:path';
 import { StartupRefusal } from '../errors.ts';
 import type { StoreHandle } from '../store/open.ts';
 import { profileDirectory } from './discovery.ts';
-import { BROWSER_IDS, type BrowserId } from './driver.ts';
+import { DEFAULT_BROWSER_IDS, type BrowserId } from './driver.ts';
 
 /**
  * The setup handshake, run on every spawn.
@@ -232,31 +232,32 @@ function establishProfile(profileRoot: string, browser: BrowserId): ProfileRepor
 export async function runSetupHandshake(
   store: StoreHandle,
   profileRoot: string,
-  options: { readonly filesystem?: SetupFilesystem } = {},
+  options: { readonly filesystem?: SetupFilesystem; readonly browsers?: readonly BrowserId[] } = {},
 ): Promise<SetupReport> {
   assertProfileRootWritable(profileRoot, options.filesystem);
+
+  // The configured browsers, or the ones the default configuration names.
+  // **The default is a fallback for a caller that has no environment
+  // snapshot to hand, never a statement about what this installation has** —
+  // every shipped caller passes the configured lists.
+  const browsers = options.browsers ?? DEFAULT_BROWSER_IDS;
 
   const schemaVersion = await store.immediate(({ db }) => {
     // The version is stamped in the store's own header rather than in a
     // table, so it is read the way the stepper writes it.
     const version = db.pragma('user_version', { simple: true });
 
-    const rows = db
-      .prepare<[], { id: BrowserId }>('SELECT id FROM browsers ORDER BY id')
-      .all()
-      .map((row) => row.id);
-
-    // Exactly two, always. The check constraint and the primary key cap the
-    // table at two and the first schema step floors it at two, so a count
-    // that is not two means a store that was not stepped — worth naming here
-    // because every later refusal would be confusing instead.
-    if (rows.length !== BROWSER_IDS.length) {
-      throw new StartupRefusal(
-        'startup.schema_stepped',
-        `The store holds ${String(rows.length)} browser rows and this build expects ${String(BROWSER_IDS.length)}. The rows are created by the first schema step, so this store has not been stepped.`,
-      );
-    }
-
+    // **The row count is deliberately not asserted, and that is a decision
+    // rather than an omission** (`DECISIONS.md` §13i). A browser's row is
+    // created when it is first launched, not from configuration at startup,
+    // so a store holding fewer rows than this process has browsers
+    // configured is the ordinary state of a fresh installation rather than a
+    // fault — and two processes may hold different configurations, so no
+    // count is the right count for all of them.
+    //
+    // What that check was actually protecting — *is this store stepped* — is
+    // read directly from the version the stepper stamps, which is the fact
+    // it was standing in for.
     return { value: typeof version === 'number' ? version : 0 };
   });
 
@@ -264,11 +265,11 @@ export async function runSetupHandshake(
   // work and the arbitration transaction serialises every writer on the
   // machine — holding it open across a filesystem call on a slow or contended
   // volume would block every other caller for that duration.
-  const profiles = BROWSER_IDS.map((browser) => establishProfile(profileRoot, browser));
+  const profiles = browsers.map((browser) => establishProfile(profileRoot, browser));
 
   return {
     profiles,
-    browserRows: [...BROWSER_IDS],
+    browserRows: [...browsers],
     schemaVersion,
   };
 }

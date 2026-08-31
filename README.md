@@ -121,9 +121,26 @@ down would name one machine. To put it somewhere else, set `BROKER_DB`:
 BROKER_DB=/some/writable/path/broker.db node src/bin/broker.ts
 ```
 
+**The browsers are configuration too.** Two lists, at most three names each, defaulting to one of
+each — `regular` and `private`. A name is what a caller claims by and what its profile directory is
+called, and a caller that names no browser gets the first signed-in one:
+
+```bash
+BROKER_REGULAR_BROWSERS=regular,checkout      # persistent, signed in, at most 3
+BROKER_PRIVATE_BROWSERS=private               # ephemeral, at most 3
+BROKER_REGULAR_BROWSER_ENGINE=msedge          # chrome | brave | msedge
+BROKER_PRIVATE_BROWSER_ENGINE=msedge          # may differ from the line above
+```
+
+Two signed-in browsers is how two identities are exercised at once: tabs within one browser share
+its cookie jar, so they are isolated from other browsers and not from each other. **Note that each
+browser is a process before it holds a single tab**, which the tab budget does not count —
+`.env.example` gives the arithmetic beside the variables.
+
 A variable that is set but cannot be read as its type **refuses the spawn and names the variable**,
 rather than quietly falling back to the default — a configuration nobody chose is worse than a
-refusal nobody missed. A store location that resolves to a network share is refused for the same
+refusal nobody missed. For a list, the refusal names the offending **entry**: a duplicate within one
+list, a name in both lists, more names than the cap, or a name that is not a usable word. A store location that resolves to a network share is refused for the same
 reason it has to be: the write-ahead log coordinates through shared memory that requires every
 process using the file to sit on one host.
 
@@ -297,7 +314,9 @@ surface is being built, and the one manual step is wired: `broker login` hands a
 browser and `broker doctor` reports whether the sign-in took. Read [`docs/ROLLOUT.md`](docs/ROLLOUT.md) for taking it from installed to sole route in an order that
 never leaves traffic unarbitrated, [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
 [`docs/plans/DECISIONS.md`](docs/plans/DECISIONS.md) for why it is shaped this way, and
-[`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue.
+[`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue, and
+[`RELEASES.md`](RELEASES.md) for what changes between versions — in particular for defaults that
+move, which change an installation that has taken no action.
 
 ## Licence
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { BROWSER_CHOICE_GUIDANCE, BROWSER_IDS, type BrowserId } from '../../browser/driver.ts';
+import { BROWSER_CHOICE_GUIDANCE, type BrowserId } from '../../browser/driver.ts';
 import { admits, countActiveClaims } from '../capacity.ts';
 import { append } from '../events.ts';
 import { hashKey, mintKey } from '../keys.ts';
@@ -136,8 +136,14 @@ function describePurpose(purpose: unknown): string {
 export interface ClaimInput {
   /** The caller's identity (§1.3). **Not a limit** — a session may hold many leases. */
   readonly sessionId: string;
-  /** Which browser. **No default, deliberately** (§3.2): neither is a safe guess. */
-  readonly browser: string;
+  /**
+   * Which browser, **optional** (§3.2, `DECISIONS.md` §13i).
+   *
+   * Unstated resolves to the first signed-in browser; `regular` or `private`
+   * resolves to the first of that kind; a configured name resolves to that
+   * browser exactly.
+   */
+  readonly browser?: string;
   /** What this lease is for, in human words. What an operator reads when revoking. */
   readonly purpose: string;
   /**
@@ -231,6 +237,72 @@ export interface ArbitrationSettings {
   readonly tabBudget: number;
   readonly leaseSeconds: number;
   readonly queueSeconds: number;
+  /**
+   * The configured persistent, signed-in browsers, in configured order
+   * (§1.2). Never empty.
+   *
+   * **The first is what an unstated `browser` resolves to** (§3.2).
+   */
+  readonly regularBrowsers: readonly string[];
+  /** The configured ephemeral, clean-room browsers, in configured order (§1.2). */
+  readonly privateBrowsers: readonly string[];
+}
+
+/**
+ * What a caller asked for, turned into the browser it gets (§3.2).
+ *
+ * **Three forms, and a name is checked last rather than first.** The two kind
+ * words are the ones the default configuration also uses as names, so an
+ * installation that has renamed nothing resolves `regular` by kind and lands
+ * on the browser called `regular` either way — the orders agree. Where they
+ * would disagree is an installation whose signed-in list does not contain a
+ * browser named `regular`, and there the kind reading is the one that keeps
+ * working, which is why it wins.
+ *
+ * That ordering has a consequence worth stating rather than discovering: a
+ * browser **named** `regular` sitting in the *private* list would be
+ * unreachable by name. It cannot arise, because a name in both lists is
+ * refused at startup and `regular` in the private list still resolves as a
+ * kind — but the reason it cannot arise is the startup refusal, not this
+ * function.
+ *
+ * Returns `undefined` for a name no configured browser has, which the caller
+ * turns into the refusal; this function does not refuse, so that the ledger
+ * write and the refusal text stay in one place.
+ */
+export function resolveBrowser(
+  requested: string | undefined,
+  settings: ArbitrationSettings,
+): string | undefined {
+  // Nothing stated: the first signed-in browser. **Not a guess between two
+  // symmetric wrongs** (`DECISIONS.md` §13i) — defaulting to clean-room when
+  // a sign-in was wanted returns a login redirect, a wrong page that looks
+  // like a right one; defaulting to signed-in when clean-room was wanted
+  // returns a personalised page, which is the page most callers asked for.
+  if (requested === undefined) {
+    return settings.regularBrowsers[0];
+  }
+
+  if (requested === 'regular') {
+    return settings.regularBrowsers[0];
+  }
+  if (requested === 'private') {
+    return settings.privateBrowsers[0];
+  }
+
+  if (
+    settings.regularBrowsers.includes(requested) ||
+    settings.privateBrowsers.includes(requested)
+  ) {
+    return requested;
+  }
+
+  return undefined;
+}
+
+/** Every configured browser, both kinds, for a refusal that lists them. */
+export function configuredBrowsers(settings: ArbitrationSettings): readonly string[] {
+  return [...settings.regularBrowsers, ...settings.privateBrowsers];
 }
 
 /**
@@ -308,22 +380,27 @@ export function decideClaim(
     );
   }
 
-  if (!isKnownBrowser(input.browser)) {
+  // **Resolved rather than merely checked** (§3.2, `DECISIONS.md` §13i).
+  // Nothing stated resolves to the first signed-in browser, a kind word to
+  // the first of that kind, and a name to that browser exactly.
+  const resolvedBrowser = resolveBrowser(input.browser, settings);
+  if (resolvedBrowser === undefined) {
+    const known = configuredBrowsers(settings);
     scope.recordRefusal({
       kind: 'claim_requested',
       outcome: 'deny',
       guard: 'claim.browser_known',
       adapter,
       sessionId: input.sessionId,
-      detail: { requested: input.browser, known: BROWSER_IDS },
+      detail: { requested: input.browser, known },
     });
     // **The refusal carries the choice guidance** (§3.2, row #66): a caller
     // re-reading a refusal is a caller re-making this decision, and telling
-    // it only which two names exist leaves it to guess which one it wanted.
+    // it only which names exist leaves it to guess which one it wanted.
     throw new CallRefusal(
       'unknown_browser',
-      `There is no browser named ${JSON.stringify(input.browser)}. This service has exactly two: ${BROWSER_IDS.join(' and ')}. ${BROWSER_CHOICE_GUIDANCE}`,
-      { detail: { requested: input.browser, known: BROWSER_IDS } },
+      `There is no browser named ${JSON.stringify(input.browser)}. This service has ${known.join(', ')}. ${BROWSER_CHOICE_GUIDANCE}`,
+      { detail: { requested: input.browser, known } },
     );
   }
 
@@ -435,7 +512,51 @@ export function decideClaim(
     throw error;
   }
 
-  const browserId = input.browser;
+  const browserId = resolvedBrowser;
+
+  // **The row for a configured browser is created here, on the way to its
+  // first launch** (§1.2, `DECISIONS.md` §13i).
+  //
+  // ── Why a row has to exist before the insert below ────────────────────
+  //
+  // `claims.browser_id` is `REFERENCES browsers (id)`, and `tabs` carries a
+  // composite key back to `(claims.id, claims.browser_id)`. Those constraints
+  // are what keep a claim pointing at a browser this service actually
+  // manages, and they are worth keeping. Without a row, a claim on a
+  // configured browser fails as a foreign-key violation — a database error
+  // naming neither the browser nor the argument, which is precisely the
+  // shape of failure the `claim.browser_known` guard above exists to replace.
+  //
+  // ── Why this is not seeding from configuration ────────────────────────
+  //
+  // §13i rules that rows are created **on first launch of a named browser,
+  // not from configuration at startup**, so that two processes holding
+  // different lists only ever create rows for browsers somebody actually
+  // asked for. This is that rule, at the moment it applies: a claim is what
+  // causes a launch — §2.4b puts the launch after the commit — so a granted
+  // claim is the first point at which a browser is genuinely going to be
+  // started. **No row is created for a browser merely because configuration
+  // names it**, and the resolution above has already refused any name the
+  // configured lists do not carry, so nothing here can mint a row for a
+  // browser nobody configured.
+  //
+  // ── Why the race needs nothing new ────────────────────────────────────
+  //
+  // §1.2a already arbitrates the launch race through this same transaction —
+  // *"one row, one winner"*. Two processes claiming the same new browser at
+  // once are serialised here like every other writer, and `OR IGNORE` makes
+  // the loser's insert a no-op rather than an error: the row it wanted
+  // exists, which is the outcome it was asking for.
+  //
+  // The kind is written from the list the name was found in, which is the
+  // only place it is known — the name itself carries no kind once names are
+  // configured, which is why the column exists (schema step nine).
+  db.prepare<{ id: string; kind: string }>(
+    "INSERT OR IGNORE INTO browsers (id, kind, state) VALUES (@id, @kind, 'stopped')",
+  ).run({
+    id: browserId,
+    kind: settings.privateBrowsers.includes(browserId) ? 'private' : 'regular',
+  });
 
   // **A browser being signed into is not available, and this is what makes
   // that state mean anything** (§5.5.1 step 2: "From that moment, requests
@@ -547,11 +668,6 @@ export function decideClaim(
       // key, and holding a caller's credential across an unbounded wait to
       // replay it later is a longer custody than this service should have.
       queue({ scope, input, settings, claimId, key, browserId, now });
-}
-
-/** Is this one of the two? Narrowing, so the browser identifier is typed downstream. */
-function isKnownBrowser(value: string): value is BrowserId {
-  return (BROWSER_IDS as readonly string[]).includes(value);
 }
 
 /** What both branches are handed, so neither can read a different instant. */

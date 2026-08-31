@@ -33,6 +33,13 @@ export interface TempStoreOptions {
   readonly leaseSeconds?: number;
   readonly queueSeconds?: number;
   readonly launchReadinessTimeoutSeconds?: number;
+  /**
+   * The configured browsers (`DECISIONS.md` §13i), overridable per test so
+   * one test's browser list cannot leak into another's process — the same
+   * reasoning the budget override above is given.
+   */
+  readonly regularBrowsers?: readonly string[];
+  readonly privateBrowsers?: readonly string[];
 }
 
 /**
@@ -92,6 +99,10 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       leaseSeconds: options.leaseSeconds ?? 600,
       queueSeconds: options.queueSeconds ?? 600,
       launchReadinessTimeoutSeconds: options.launchReadinessTimeoutSeconds ?? 30,
+      regularBrowsers: options.regularBrowsers ?? ['regular'],
+      privateBrowsers: options.privateBrowsers ?? ['private'],
+      regularBrowserEngine: 'msedge',
+      privateBrowserEngine: 'msedge',
     },
     remove: () => {
       // Removed from the sweep first, so a directory this call genuinely

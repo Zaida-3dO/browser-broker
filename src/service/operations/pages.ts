@@ -311,7 +311,7 @@ async function pageFor(
   claimId: string,
 ): Promise<TabHandle> {
   if (tab.driverTabId !== null) {
-    return { browser: tab.browserId as TabHandle['browser'], driverTabId: tab.driverTabId };
+    return { browser: tab.browserId, driverTabId: tab.driverTabId };
   }
 
   const opened = await session.openTab();
@@ -501,7 +501,7 @@ function afterCommitWork(
     afterCommit: [
       async () => {
         try {
-          const session = await source(tab.browserId as BrowserId);
+          const session = await source(tab.browserId);
           await work(session, await pageFor(scope, session, tab, input, claimId));
           // **Last, deliberately.** Anything above this that throws leaves the
           // flag false, which is what makes a browser failing mid-operation
@@ -1210,7 +1210,7 @@ export function decideTabReplace(
 ): ArbitrationOutcome<TabReplaceResult> {
   const { db, adapter } = scope;
   const { lease, tab, expiresAt } = admit(scope, input, 'tab_closing');
-  const browser = tab.browserId as TabHandle['browser'];
+  const browser = tab.browserId;
 
   // Out first, in second, both inside the one transaction. The order matters
   // only for the ledger reading sensibly; the count never changes, because

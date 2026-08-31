@@ -195,12 +195,29 @@ Two conventions that are true everywhere and are not repeated per table:
 **Identifiers are opaque `uuid`s**, except `browsers.id`, which is one of two words because callers
 type it, and `events.id`, which counts upward because it doubles as a "everything since here" cursor.
 
-### 1.2 `browsers` — a fixed two-row table
+### 1.2 `browsers` — a row per configured browser
 
-Exactly two rows, always: the **regular** browser (persistent, signed in) and the **private** one
-(ephemeral, signed in to nothing). Not a collection, no third row, no named-profile concept
-(`DECISIONS.md` §6). A table rather than a constant because it makes a future relaxation a check to
-loosen rather than a design to redo.
+> **Revised 2026-08-31 (`DECISIONS.md` §13i): the fixed pair becomes a bounded list per kind.**
+> *"Exactly two rows, always"* and *"no named-profile concept"* are the sentences that move. The
+> foresight below — *"a table rather than a constant because it makes a future relaxation a check
+> to loosen rather than a design to redo"* — turned out to be exactly right, and that is what this
+> revision cost: one schema step dropping one check and adding one column.
+
+**A row per browser this installation has launched**, each either **regular** (persistent, signed
+in) or **private** (ephemeral, signed in to nothing). The names come from configuration —
+`BROKER_REGULAR_BROWSERS` and `BROKER_PRIVATE_BROWSERS`, at most three each — and the default
+configuration names one of each, `regular` and `private`.
+
+**The name is free and the kind is not.** `kind` is a column with its own check constraint, so every
+row is one of the two kinds and there is no third. That split is the whole shape of this revision:
+§1.2's reasoning that *"whether a browser uses a persistent profile is a property of which browser
+it is"* was true while a name was one of two literals and the word carried the kind. Once a name can
+be `checkout`, the word carries nothing, so the property is written down or it is enforced nowhere.
+
+**Rows are created on first launch, not seeded from configuration.** Two processes on one machine
+may hold different configurations, so a process seeding from its own environment would write its
+beliefs into a shared store. §1.2a already arbitrates the launch race through the same transaction
+as claims — *"one row, one winner"* — so row creation is serialised by a mechanism that exists.
 
 #### Which one to claim — the two browsers are a choice, not a role assignment
 
@@ -226,15 +243,16 @@ and in the tool's own description text, which is the only one of the three a cal
 > share one cookie jar.** Two callers there are clean-room relative to the private profile and
 > **clean-room relative to nothing else** — not to each other. That is right for reviewing an
 > authenticated surface, where every caller wants the same identity and wants it to be the real one.
-> It is wrong for exercising two identities at once, and **this design declares that unsupported**
-> rather than pretending otherwise: there is no per-lease profile, no storage partition and no second
-> signed-in row (§3.13). A caller that needs two identities simultaneously has come to the wrong
-> service, and being told that plainly is cheaper than discovering it from a test that mysteriously
-> sees the wrong account.
+> It is wrong for exercising **two identities at once in one browser**, and that has an answer
+> rather than a refusal (§13i): **claim two differently-named signed-in browsers.** What remains
+> unsupported is two identities inside a single browser — there is still no per-lease profile and no
+> storage partition (§3.13) — and saying so plainly is cheaper than discovering it from a test that
+> mysteriously sees the wrong account.
 
 | Column | Type | What it's for |
 |---|---|---|
-| `id` | `text`, primary key | `regular` or `private`, and nothing else — the database refuses any other value. Callers type this word, so an opaque key would mean a lookup for something the caller already knows. |
+| `id` | `text`, primary key | The browser's configured name. Callers type this word, so an opaque key would mean a lookup for something the caller already knows. **No check constraint**, because the legal names are the configured ones and the schema cannot know them; what a name must satisfy — a usable word, and a usable directory name, since a profile directory is named after it — is refused once at startup by `src/config/environment.ts`, naming the offending entry. |
+| `kind` | `text`, not null | `regular` or `private`, and nothing else — the database refuses any other value. **What the name used to carry** (§13i). No default, deliberately: rows are created on first launch rather than seeded, so the writer that creates one states the kind rather than inheriting a guess. |
 | `state` | enum | `stopped` · `starting` · `running` · `signing-in` · `failed`. `signing-in` is the one mode where a person is driving a window (§5.5.1); it is a state rather than a flag because claims are refused during it and a refusal wants a reason it can name. `starting` is a real state with a real duration here, and §1.2b is about the gap it names. |
 | `pid` | `int`, null when stopped | The browser process. **This is the isolation fact**: the service acts on processes recorded here and on nothing else, so a browser somebody else is running is never inspected and never touched. Note the wording — *the* process, not *the process this service launched*: the browser **outlives whichever caller started it** (§1.2a), so most processes that act on it did not start it. |
 | `launched_at` | timestamp, null when stopped | When the running browser started. With `pid` and `state` this is one fact about *now* — how long the thing that is up has been up, which is not the same as how long any caller has been connected to it. |
@@ -264,9 +282,12 @@ and in the tool's own description text, which is the only one of the three a cal
   because the failure looks exactly like success. The refusal is recorded as an event with its
   reason, which is where "why did this fail" is answered.
 
-**How "exactly two" holds:** the two allowed values are enforced by the database and the primary key
-makes each unique, so at most two rows can exist; the first migration creates both, so at least two
-do. There is no create or delete operation for a browser on any surface (§3.13).
+**How the bound holds, now that it is not two:** the cap is enforced where the configured set is
+read — `src/config/environment.ts` refuses a list longer than three and names the entries — and the
+primary key makes each name unique. **Nothing mints a browser on demand:** there is no create or
+delete operation for a browser on any surface (§3.13), and no argument on any tool widens the set, so
+a browser exists because configuration named it before the process started. That is the distinction
+`DECISIONS.md` §6 turns on, and §13i keeps.
 
 ### 1.2a Browsers are adopted, not owned
 
@@ -1571,7 +1592,7 @@ renew. `browser_status` is simply the call that does nothing else.
 | Argument | Type | Required | What it's for |
 |---|---|---|---|
 | `session_id` | string | yes | The caller's identity. What a capture is attributed to, and what makes the resolution study's rows attributable (§1.3). **It is not a limit** — a session may hold as many leases as it is granted. |
-| `browser` | `regular` or `private` | yes | **No default, deliberately.** Defaulting to private would silently give clean-room behaviour to a caller that needed a sign-in; defaulting to regular would put unnecessary work on the profile that has something to lose. Neither is a safe guess, so the caller states it. **Which one to pick is §1.2's table**, and the short form is repeated below because this is where the choice is actually made. |
+| `browser` | a configured name, or `regular` / `private` | **no** | **Unstated resolves to the first signed-in browser** (`DECISIONS.md` §13i); a kind word resolves to the first of that kind; a configured name resolves to that browser exactly. **Which to pick is §1.2's table**, and the short form is repeated below because this is where the choice is actually made. |
 | `purpose` | string, 3–200 characters | yes | What this lease is for, in human words. **What an operator reads when deciding whether to revoke** (§1.3). |
 | `storage_seed` | list of entries, **at most 16**, each ≤ 4 KB | no | **Storage values written into the tab's origin before the first page load, applied by the service** (below). For the case where authentication is a token obtained from an API rather than a login form. |
 
@@ -1581,16 +1602,29 @@ callers do the same is a named limit rather than a solved problem.
 
 #### Picking the browser: authenticated surface, or genuinely fresh visitor
 
-**An authenticated surface is the signed-in browser. Genuinely-fresh-visitor work is the private
-one.** The full statement, including the measurement that says this needs saying and the cookie-jar
-caveat that comes with it, is §1.2. Two things belong here, on the argument itself:
+> **Revised 2026-08-31 (`DECISIONS.md` §13i): `browser` is optional, and unstated means the first
+> signed-in browser.** The overturned reasoning treated the two wrong guesses as symmetric. They are
+> not: defaulting to clean-room when a sign-in was needed returns a **login redirect — a wrong page
+> that looks like a right page**, discovered later and elsewhere, while defaulting to signed-in
+> returns a personalised page, which is wrong *visibly* and is the page most callers were asking
+> for. The measurement in §1.2 points the same way — 25 sessions wanted signed-in behaviour and did
+> not find it, and no population was measured wanting a stranger's view and receiving an identity.
 
-- **The refusal text says it too.** A claim that is refused for capacity or for a signing-in browser
-  names both browsers and what each is for, because a caller re-reading a refusal is a caller
-  re-making this decision.
+**An authenticated surface is a signed-in browser. Genuinely-fresh-visitor work is a private one.**
+The full statement, including the measurement that says this needs saying and the cookie-jar caveat
+that comes with it, is §1.2. Three things belong here, on the argument itself:
+
+- **The refusal text says it too.** A claim refused for capacity or for a signing-in browser names
+  the configured browsers and what each kind is for, because a caller re-reading a refusal is a
+  caller re-making this decision.
 - **So does the tool's description text**, which is the only place a calling agent reliably reads
   (§3.1's standing-tax argument cuts both ways — the description is paid for on every turn, so it
   should carry the sentence that changes behaviour).
+- **The default makes that description more load-bearing, not less**, and this is the part most
+  easily got backwards. A caller that states nothing **never sees the refusal**, so for that caller
+  the description is not one of two surfaces carrying the guidance — it is the only one. And a
+  default routes *more* traffic into one shared cookie jar, which is exactly the condition the
+  caveat below is about.
 
 #### `storage_seed` — seeded by the service, never executed as code
 

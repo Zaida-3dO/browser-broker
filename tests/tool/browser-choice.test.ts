@@ -26,28 +26,42 @@ import { claimInput, withBroker } from '../helpers/broker.ts';
  * the constant would empty both sides and stay green.
  *
  * So the assertions below name the **substance** in literal text written out
- * here: both browsers, what each is for, and the cookie-jar caveat. A
+ * here: the default, what each kind is for, and the cookie-jar caveat. A
  * mutation that empties or guts the constant fails them, because these
  * literals are not derived from it.
+ *
+ * ── Why the default makes this suite matter more, not less ──────────────
+ *
+ * `browser` is optional (`DECISIONS.md` §13i), so a caller that states
+ * nothing never reaches the refusal — which removes one of the two surfaces
+ * this guidance was placed on for that caller. The description text is then
+ * the only place it learns any of this, and the default sends more traffic
+ * into one shared cookie jar, which is exactly what the caveat is about.
  */
 
 const claimTool = TOOLS_BY_NAME.get('browser_claim');
 
-test('the browser argument description carries BOTH browsers and what each is for', () => {
+test('the browser argument description carries the DEFAULT and what each kind is for', () => {
   const browser = claimTool?.arguments.find((argument) => argument.name === 'browser');
   assert.ok(browser, 'browser_claim has a browser argument');
   const description = browser.description;
 
-  // The two names, and the two kinds of work. Written as literals rather than
-  // read from the constant under test.
-  assert.match(description, /regular/);
-  assert.match(description, /private/);
-  assert.match(description, /authenticated surface/i);
-  assert.match(description, /fresh[- ]visitor|fresh visitor/i);
+  // **The default, which is the thing a caller most needs to know**
+  // (`DECISIONS.md` §13i): omitting the argument is not an error, and what it
+  // gets is the signed-in browser. Written as literals rather than read from
+  // the constant under test.
+  assert.match(description, /omit/i);
+  assert.match(description, /signed[- ]in/i);
 
-  // No default: the argument is required and neither is a safe guess.
-  assert.match(description, /no default/i);
-  assert.equal(browser.required, true);
+  // The other two forms: a kind word, and a configured name.
+  assert.match(description, /private/);
+  assert.match(description, /fresh[- ]visitor|fresh visitor/i);
+  assert.match(description, /name/i);
+
+  // **Optional, and that is the reversal made mechanical.** A required
+  // argument here would mean the default is unreachable through this surface,
+  // whatever the description says about it.
+  assert.equal(browser.required, false);
 });
 
 test('THE COOKIE-JAR CAVEAT IS IN THE SAME TEXT, not left to a refusal', () => {
@@ -62,10 +76,11 @@ test('THE COOKIE-JAR CAVEAT IS IN THE SAME TEXT, not left to a refusal', () => {
   // The consequence, not merely the fact: callers there are not isolated from
   // each other.
   assert.match(browser.description, /not from each other|not isolated from each other/i);
-  // And that two identities at once is declared unsupported rather than left
-  // to be discovered.
+  // And what to do about it. **The remedy changed with the decision and the
+  // caveat did not**: two identities at once is what a second configured
+  // browser is for, rather than something declared unsupported.
   assert.match(browser.description, /two identities/i);
-  assert.match(browser.description, /not supported|unsupported/i);
+  assert.match(browser.description, /two differently-named browsers|two browsers/i);
 });
 
 test('the guidance stays SHORT — surface area is a standing tax, paid every turn', () => {
@@ -91,14 +106,14 @@ test('THE CLAIM REFUSAL CARRIES THE GUIDANCE TOO — a refused caller is re-maki
       message = error instanceof Error ? error.message : String(error);
     }
 
-    // It still says what went wrong and what the two names are.
+    // It still says what went wrong and what the configured names are.
     assert.match(message, /chrome/);
     assert.match(message, /regular/);
     assert.match(message, /private/);
 
-    // And it says how to choose between them, including the caveat — the
-    // substance, named here rather than read from the constant.
-    assert.match(message, /authenticated surface/i);
+    // And it says how to choose, including the caveat — the substance, named
+    // here rather than read from the constant.
+    assert.match(message, /signed[- ]in/i);
     assert.match(message, /cookie jar/i);
   });
 });

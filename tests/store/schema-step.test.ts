@@ -67,15 +67,20 @@ test(
   withStore(async (store) => {
     // Two callers on different builds against one store is an ordinary
     // situation here, and guessing is how one of them corrupts it.
-    store.db.pragma('user_version = 9');
+    // One past what this build knows how to step to, so it stays "newer"
+    // whatever that number is. Written as a literal rather than derived from
+    // EXPECTED_VERSION deliberately: deriving it would make the test agree
+    // with the build by construction, and the assertion is precisely that a
+    // build refuses a version it does not know.
+    store.db.pragma('user_version = 10');
     await assert.rejects(stepSchema(store.db), (error: unknown) => {
       assert.ok(error instanceof StartupRefusal);
       assert.equal(error.rule, 'startup.schema_stepped');
-      assert.match(error.message, /9/);
+      assert.match(error.message, /10/);
       return true;
     });
     // Nothing was written: the version is untouched, not reset.
-    assert.equal(readStoreVersion(store.db), 9);
+    assert.equal(readStoreVersion(store.db), 10);
   }),
 );
 

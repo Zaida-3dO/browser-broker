@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
-import { BROWSER_IDS } from '../browser/driver.ts';
+import { DEFAULT_BROWSER_IDS } from '../browser/driver.ts';
 import { SIGNABLE_BROWSER } from '../service/operations/sign-in.ts';
 import type { Environment } from '../config/environment.ts';
 import { readTabBudget } from '../operations/status.ts';
@@ -123,13 +123,13 @@ export function runDoctor(
     ),
   ];
 
-  for (const browser of BROWSER_IDS) {
+  for (const browser of DEFAULT_BROWSER_IDS) {
     checks.push(checkDiscoveryRecord(browser, probes.discovery?.[browser] ?? { recorded: false }));
   }
 
   checks.push(checkCaptureSurface(probes.captureSurface));
 
-  for (const browser of BROWSER_IDS) {
+  for (const browser of DEFAULT_BROWSER_IDS) {
     checks.push(checkKeeperTab(browser, probes.keeperTabs?.[browser]));
   }
 
