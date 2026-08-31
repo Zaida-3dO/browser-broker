@@ -67,7 +67,16 @@ import type { StoreHandle } from '../store/open.ts';
  * session.
  */
 
-/** How long a launch-race loser waits before giving up on the winner. */
+/**
+ * How long a launch-race loser waits before giving up on the winner.
+ *
+ * **Row #55's fallback, not its own default** — `BROKER_LAUNCH_READINESS_
+ * TIMEOUT_SECONDS` (`src/config/environment.ts`) is where the number that
+ * actually governs a spawn lives, and it is `.env.example`'s registry entry.
+ * This constant exists only for a caller that builds a provider without
+ * going through `readEnvironment` at all, and it is kept equal to that
+ * variable's default (30s) so the two cannot silently drift apart.
+ */
 export const WAIT_TIMEOUT_MS = 30_000;
 
 /** How often a launch-race loser re-asks whether the winner's browser is up. */
@@ -114,9 +123,27 @@ export interface BrowserSessionProviderOptions {
   readonly artifacts?: ArtifactStore;
   /** Injected so a test can observe the running check without a browser. */
   readonly isRunning?: typeof browserIsRunning;
-  /** Injected so a test does not wait in real time. */
+  /**
+   * Overrides `environment.launchReadinessTimeoutSeconds` (row #55). Mainly
+   * for a test that wants a bound reached in a handful of milliseconds
+   * rather than by setting an environment variable.
+   */
   readonly waitTimeoutMs?: number;
   readonly waitPollIntervalMs?: number;
+  /**
+   * How the loser waits between polls. Injected — following the seam
+   * convention `launch.ts` uses for `fetchImpl`/`spawnImpl`/`killImpl` — so a
+   * test can drive the readiness bound to its ceiling without spending real
+   * wall-clock time waiting for it. Defaults to an ordinary `setTimeout`.
+   */
+  readonly sleepImpl?: (ms: number) => Promise<void>;
+  /**
+   * The clock the wait deadline is measured against. Injected for the same
+   * reason as {@link sleepImpl} — a deterministic clock lets a test assert
+   * "refuses at the bound" without racing real elapsed time. Defaults to
+   * `Date.now`.
+   */
+  readonly nowImpl?: () => number;
 }
 
 /** Resolve a session for one browser. Memoised; see the header. */
@@ -282,21 +309,34 @@ async function performDecision(
 /**
  * Wait for the caller that won the race, and attach to what it started.
  *
- * ── ⚠️ This does not answer row #55, and must not be read as answering it ──
+ * ── Row #55, settled ──────────────────────────────────────────────────────
  *
- * `adoption.ts` records the open question in as many words: *"what the loser
- * waits for, and for how long, is row #55's open question… this decision
- * reports the state and stops; it does not invent a bound."* That is a
- * decision about the **design**, and it stands.
+ * `SCHEMA.md` §1.2b named two candidate moments and refused to conflate
+ * them: the winner **recording** that it launched, and the winner's
+ * debugging endpoint **accepting a connection**. Only the second is what a
+ * loser can actually attach to, so only the second is what this waits for.
  *
- * What is here is a bound in **this process**, and the distinction is the
- * whole of why it is acceptable. Somebody has to do something when the
- * decision comes back `wait`, and there are exactly three options: return a
- * session that is not one, block forever, or poll with a ceiling. The first is
- * the dishonesty this whole row exists to remove and the second turns one
- * failed launch elsewhere into a hung process here — so this polls, and when
- * the ceiling is reached it **refuses, naming what it waited for**, rather
- * than proceeding as if it had a browser.
+ * **The signal is `browserIsRunning`, unchanged** — §1.2c's own liveness
+ * (the endpoint answers) plus identity (the browser's own identifier
+ * matches, because ports are reused) check, the one every attach in this
+ * file already trusts. This row does not add a second verification: it is
+ * `readDiscoveryRecord` + `verifyDiscoveryRecord` under `src/browser/real.ts`,
+ * called here exactly as `acquire`'s own observation calls it. A caller that
+ * wrote a second check here would be trusting a claim by two different
+ * routes that could disagree; there is one route.
+ *
+ * **The bound is `environment.launchReadinessTimeoutSeconds`**
+ * (`BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS`, `.env.example`) — a poll
+ * ceiling, never a sleep. Somebody has to do something when the decision
+ * comes back `wait`, and there are exactly three options: return a session
+ * that is not one, block forever, or poll with a ceiling. The first is the
+ * dishonesty this whole row exists to remove and the second turns one failed
+ * launch elsewhere into a hung process here — so this polls, and when the
+ * ceiling is reached it **refuses, naming what it waited for**, rather than
+ * proceeding as if it had a browser. A `StartupRefusal` is the same shape
+ * every other refusal in this module takes, and its message says a caller is
+ * *still starting*, never that the browser *died* — those are different
+ * facts and this function has evidence for only one of them.
  *
  * It is deliberately the most minimal shape that can be correct:
  *
@@ -313,8 +353,11 @@ async function performDecision(
  *   makes, and the reason a stale record plus a reused port cannot be mistaken
  *   for a live browser.
  *
- * Whether the bound should be a fixed ceiling at all, and what it should be,
- * remains #55's to settle.
+ * `sleepImpl`/`nowImpl` are injected, following the seam convention
+ * `launch.ts` established for `fetchImpl`/`spawnImpl`/`killImpl`: a test that
+ * proves "refuses at the bound" by actually waiting out a 30-second default
+ * would be a slow, flaky proxy for the same assertion a fake clock makes
+ * instantly and exactly.
  */
 async function waitForWinner(
   driver: BrowserDriver,
@@ -323,23 +366,34 @@ async function waitForWinner(
   options: BrowserSessionProviderOptions,
 ): Promise<BrowserSession> {
   const isRunning = options.isRunning ?? browserIsRunning;
-  const timeoutMs = options.waitTimeoutMs ?? WAIT_TIMEOUT_MS;
+  const timeoutMs =
+    options.waitTimeoutMs ?? options.environment.launchReadinessTimeoutSeconds * 1000;
   const intervalMs = options.waitPollIntervalMs ?? WAIT_POLL_INTERVAL_MS;
-  const deadline = Date.now() + timeoutMs;
+  const sleep =
+    options.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = options.nowImpl ?? Date.now;
+  const deadline = now() + timeoutMs;
 
   for (;;) {
+    // §1.2c's two checks, unchanged: liveness (the endpoint answers) and
+    // identity (the browser's own identifier matches the record, since ports
+    // are reused). A record that fails either is stale, and a stale record is
+    // reported here exactly as "not yet reachable" — indistinguishable from
+    // the winner still starting, which is the honest state: this function
+    // cannot tell "not up yet" from "up as something else" apart from "not up
+    // yet", and it does not pretend to.
     const record = await isRunning(profileDir);
     if (record !== undefined && record.browserUuid !== undefined) {
       return driver.attach(browser, record);
     }
 
-    if (Date.now() >= deadline) {
+    if (now() >= deadline) {
       throw new StartupRefusal(
         'launch.explicit_profile_dir',
-        `Another caller is starting the ${browser} browser and it did not become reachable within ${String(timeoutMs)}ms. Nothing was launched here: a second browser against one profile directory hands its address to the first and opens no endpoint of its own. Try again — the browser may still be starting.`,
+        `Another caller is starting the ${browser} browser and it did not become reachable within ${String(timeoutMs)}ms. This is a caller that is still starting, not a browser that has died: nothing here observed a failure, only the absence of a verified discovery record before the bound. Nothing was launched here either way: a second browser against one profile directory hands its address to the first and opens no endpoint of its own. Try again — the browser may still be starting.`,
       );
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await sleep(intervalMs);
   }
 }

@@ -145,6 +145,26 @@ const DECLARATIONS = [
     fallback: 600,
     unit: 'a duration in seconds',
   },
+  {
+    /**
+     * How long a launch-race loser waits for the winner's browser to accept
+     * a connection before declaring the launch failed (§1.2b, §9.3, row #55).
+     *
+     * **Settled by row #55: the signal is `verifyDiscoveryRecord` — liveness
+     * plus identity, §1.2c — polled, not a fixed pause.** This is only the
+     * bound on how long that poll runs, and it is the same 30 seconds the
+     * loser already waited before this row made the number configurable.
+     *
+     * **Deliberately not given the agreement check the tab budget gets**
+     * (§1.10). Two processes disagreeing here means one loser gives up
+     * sooner or later than another watching the same launch — degraded
+     * behaviour, not a broken invariant, so it does not need the row.
+     */
+    key: 'BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS',
+    kind: 'positive-integer',
+    fallback: 30,
+    unit: 'a duration in seconds',
+  },
 ] as const satisfies readonly Declaration[];
 
 /** Every variable this build declares. Row #9's walk test reads this. */
@@ -183,6 +203,15 @@ export interface Environment {
   readonly leaseSeconds: number;
   /** How long a queue place lives without a call, in seconds (§2.5, §6.2). */
   readonly queueSeconds: number;
+  /**
+   * How long a launch-race loser waits for the winner's browser to accept a
+   * connection before declaring the launch failed, in seconds (§1.2b, §9.3).
+   *
+   * **Settled by row #55.** The signal it bounds is `verifyDiscoveryRecord`
+   * — liveness and identity (§1.2c) — polled, never a fixed pause; this is
+   * only how long the poll runs before giving up on the winner.
+   */
+  readonly launchReadinessTimeoutSeconds: number;
 }
 
 export interface ReadEnvironmentOptions {
@@ -336,5 +365,6 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     tabBudget: getNumber('BROKER_TAB_BUDGET'),
     leaseSeconds: getNumber('BROKER_LEASE_SECONDS'),
     queueSeconds: getNumber('BROKER_QUEUE_SECONDS'),
+    launchReadinessTimeoutSeconds: getNumber('BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS'),
   };
 }

@@ -329,6 +329,7 @@ test('the configured value is checked, not only the resolved one', () => {
     tabBudget: 15,
     leaseSeconds: 600,
     queueSeconds: 600,
+    launchReadinessTimeoutSeconds: 30,
   };
 
   // The resolved value alone cannot refuse: nothing about it says share.
@@ -352,6 +353,7 @@ test('a location that was never configured is still checked on its own account',
     tabBudget: 15,
     leaseSeconds: 600,
     queueSeconds: 600,
+    launchReadinessTimeoutSeconds: 30,
   };
   assert.throws(() => {
     resolveStoreLocation(environment, checksReporting({ volumeTypes: { [target]: 0x6969 } }));

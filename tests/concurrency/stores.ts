@@ -120,6 +120,7 @@ export async function withArbitrationStore(
       tabBudget: options.tabBudget ?? 15,
       leaseSeconds: options.leaseSeconds ?? 600,
       queueSeconds: options.queueSeconds ?? 600,
+      launchReadinessTimeoutSeconds: 30,
     };
 
     // Stepped once, here, so the children race over operations rather than
