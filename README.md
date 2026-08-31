@@ -115,6 +115,66 @@ refusal nobody missed. A store location that resolves to a network share is refu
 reason it has to be: the write-ahead log coordinates through shared memory that requires every
 process using the file to sit on one host.
 
+### Pointing a client at the tools
+
+The ten tools are served over standard input and output by `src/bin/broker-tool.ts`, which speaks
+[the Model Context Protocol](https://modelcontextprotocol.io/specification/2025-06-18) — revision
+`2025-06-18`, with `2025-03-26` accepted for a client that asks for it. A client spawns that file,
+opens with `initialize`, and the ten tools are listed to it.
+
+Most clients read a JSON file naming the servers they may spawn. The block is the same shape in all
+of them; put it in whichever file yours reads — commonly `.mcp.json` in a project, or the client's
+own configuration:
+
+```json
+{
+  "mcpServers": {
+    "browser-broker": {
+      "command": "node",
+      "args": ["/absolute/path/to/browser-broker/src/bin/broker-tool.ts"]
+    }
+  }
+}
+```
+
+**The path has to be absolute**, because the client chooses the working directory it spawns from and
+it is rarely the checkout. Nothing else is required: there is no port to configure, no token to
+issue, and no process to have started first — the client starts it, and it exits when the client
+closes the pipe.
+
+To point it at a store other than the default, add the environment to the same block:
+
+```json
+{
+  "mcpServers": {
+    "browser-broker": {
+      "command": "node",
+      "args": ["/absolute/path/to/browser-broker/src/bin/broker-tool.ts"],
+      "env": { "BROKER_DB": "/some/writable/path/broker.db" }
+    }
+  }
+}
+```
+
+Every client sharing a store sees the same leases, which is the point of the store being a file: the
+capacity being arbitrated is one set of browsers, and two clients that could not see each other's
+claims would both think the whole of it was free.
+
+**To check the wiring without a client**, speak the handshake by hand. This writes three messages and
+reads three back:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | node src/bin/broker-tool.ts
+```
+
+The first response carries the negotiated `protocolVersion`, the server's `capabilities` and its
+`serverInfo`; the second message is a notification and is deliberately not answered; the third lists
+the ten tools. A client that gets that far will work.
+
 ## First run
 
 There is **one step a person performs by hand**, and it happens once: signing the shared browser in.

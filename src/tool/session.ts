@@ -4,6 +4,8 @@ import {
   decodeMessage,
   encodeMessage,
   METHODS,
+  negotiateProtocolVersion,
+  NOTIFICATIONS,
   type MessageId,
   type ProtocolRequest,
   type ProtocolResponse,
@@ -48,6 +50,46 @@ export interface SessionStreams {
 export interface SessionOptions {
   readonly service: BrokerService;
   readonly streams: SessionStreams;
+}
+
+/**
+ * What this surface calls itself during the handshake.
+ *
+ * The name is the package's, and the version is deliberately **not** read
+ * from `package.json` at runtime: that file is `"version": "0.0.0"` and
+ * `"private": true`, so reading it would report a version that means
+ * "unset" as though it were a release. What a client does with `serverInfo`
+ * is identify and log the thing it connected to, and a literal here says the
+ * true thing — this is the surface, built from this tree — without implying a
+ * published artefact that does not exist. The day the package is versioned
+ * for real, this is the one line that has to agree with it.
+ */
+export const SERVER_INFO = {
+  name: 'browser-broker',
+  version: '0.0.0',
+} as const;
+
+/**
+ * What `initialize` returns: the negotiated revision, what this server can
+ * do, and what it is.
+ *
+ * **`capabilities` announces `tools` and nothing else, because there is
+ * nothing else.** This surface serves no resources and no prompts, and
+ * claiming either would make a client offer its user a menu that answers
+ * `method_not_found` when chosen. An empty object is the specification's way
+ * of saying "this capability, with no optional extras" — notably not
+ * `listChanged`, since the ten tools are fixed at build time and a surface
+ * that promised change notifications would owe notifications it can never
+ * have a reason to send.
+ */
+export function initializeResult(
+  params: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return {
+    protocolVersion: negotiateProtocolVersion(params['protocolVersion']),
+    capabilities: { tools: {} },
+    serverInfo: SERVER_INFO,
+  };
 }
 
 /** What `tools/list` returns: the ten, with their descriptions and schemas. */
@@ -117,6 +159,10 @@ export async function handleRequest(
   request: ProtocolRequest,
   options: SessionOptions,
 ): Promise<ProtocolResponse> {
+  if (request.method === METHODS.initialize) {
+    return { id: request.id, result: initializeResult(request.params ?? {}) };
+  }
+
   if (request.method === METHODS.listTools) {
     return { id: request.id, result: listTools() };
   }
@@ -126,7 +172,7 @@ export async function handleRequest(
       id: request.id,
       error: {
         code: 'method_not_found',
-        message: `This surface answers ${METHODS.listTools} and ${METHODS.callTool}. It has no "${request.method}".`,
+        message: `This surface answers ${METHODS.initialize}, ${METHODS.listTools} and ${METHODS.callTool}. It has no "${request.method}".`,
       },
     };
   }
@@ -203,6 +249,32 @@ export async function serveSession(
     }
 
     const decoded = decodeMessage(line);
+
+    // **A notification draws no response, and that is the whole handling.**
+    // `notifications/initialized` is the client saying the handshake is
+    // complete; there is nothing to do with it and — the part that matters —
+    // nothing to send back. A strict client that receives a reply to a
+    // message it sent without an identifier is entitled to treat the stream
+    // as broken, so this branch deliberately writes nothing and does not
+    // count toward the answered total, which is what makes "answered
+    // nothing" assertable by a test.
+    if (decoded.kind === 'notification') {
+      const known = (Object.values(NOTIFICATIONS) as readonly string[]).includes(
+        decoded.notification.method,
+      );
+      options.streams.log?.(
+        known
+          ? `noted ${decoded.notification.method}`
+          : // An unknown notification is still a notification. Answering it
+            // with `method_not_found` would be a reply to something that must
+            // not be replied to, so it is logged and dropped — which is what
+            // the specification asks of a receiver that does not recognise
+            // one.
+            `ignored an unrecognised notification: ${decoded.notification.method}`,
+      );
+      continue;
+    }
+
     if (decoded.kind === 'malformed') {
       // A malformed line with no id has nobody to answer, so it is reported
       // on the log stream rather than dropped in silence — a surface that

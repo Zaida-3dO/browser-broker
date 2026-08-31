@@ -3,7 +3,15 @@ import test from 'node:test';
 
 import { OPERATION_NAMES } from '../../src/adapter/operations.ts';
 import type { BrokerService, OperationRequest } from '../../src/adapter/service-seam.ts';
-import { encodeMessage, METHODS } from '../../src/tool/protocol.ts';
+import {
+  encodeMessage,
+  JSONRPC_ERROR_CODES,
+  JSONRPC_VERSION,
+  METHODS,
+  NOTIFICATIONS,
+  PROTOCOL_VERSION,
+  toJsonRpcCode,
+} from '../../src/tool/protocol.ts';
 import { linesFrom, listTools, serveSession, withoutSecrets } from '../../src/tool/session.ts';
 import { TOOL_DEFINITIONS } from '../../src/tool/tools.ts';
 import { asyncLines } from '../helpers/async-lines.ts';
@@ -49,6 +57,43 @@ async function serve(
 
 const callTool = (name: string, args: Record<string, unknown> = {}, id: number = 1): string =>
   encodeMessage({ id, method: METHODS.callTool, params: { name, arguments: args } });
+
+/**
+ * Build a notification line: a method with **no identifier**.
+ *
+ * Written out here rather than taken from `encodeMessage`, because that
+ * function's type deliberately cannot express a message without an
+ * identifier — which is the property that stops this surface answering one by
+ * accident. A test needs to send the thing a real client sends, so it builds
+ * it as a client would.
+ */
+function notificationLine(method: string): string {
+  return JSON.stringify({ jsonrpc: JSONRPC_VERSION, method });
+}
+
+/**
+ * Read this surface's own refusal name off a response, and check on the way
+ * past that the transport's integer agrees with it.
+ *
+ * The two code spaces are asserted together deliberately: a test that read
+ * only the name would stay green if the envelope stopped emitting an integer,
+ * and one that read only the integer would stay green if the taxonomy were
+ * flattened. Both are the failure this handshake work exists to prevent.
+ */
+function refusalName(response: Record<string, unknown> | undefined): string {
+  assert.ok(response !== undefined, 'there was no response to read an error from');
+  assert.equal(response['jsonrpc'], JSONRPC_VERSION, 'a response went out with no envelope');
+  const error = response['error'] as { code: number; data?: { code: string } } | undefined;
+  assert.ok(error !== undefined, 'the response carried no error');
+  const name = error.data?.code;
+  assert.equal(typeof name, 'string', 'the internal refusal name did not survive the envelope');
+  assert.equal(
+    error.code,
+    toJsonRpcCode(String(name)),
+    'the numeric code and the internal name disagree',
+  );
+  return String(name);
+}
 
 test('tools/list returns the ten tools, NAMED', () => {
   // Named rather than counted: `MILESTONES.md` records a hollow test that
@@ -171,8 +216,8 @@ test('an unknown METHOD is a protocol error — and it says what this surface do
   );
 
   assert.ok(response !== undefined);
+  assert.equal(refusalName(response), 'method_not_found');
   const error = response['error'] as Record<string, unknown>;
-  assert.equal(error['code'], 'method_not_found');
   assert.match(String(error['message']), /tools\/list/u);
   assert.match(String(error['message']), /tools\/call/u);
   assert.equal(requests.length, 0, 'an unknown method reached the service');
@@ -183,8 +228,7 @@ test('an unknown TOOL is a protocol error, and never reaches the service', async
   const [response] = await serve(service, callTool('browser_kill_all', {}));
 
   assert.ok(response !== undefined);
-  const error = response['error'] as Record<string, unknown>;
-  assert.equal(error['code'], 'tool_not_found');
+  assert.equal(refusalName(response), 'tool_not_found');
   // The physical side-effect: the service was never asked. A surface that
   // reported "no such tool" *after* calling something would be reporting a
   // refusal that did not happen.
@@ -197,8 +241,7 @@ test('a malformed line WITH an id is answered, so no caller waits forever', asyn
 
   assert.ok(response !== undefined);
   assert.equal(response['id'], 9);
-  const error = response['error'] as Record<string, unknown>;
-  assert.equal(error['code'], 'malformed_message');
+  assert.equal(refusalName(response), 'malformed_message');
 });
 
 test('a malformed line with NO id is logged rather than answered — there is nobody to answer', async () => {
@@ -236,8 +279,8 @@ test('one unexpected failure does not end the session — the caller could not r
   );
 
   assert.equal(responses.length, 2, 'the session died on the first failure');
+  assert.equal(refusalName(responses[0]), 'unexpected_failure');
   const first = responses[0]?.['error'] as Record<string, unknown>;
-  assert.equal(first['code'], 'unexpected_failure');
   assert.match(String(first['message']), /came apart/u);
   // The second call — the one that gives capacity back — still went through.
   const second = responses[1]?.['result'] as Record<string, unknown>;
@@ -351,4 +394,139 @@ test('a final line with no trailing newline is still a message', async () => {
     collected.push(line);
   }
   assert.deepEqual(collected, ['{"id":1,"method":"tools/list"}', '{"id":2,"method":"tools/list"}']);
+});
+
+/**
+ * The handshake, in process.
+ *
+ * The end-to-end version of this lives in the spawned smoke subset, because
+ * the process boundary is part of what a real client exercises. These cover
+ * the dispatch decisions themselves, which cost nothing per case here.
+ */
+
+test('INITIALIZE is answered with a negotiated version, capabilities and serverInfo', async () => {
+  // The single change that breaks this test: deleting the `initialize` branch
+  // from `handleRequest`. That is precisely the state the surface shipped in,
+  // where a real client got `method_not_found` on its first message and hung
+  // up before reaching the ten tools.
+  const { service, requests } = recordingService();
+  const [response] = await serve(
+    service,
+    encodeMessage({
+      id: 1,
+      method: METHODS.initialize,
+      params: {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'a-client', version: '1.0.0' },
+      },
+    }),
+  );
+
+  assert.ok(response !== undefined, 'initialize drew no response at all');
+  assert.equal(response['jsonrpc'], JSONRPC_VERSION);
+  assert.equal(response['id'], 1);
+  assert.equal(response['error'], undefined, 'initialize was refused');
+
+  const result = response['result'] as {
+    protocolVersion: string;
+    capabilities: Record<string, unknown>;
+    serverInfo: { name: string; version: string };
+  };
+  assert.equal(result.protocolVersion, PROTOCOL_VERSION);
+  // `tools` is announced; nothing else is, because nothing else exists. A
+  // surface claiming `resources` here would make a client offer its user a
+  // menu that answers `method_not_found` when chosen.
+  assert.deepEqual(Object.keys(result.capabilities), ['tools']);
+  assert.equal(result.serverInfo.name, 'browser-broker');
+  assert.equal(typeof result.serverInfo.version, 'string');
+
+  // The handshake is answered by the surface itself and never reaches the
+  // arbitration core — there is no lease involved in saying hello.
+  assert.equal(requests.length, 0, 'initialize reached the service');
+});
+
+test('initialize NEGOTIATES: an unknown version gets an answer, not a crash and not silence', async () => {
+  const { service } = recordingService();
+  const [response] = await serve(
+    service,
+    encodeMessage({
+      id: 2,
+      method: METHODS.initialize,
+      params: { protocolVersion: '3999-01-01', capabilities: {} },
+    }),
+  );
+
+  assert.ok(response !== undefined, 'an unfamiliar version ended the session');
+  assert.equal(response['error'], undefined, 'an unfamiliar version was refused rather than met');
+  const result = response['result'] as { protocolVersion: string };
+  assert.equal(result.protocolVersion, PROTOCOL_VERSION, 'the answer did not name what is spoken');
+});
+
+test('notifications/initialized DRAWS NO RESPONSE — replying to it breaks strict clients', async () => {
+  // The single change that breaks this test: making the notification branch
+  // in `serveSession` fall through to the request path. That produces a reply
+  // to a message sent without an identifier, which a strict client is
+  // entitled to treat as a broken stream.
+  const { service } = recordingService();
+  const written: string[] = [];
+  const logged: string[] = [];
+
+  const answered = await serveSession(lines(notificationLine(NOTIFICATIONS.initialized)), {
+    service,
+    streams: { write: (line) => written.push(line), log: (line) => logged.push(line) },
+  });
+
+  assert.deepEqual(written, [], 'a notification was answered');
+  assert.equal(answered, 0, 'a notification was counted as a request that was answered');
+  assert.equal(logged.length, 1, 'the notification was not even noted');
+});
+
+test('an UNRECOGNISED notification is also answered with silence, not method_not_found', async () => {
+  // A notification is defined by having no identifier, so there is nobody to
+  // send `method_not_found` to even if the method is genuinely unknown.
+  const { service } = recordingService();
+  const written: string[] = [];
+
+  await serveSession(lines(notificationLine('notifications/something_invented')), {
+    service,
+    streams: { write: (line) => written.push(line), log: () => {} },
+  });
+
+  assert.deepEqual(written, [], 'an unknown notification drew a reply');
+});
+
+test('the whole handshake runs in order and the session still serves tools afterwards', async () => {
+  const { service } = recordingService();
+  const responses = await serve(
+    service,
+    encodeMessage({
+      id: 1,
+      method: METHODS.initialize,
+      params: { protocolVersion: PROTOCOL_VERSION, capabilities: {} },
+    }),
+    notificationLine(NOTIFICATIONS.initialized),
+    encodeMessage({ id: 2, method: METHODS.listTools }),
+  );
+
+  // Three messages in, two responses out: the notification is the one that
+  // must not be answered, and the count is what proves it.
+  assert.equal(responses.length, 2, 'the notification was answered, or a request was not');
+  assert.deepEqual(
+    responses.map((response) => response['id']),
+    [1, 2],
+    'responses did not correlate with the requests that caused them',
+  );
+  const listed = responses[1]?.['result'] as { tools: { name: string }[] };
+  assert.equal(listed.tools.length, 10, 'the ten tools were not reachable after the handshake');
+});
+
+test('an error response carries the numeric code AND the internal name, on the same message', () => {
+  // The contract the two code spaces rest on, asserted as one object rather
+  // than as two independent facts.
+  const encoded = JSON.parse(
+    encodeMessage({ id: 1, error: { code: 'unexpected_failure', message: 'x' } }),
+  ) as { error: { code: number; data: { code: string } } };
+  assert.equal(encoded.error.code, JSONRPC_ERROR_CODES.internalError);
+  assert.equal(encoded.error.data.code, 'unexpected_failure');
 });

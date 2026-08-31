@@ -177,7 +177,12 @@ export const toolStdioConformanceDriver: ConformanceDriver = {
     // a message about the surface rather than about the driver.
     const decoded = decodeMessage(request);
     if (decoded.kind !== 'request') {
-      throw new Error(`the driver built a line the surface rejects: ${decoded.why}`);
+      // Every line this driver builds carries an identifier and a method, so
+      // neither of the other two readings is reachable from here. The reason
+      // is named anyway rather than reported as a bare kind, because the
+      // whole point of the check is that a driver defect should say so.
+      const why = decoded.kind === 'malformed' ? decoded.why : 'it decoded as a notification';
+      throw new Error(`the driver built a line the surface rejects: ${why}`);
     }
 
     await serveSession(oneLine(request), {
