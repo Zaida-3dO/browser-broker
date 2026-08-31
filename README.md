@@ -276,6 +276,20 @@ an image build would have given: proof that the thing actually starts.
 
 Run everything the pipeline runs with `npm run check`.
 
+### Recovering from leaked browsers, on Windows
+
+<!-- external-ref-ok-next-line: this repository's own first-party PowerShell tool, named for the reader who needs to find it -->
+The emergency sweep in `scripts/reap-broker-browsers.ps1` reports leaked broker browsers by default
+and does not touch them; pass `-Execute` to terminate what it found, and add `-PruneDirs
+-OlderThanHours <n>` to also clear stale profile directories older than that many hours. Not part of
+the pipeline: a browser this project launches is spawned `detached: true` by design (see the header
+of `src/browser/launch.ts`) so it survives the process that started it, and every known way that
+leak could happen has since been fixed at its source — see the script's own header for the list.
+Keep it installed anyway as insurance against whatever the next one turns out to be, and as the tool
+to run if a machine is already in the frozen state a leak like this can cause. Matches processes by
+profile-directory command line, never by image name, so it cannot touch an unrelated Chrome window
+or this repository's own Playwright MCP tooling; see the script's own SAFETY section.
+
 ## Status
 
 Under construction — the store, the executable and the pipeline are in place, the arbitration

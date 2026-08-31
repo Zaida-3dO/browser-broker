@@ -7,7 +7,11 @@ import { portFilePath, readDiscoveryRecord } from '../../src/browser/discovery.t
 import { browserIsRunning, modeFor, RealBrowserDriver } from '../../src/browser/real.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 import { browserAvailable, browserExecutablePath, skipReason } from '../helpers/browser.ts';
-import { teardownBrowser, temporaryProfileRoot } from '../helpers/browser-fixture.ts';
+import {
+  reapProcessesUsingProfile,
+  teardownBrowser,
+  temporaryProfileRoot,
+} from '../helpers/browser-fixture.ts';
 
 /**
  * The real driver: attaching, cold-starting, and refusing.
@@ -287,6 +291,15 @@ test(
       // And the browser that was already there is untouched.
       assert.ok(await browserIsRunning(profileDirectory));
     } finally {
+      // `launch.ts` deliberately never kills the losing spawn on this path —
+      // its whole model of a collision is that the second process "hands its
+      // address to the first and exits zero" on its own, so `coldStartDetached`
+      // throws with no PID for anything to reap. Measured here: on Windows
+      // that spawn does NOT exit on its own, and nothing else in the
+      // production sweep reconciles orphaned OS processes — only claims and
+      // tabs. See `reapProcessesUsingProfile` for why this is scoped to this
+      // test's own directory rather than a change to `launch.ts`'s kill rule.
+      reapProcessesUsingProfile(profileDirectory);
       await teardownBrowser(first, root);
     }
   },
