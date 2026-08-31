@@ -125,11 +125,9 @@ export interface RuntimeOptions {
  *     claims — which is where §1.2a puts it. `service/browser-session.ts`
  *     composes that decision with the driver that performs it.
  *
- * **Row #55 is still open and this does not close it.** The launch-race loser
- * polls with a ceiling *in this process* and refuses when it is reached,
- * rather than proceeding as if it had a browser. What the design should
- * specify — whether a bound belongs there at all, and what it should be —
- * remains #55's; see `browser-session.ts` for the argument in full.
+ * **Row #55, settled.** The launch-race loser polls with a ceiling *in this
+ * process* and refuses when it is reached, rather than proceeding as if it
+ * had a browser; see `browser-session.ts` for the argument in full.
  *
  * ── Nothing is acquired here, and that is the load-bearing part ─────────
  *

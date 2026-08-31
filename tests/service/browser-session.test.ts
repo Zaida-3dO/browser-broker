@@ -386,17 +386,21 @@ test('a stale discovery record — endpoint answers, wrong browser — is not mi
 
     const driver = new FakeBrowserDriver();
     const clock = fakeClock();
-    // `isRunning` (`browserIsRunning`) is what §1.2c's identity check feeds
-    // through: a record naming a browser whose identifier does not match is
-    // stale, and `browserIsRunning` returns `undefined` for it — the same
-    // "not reachable" this loop already treats as "keep waiting". Nothing
-    // here has to reimplement the identity comparison; the seam already
-    // reports its outcome, and this test proves the loop trusts that outcome
-    // rather than attaching on the port answering alone.
+    // **`isRunning` here returns a record, not `undefined`** — the case
+    // `browserIsRunning`'s own contract names as "read off disk but not yet
+    // checked against a live browser" (`src/browser/discovery.ts`): the
+    // endpoint is present, `browserUuid` is not. That is what stale-but-
+    // reachable looks like, and it is a different fake outcome from the
+    // "nothing there yet" timeout test above — that one fakes `undefined`
+    // throughout, which exercises "record absent", not "record present but
+    // unverified". This is the case the loop's own identity guard
+    // (`record.browserUuid !== undefined`) exists to reject: a record could
+    // read as ready on liveness alone if the guard were ever removed, which
+    // is exactly the reused-port collision §1.2c forbids trusting.
     const provider = browserSessionProvider({
       ...environmentFor(store),
       driver,
-      isRunning: () => Promise.resolve(undefined),
+      isRunning: () => Promise.resolve({ endpoint: 'http://127.0.0.1:9333' }),
       waitPollIntervalMs: 1,
       waitTimeoutMs: 20,
       ...clock,
@@ -407,13 +411,54 @@ test('a stale discovery record — endpoint answers, wrong browser — is not mi
     assert.equal(
       driver.callsOf('attach').length,
       0,
-      'a record that failed identity must never be attached to',
+      'a record present but missing browserUuid must never be attached to — presence alone is a claim, not a proof',
     );
     assert.equal(
       driver.callsOf('coldStart').length,
       0,
       'and must not be treated as licence to launch a second browser either',
     );
+  });
+});
+
+test('the wait bound actually comes from environment.launchReadinessTimeoutSeconds, not just from waitTimeoutMs', async () => {
+  await withStore(async (store) => {
+    store.db
+      .prepare("UPDATE browsers SET state = 'starting', pid = 4321 WHERE id = 'private'")
+      .run();
+
+    const driver = new FakeBrowserDriver();
+    const clock = fakeClock();
+    const base = environmentFor(store);
+
+    // **No `waitTimeoutMs` here.** Every other test in this file overrides
+    // the bound directly, which proves the loop honours an injected override
+    // but never proves it reads `environment.launchReadinessTimeoutSeconds`
+    // at all — a regression that hardcoded `WAIT_TIMEOUT_MS` in its place
+    // would pass every one of them. This is the production construction
+    // path: the only bound supplied is the environment field itself, set
+    // small enough here to reach without a real wait.
+    const provider = browserSessionProvider({
+      ...base,
+      environment: { ...base.environment, launchReadinessTimeoutSeconds: 0.02 },
+      driver,
+      isRunning: () => Promise.resolve(undefined),
+      waitPollIntervalMs: 1,
+      ...clock,
+    });
+
+    await assert.rejects(
+      async () => await provider.session('private'),
+      (error: unknown) => {
+        assert.ok(error instanceof StartupRefusal);
+        // 0.02s * 1000 = 20ms — the bound only reaches this message if the
+        // environment field, not some hardcoded fallback, set the deadline.
+        assert.match(error.message, /did not become reachable within 20ms/u);
+        return true;
+      },
+    );
+
+    assert.equal(driver.callsOf('coldStart').length, 0, 'still nothing was launched');
   });
 });
 
