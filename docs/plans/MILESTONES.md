@@ -331,7 +331,7 @@ concurrency tests below are green.
 | **20** | Real driver: **attach to a browser that is already running against one of the two profile directories**, and cold-start one **detached** when none is. Ships `launch.explicit_profile_dir`, `launch.detached`, `launch.default_args_intact` and `launch.capture_surface`, and the inward-isolation test — **starts cleanly while an unrelated browser already holds the default profile** | 19 | `done` |
 | **53** | **Discovery: the endpoint record, verified rather than trusted.** Ask the browser for an ephemeral port and read back what it recorded in its own profile directory; before attaching, **check the endpoint answers and that the browser identifier matches** (`SCHEMA.md` §1.2c) | 20 | `done` |
 | **54** | **The launch race, arbitrated by the same transaction as claims** — one row, one winner; the loser waits and attaches rather than starting a second browser (`SCHEMA.md` §1.2a) | 20, 12 | `done` |
-| **55** | **Decide what a caller that lost the launch race waits for, and for how long** (`SCHEMA.md` §1.2b, §9.3). Winning the race and having an endpoint that accepts connections are **different moments**, and the gap has no specified signal and no bound. Delivers the readiness signal, the poll, the timeout default and the declare-failed behaviour | 54 | `open` |
+| **55** | **Decide what a caller that lost the launch race waits for, and for how long** (`SCHEMA.md` §1.2b, §9.3). Winning the race and having an endpoint that accepts connections are **different moments**, and the gap has no specified signal and no bound. Delivers the readiness signal, the poll, the timeout default and the declare-failed behaviour. **Settled: the signal is §1.2c's own liveness-and-identity check on the winner's discovery record, reused rather than duplicated; the bound is `BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS` (30s default, registered like every other configurable number); reaching the bound is a `StartupRefusal` worded to read as "still starting", never as "the browser died"** | 54 | `done` |
 | **56** | **The keeper tab.** One blank, never-leased, never-addressable tab per browser, **never counted against the budget**, present before any lease is granted against that browser (`SCHEMA.md` §3.15, §7.2) | 20 | `done` |
 | **21** | Tab lifecycle: open and close by opaque identifier, and the identifier mapping | 20, 18, 53 | `done` |
 | **21a** | **Reconciliation against a live browser** — ask what it actually has open, close a page no live lease owns, close a row a live lease believes it owns that is not there. The gone-browser half is covered by the sweep. Built as `broker reconcile <browser>`, an administrative command (§4.3, §5.4) rather than an agent operation, because closing pages across a browser is browser-scoped and destructive (§3.13, `browser_scoped.never`) | 21, 53, 56 | `done` |
@@ -1086,12 +1086,15 @@ is launching; the loser sees `starting`, waits, and then attaches. A second laun
 browsers against one profile directory, contending on its lock — which is the failure the explicit
 profile directory exists to prevent.
 
-**What the loser waits *for* is #55's open decision, and it must not be papered over with a fixed
-pause.** Winning the race and having an endpoint that accepts connections are **different moments**.
-A fixed pause is a number that is too long on every fast machine and too short on the one slow machine
-where it matters, and a loser that attaches too early reports a launch failure indistinguishable from
-the browser having died — quite possibly launching a second browser in response, which is the precise
-outcome the race exists to prevent.
+**What the loser waits *for* is #55's decision, and it is not papered over with a fixed pause.**
+Winning the race and having an endpoint that accepts connections are **different moments**. A fixed
+pause is a number that is too long on every fast machine and too short on the one slow machine where
+it matters, and a loser that attaches too early reports a launch failure indistinguishable from the
+browser having died — quite possibly launching a second browser in response, which is the precise
+outcome the race exists to prevent. **#55 settles it: the loser polls the winner's discovery record
+through the same liveness-and-identity check every attach already trusts, bounded by
+`BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS` (30s default), and a bound reached is reported as a caller
+still starting rather than as a browser that died.**
 
 ### #21 — reconciliation is against the browser, not against a restart
 

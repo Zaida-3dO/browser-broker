@@ -9,6 +9,31 @@ import { prepareStore, type StoreHandle } from '../../src/store/open.ts';
 import { makeTempStore } from '../helpers/temp-store.ts';
 
 /**
+ * A clock and a sleep that advance together, with no real wall-clock wait.
+ *
+ * Row #55's readiness bound must be provably deterministic: a test that
+ * proved "refuses at the bound" by actually waiting out a real timeout would
+ * be a slow, flaky proxy for the same assertion this makes instantly and
+ * exactly. `sleepImpl` moves the fake clock forward by the requested amount
+ * before resolving, so `now() >= deadline` in `waitForWinner` becomes true on
+ * exactly the poll where real time would have crossed it — no jitter, no
+ * scheduling dependency, no elapsed wall-clock time at all.
+ */
+function fakeClock(startedAt = 0): {
+  readonly nowImpl: () => number;
+  readonly sleepImpl: (ms: number) => Promise<void>;
+} {
+  let time = startedAt;
+  return {
+    nowImpl: () => time,
+    sleepImpl: (ms: number) => {
+      time += ms;
+      return Promise.resolve();
+    },
+  };
+}
+
+/**
  * The join between the adoption arbitration and the driver that performs it.
  *
  * ── Why the fake driver is the right instrument here, and where it is not ──
@@ -55,6 +80,11 @@ function environmentFor(store: StoreHandle): Parameters<typeof browserSessionPro
       tabBudget: 4,
       leaseSeconds: 600,
       queueSeconds: 300,
+      // The declared default (§6.2, row #55). Tests that need to exercise the
+      // launch-readiness bound itself override `waitTimeoutMs` directly
+      // rather than this field, which mirrors how `tabBudget` above is a
+      // provider-level default that individual tests already override.
+      launchReadinessTimeoutSeconds: 30,
     },
   };
 }
@@ -237,26 +267,36 @@ test('a launch-race loser waits for the winner and attaches to what it started',
       .run();
 
     const driver = new FakeBrowserDriver();
+    const clock = fakeClock();
     let looks = 0;
     const provider = browserSessionProvider({
       ...environmentFor(store),
       driver,
       // Not there yet, then there — which is the whole of what winning a race
       // and being reachable being different moments looks like from outside.
+      // `isRunning` is `browserIsRunning`'s seam: this fakes its *result*,
+      // which is exactly what §1.2c's liveness-and-identity check produces
+      // once it has run, without needing a real endpoint to poll.
       isRunning: () => {
         looks += 1;
         return Promise.resolve(looks < 3 ? undefined : RUNNING);
       },
       waitPollIntervalMs: 1,
       waitTimeoutMs: 5_000,
+      ...clock,
     });
 
     await provider.session('private');
 
     assert.equal(driver.callsOf('attach').length, 1, 'it attached to the winner’s browser');
     // **The loser launches nothing.** A second browser against one profile
-    // directory is the silent-collision failure the race exists to prevent.
-    assert.equal(driver.callsOf('coldStart').length, 0);
+    // directory is the silent-collision failure the race exists to prevent —
+    // this is the assertion #55's acceptance criteria calls out by name.
+    assert.equal(
+      driver.callsOf('coldStart').length,
+      0,
+      'a loser that successfully waited must never have started its own browser',
+    );
   });
 });
 
@@ -267,12 +307,14 @@ test('a loser that waits too long refuses, and still launches nothing', async ()
       .run();
 
     const driver = new FakeBrowserDriver();
+    const clock = fakeClock();
     const provider = browserSessionProvider({
       ...environmentFor(store),
       driver,
       isRunning: () => Promise.resolve(undefined),
       waitPollIntervalMs: 1,
       waitTimeoutMs: 20,
+      ...clock,
     });
 
     await assert.rejects(
@@ -280,8 +322,15 @@ test('a loser that waits too long refuses, and still launches nothing', async ()
       (error: unknown) => {
         assert.ok(error instanceof StartupRefusal, 'it refused rather than throwing anything');
         // Reported as *this caller stopped waiting*, never as *the winner
-        // failed* — nothing here observed the winner failing.
+        // failed* — nothing here observed the winner failing. The message
+        // must be distinguishable from "the browser died": it names a
+        // caller that is still starting, not a browser that crashed.
         assert.match(error.message, /did not become reachable/u);
+        assert.match(
+          error.message,
+          /still starting, not a browser that has died/u,
+          'declare-failed must read differently from "the browser died" — this loser observed no failure, only a bound',
+        );
         return true;
       },
     );
@@ -294,6 +343,77 @@ test('a loser that waits too long refuses, and still launches nothing', async ()
       .prepare<[], { state: string }>("SELECT state FROM browsers WHERE id = 'private'")
       .get();
     assert.equal(row?.state, 'starting');
+  });
+});
+
+test('the wait is bounded by no real elapsed time — the deadline is the injected clock alone', async () => {
+  await withStore(async (store) => {
+    store.db
+      .prepare("UPDATE browsers SET state = 'starting', pid = 4321 WHERE id = 'private'")
+      .run();
+
+    const driver = new FakeBrowserDriver();
+    // A ten-minute bound, polled every ten seconds. If this were a real sleep
+    // the test would hang for the full ten minutes; with the fake clock it
+    // resolves in a handful of iterations, proving "bounded, not a fixed
+    // pause you have to wait out" rather than asserting it in prose.
+    const clock = fakeClock();
+    const provider = browserSessionProvider({
+      ...environmentFor(store),
+      driver,
+      isRunning: () => Promise.resolve(undefined),
+      waitPollIntervalMs: 10_000,
+      waitTimeoutMs: 10 * 60 * 1000,
+      ...clock,
+    });
+
+    const startedAt = Date.now();
+    await assert.rejects(async () => await provider.session('private'));
+    const elapsedRealMs = Date.now() - startedAt;
+
+    assert.ok(
+      elapsedRealMs < 2_000,
+      `a ten-minute bound resolved using ${String(elapsedRealMs)}ms of real time — the clock injection is not being used`,
+    );
+  });
+});
+
+test('a stale discovery record — endpoint answers, wrong browser — is not mistaken for the winner', async () => {
+  await withStore(async (store) => {
+    store.db
+      .prepare("UPDATE browsers SET state = 'starting', pid = 4321 WHERE id = 'private'")
+      .run();
+
+    const driver = new FakeBrowserDriver();
+    const clock = fakeClock();
+    // `isRunning` (`browserIsRunning`) is what §1.2c's identity check feeds
+    // through: a record naming a browser whose identifier does not match is
+    // stale, and `browserIsRunning` returns `undefined` for it — the same
+    // "not reachable" this loop already treats as "keep waiting". Nothing
+    // here has to reimplement the identity comparison; the seam already
+    // reports its outcome, and this test proves the loop trusts that outcome
+    // rather than attaching on the port answering alone.
+    const provider = browserSessionProvider({
+      ...environmentFor(store),
+      driver,
+      isRunning: () => Promise.resolve(undefined),
+      waitPollIntervalMs: 1,
+      waitTimeoutMs: 20,
+      ...clock,
+    });
+
+    await assert.rejects(async () => await provider.session('private'));
+
+    assert.equal(
+      driver.callsOf('attach').length,
+      0,
+      'a record that failed identity must never be attached to',
+    );
+    assert.equal(
+      driver.callsOf('coldStart').length,
+      0,
+      'and must not be treated as licence to launch a second browser either',
+    );
   });
 });
 

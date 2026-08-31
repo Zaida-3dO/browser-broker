@@ -169,6 +169,7 @@ test('processes starting together against a stepped store settle on one budget r
       tabBudget: FIRST_BUDGET,
       leaseSeconds: 600,
       queueSeconds: 600,
+      launchReadinessTimeoutSeconds: 30,
     });
     stepped.close();
 

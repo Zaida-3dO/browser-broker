@@ -307,14 +307,13 @@ configurable away.
 caller connecting and disconnecting leaves the browser exactly as it found it. That is the property
 the whole shared-session design rests on, and it is why it was checked rather than assumed.
 
-### 1.2b `starting` is a gap, not an instant — and it is open
+### 1.2b `starting` is a gap, not an instant — settled by row #55
 
 **Winning the launch race and having a browser that will accept a connection are two different
 moments**, separated by however long a browser takes to come up. The winner records that it is
-launching; the loser sees `starting` and waits. **What the loser is waiting for is the part that is
-not specified.**
+launching; the loser sees `starting` and waits.
 
-The two things it could be waiting for are not the same:
+The two things it could be waiting for were not the same:
 
 - **The winner has recorded that it launched.** Known immediately, and not sufficient: attaching now
   fails, and the failure is indistinguishable from the browser having died.
@@ -323,10 +322,30 @@ The two things it could be waiting for are not the same:
 
 A design that treats those as one moment produces a loser that attaches too early, reports a launch
 failure, and quite possibly launches a second browser in response — which is precisely the outcome
-the race arbitration exists to prevent. **This is recorded as an open gap rather than papered over
+the race arbitration exists to prevent. **This was recorded as an open gap rather than papered over
 with a fixed pause**, because a fixed pause is a number that is too long on every fast machine and
-too short on the one slow machine where it matters. What settles it is a readiness signal the loser
-can poll and a bound on how long it polls before declaring the winner failed.
+too short on the one slow machine where it matters.
+
+**Settled: the loser polls the winner's discovery record through §1.2c's own verification —
+liveness and identity, unchanged and not duplicated — until it passes or a bound is reached.**
+
+- **The signal is `verifyDiscoveryRecord`**, called exactly as every other attach in this service
+  calls it (via `browserIsRunning`, `src/browser/real.ts`). A discovery record is a claim, not a
+  proof (§1.2c): the loser is asking the same two questions everyone else asks before trusting one
+  — does the endpoint answer, and does the browser behind it identify itself as the one on the
+  record. There is no second verification path to disagree with the first.
+- **The bound is `BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS`** (§6.2, §9.3), 30 seconds by default,
+  declared in the environment registry like every other configurable number and documented in
+  `.env.example`. It is a poll ceiling, not a sleep: `src/service/browser-session.ts`'s
+  `waitForWinner` asks, and if the answer is no, waits one poll interval and asks again, until
+  either the answer is yes or the bound is reached.
+- **Reaching the bound is a refusal, never an inference about the winner.** The loser throws a
+  `StartupRefusal` naming what it waited for and that the bound was reached — worded so it reads as
+  *a caller that is still starting*, distinguishable from *a browser that has died*, because the
+  loser has evidence for the first and none for the second. Nothing is written to the `browsers`
+  row on timeout: the winner keeps its race, and the next caller asks the same question again. The
+  loser launches nothing at any point in this path — a second browser against one profile directory
+  is exactly the silent-collision failure the race arbitration exists to prevent.
 
 ### 1.2c The discovery record — a claim, not a proof
 
@@ -2768,7 +2787,7 @@ the process that started it — and those say so by naming the browser rather th
 | Lease lifetime | **10 minutes** | How long an active lease lives without a call |
 | Queue-place lifetime | **10 minutes** | How long a place in the queue lives without a call. **Deliberately equal to the row above** — §2.5 sets out why, including why the argument for making them differ pointed the other way |
 | Headed, per browser | **signed-in: on · private: off** | The signed-in browser is headed because that is what a person signs into and the keeper tab exists to keep it alive (§3.15). The private one is headless, where the speed is free and there is nothing to lose. **Read at browser launch**, not per call |
-| Launch-readiness timeout | **open — see §1.2b** | How long a caller that lost the launch race waits for the winner's browser to accept a connection before declaring it failed. **No default is offered**, because what it should wait *for* is itself unresolved |
+| Launch-readiness timeout | **30 seconds** (`BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS`) | How long a caller that lost the launch race polls the winner's discovery record — via §1.2c's own liveness-and-identity check, not a sleep — before declaring the launch failed (§1.2b, row #55). **Settled**, and equal to the number the wait already used in this process before the row made it configurable |
 | Restart backoff · maximum restarts | **5 s · 5** | After the maximum, the browser is failed and requests for it are refused. It counts against `browsers.restart_count` (§1.2). It does not retry forever, because a browser that has failed five times is failing for a reason a retry will not fix |
 | The three resolution rungs | **1024 · 1568 · 2576 px** on the long edge | What a capture is shrunk to. **Measured and kept** — the resolution study swept a ladder either side of all three and each rung delivers what its name claims (§9.3). **Changing a rung invalidates nothing**, because nothing is stored at a rung and compared against later: a diff compares two captures the caller named, and if they were taken at different rungs the result says so (§1.9) |
 | Full page by default | **off** | Unbounded page height crosses the expensive threshold more often than width does |
@@ -3045,11 +3064,6 @@ with no route to closure is just a worry.
   that closed:** whether those four cover the non-hazardous remainder in practice. **What would settle
   it:** the feedback table (§3.16), filtered to `no-path`, which is the mechanism that exists so this
   does not require sampling a corpus by hand a second time.
-- **What a caller that lost the launch race is waiting for** (§1.2b). Winning the race and having a
-  browser that accepts connections are different moments, and the gap has no specified signal and no
-  bound. **What would settle it:** a readiness signal the loser can poll, and a bound on how long it
-  polls before declaring the winner failed. A fixed pause is not an answer — it is too long on every
-  fast machine and too short on the one slow machine where it matters.
 - **Whether two callers accidentally sharing one session identity ever actually happens** (§2.2). The
   refusal that would have caught it as a side effect does not exist, and the consolation that somebody
   would notice it on a page rested on a page being up. **What would settle it:** whether the condition
@@ -3139,7 +3153,7 @@ Each is a change rather than a clarification, and is listed so nobody reconciles
 | ~~The three resolution rungs~~ **SETTLED** | **Measured by the resolution study and kept unchanged at 1024 / 1568 / 2576.** The expected ordering held: text stops being legible before layout critique stops working, and the mechanism is that a feature is destroyed once its period falls below roughly two and a half *destination* pixels — so the damage a rung does depends on the size of the feature, not on the rung. A block-scale feature survives the whole ladder; fine text detail does not. Evidence and the per-rung table are in `src/capture/tiers.ts`; the measurements are `tests/capture/ladder.test.ts` and `tests/capture/ladder-rendered.test.ts`. **Still open, and deliberately left here:** the *absolute* legibility floor — what a reader can actually read — because the study measures what the pipeline destroys, which bounds that question without answering it |
 | The tab budget | Watching real memory at real concurrency. The reasoning is 50–150 MB per idle page process plus two browser processes; the measurement turns that into a number. **It is also the maximum count of live leases**, so the lease rows measure it directly |
 | The two lifetimes, now equal at ten minutes | **Settled as a decision, and still provisional as a number.** Whether ten is right is answered by the renewal counts and by how often queue places lapse; whether they should be equal is argued in §2.5 and is not a number question |
-| The launch-readiness timeout | §1.2b, and it cannot be settled before the thing it waits *for* is decided |
+| ~~The launch-readiness timeout~~ **SETTLED** | §1.2b, row #55. The signal was the open half — resolved to §1.2c's own liveness-and-identity check, polled — which is what let a number be chosen at all: 30 seconds, `BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS`, equal to the figure this process already used before the row made it configurable. **Still provisional as a number**, in the same sense the two lifetimes above are: right until real launch timings under real machine load say otherwise |
 | Captures per lease before a warning | The capture rows |
 | The colour tolerance, and the smallest change reported | A fixture set whose negative direction is the one that matters: a change small enough to be interesting must survive the filters in force. Thin lines, border widths, focus rings and underlines are the cases to build it from |
 | How often callers actually call in | The renewal count, which is what says whether the lifetime is wrong |

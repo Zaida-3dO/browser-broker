@@ -112,6 +112,7 @@ test('every variable this build declares is the set below, and no other', () => 
   assert.deepEqual([...DECLARED_VARIABLES].sort(), [
     'BROKER_ARTIFACTS_ROOT',
     'BROKER_DB',
+    'BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS',
     'BROKER_LEASE_SECONDS',
     'BROKER_PROFILE_ROOT',
     'BROKER_QUEUE_SECONDS',
@@ -130,6 +131,20 @@ test('the three numbers default to the values section 6.2 declares', () => {
   assert.equal(environment.tabBudget, 15);
   assert.equal(environment.leaseSeconds, 600);
   assert.equal(environment.queueSeconds, 600);
+});
+
+test('the launch-readiness timeout defaults to 30 seconds, settled by row #55', () => {
+  const environment = readEnvironment({ env: {}, homedir: home, platform: 'linux' });
+  assert.equal(environment.launchReadinessTimeoutSeconds, 30);
+});
+
+test('the launch-readiness timeout can be set, like the other declared numbers', () => {
+  const environment = readEnvironment({
+    env: { BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS: '5' },
+    homedir: home,
+    platform: 'linux',
+  });
+  assert.equal(environment.launchReadinessTimeoutSeconds, 5);
 });
 
 test('the two lifetimes are equal by default, and that equality is the decision', () => {

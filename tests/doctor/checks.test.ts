@@ -46,6 +46,7 @@ describe('the store’s location', () => {
         tabBudget: 15,
         leaseSeconds: 600,
         queueSeconds: 600,
+        launchReadinessTimeoutSeconds: 30,
       },
       checksReporting({}),
     );
@@ -71,6 +72,7 @@ describe('the store’s location', () => {
         tabBudget: 15,
         leaseSeconds: 600,
         queueSeconds: 600,
+        launchReadinessTimeoutSeconds: 30,
       },
       checksReporting({}),
     );
@@ -96,6 +98,7 @@ describe('the store’s location', () => {
         tabBudget: 15,
         leaseSeconds: 600,
         queueSeconds: 600,
+        launchReadinessTimeoutSeconds: 30,
       },
       checksReporting({
         mappings: { [mapped]: sharePath('fileserver', 'store', 'broker.db') },
@@ -120,6 +123,7 @@ describe('the store’s location', () => {
         tabBudget: 15,
         leaseSeconds: 600,
         queueSeconds: 600,
+        launchReadinessTimeoutSeconds: 30,
       },
       checksReporting({}),
     );

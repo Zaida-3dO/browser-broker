@@ -32,6 +32,7 @@ export interface TempStoreOptions {
   readonly tabBudget?: number;
   readonly leaseSeconds?: number;
   readonly queueSeconds?: number;
+  readonly launchReadinessTimeoutSeconds?: number;
 }
 
 /**
@@ -90,6 +91,7 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       tabBudget: options.tabBudget ?? 15,
       leaseSeconds: options.leaseSeconds ?? 600,
       queueSeconds: options.queueSeconds ?? 600,
+      launchReadinessTimeoutSeconds: options.launchReadinessTimeoutSeconds ?? 30,
     },
     remove: () => {
       // Removed from the sweep first, so a directory this call genuinely
