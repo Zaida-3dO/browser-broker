@@ -161,7 +161,7 @@ capacity being arbitrated is one set of browsers, and two clients that could not
 claims would both think the whole of it was free.
 
 **To check the wiring without a client**, speak the handshake by hand. This writes three messages and
-reads three back:
+reads two back — the notification is the one that draws no reply:
 
 ```bash
 printf '%s\n' \
