@@ -116,12 +116,29 @@ describe('broker snapshot', () => {
   });
 });
 
+// Pinned to `present: true` throughout this suite. None of these cases are
+// about the automation-tool check itself — they are about the store, the
+// schema, side effects and the --json shape — so what they need is a doctor
+// run that evaluates every OTHER check on its merits, on any machine,
+// regardless of whether a browser binary happens to be resolvable where the
+// suite runs. Without this pin, a checkout with no browser fetched (a bare
+// `npm ci`, exactly what continuous integration does) would fail every one
+// of these on the real automation check now genuinely finding nothing — the
+// correct behaviour for that check, but not what any of these cases assert
+// against. The automation check's own behaviour, including exit code 11
+// firing on a genuine absence, is exercised separately below.
+const AUTOMATION_PRESENT = { present: true } as const;
+
 describe('broker doctor', () => {
   it('reports every precondition and exits zero on a clean install', async () => {
     const temp = makeTempStore();
     try {
       const { streams, captured } = capture();
-      const code = await run(['doctor'], { streams, env: envFor(temp.directory) });
+      const code = await run(['doctor'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
 
       assert.equal(code, DOCTOR_EXIT.ok);
       const text = captured.out.join('\n');
@@ -149,6 +166,7 @@ describe('broker doctor', () => {
           BROKER_ARTIFACTS_ROOT: path.join(temp.directory, 'artefacts'),
           BROKER_PROFILE_ROOT: path.join(temp.directory, 'profiles'),
         },
+        automationProbe: AUTOMATION_PRESENT,
       });
 
       assert.equal(code, DOCTOR_EXIT.ok);
@@ -166,7 +184,11 @@ describe('broker doctor', () => {
     const temp = makeTempStore();
     try {
       const { streams } = capture();
-      await run(['doctor'], { streams, env: envFor(temp.directory) });
+      await run(['doctor'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
       assert.equal(fs.existsSync(path.join(temp.directory, 'broker.db')), false);
     } finally {
       temp.remove();
@@ -189,7 +211,11 @@ describe('broker doctor', () => {
     try {
       const { streams, captured } = capture();
 
-      const code = await run(['doctor'], { streams, env: envFor(temp.directory) });
+      const code = await run(['doctor'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
 
       assert.equal(code, DOCTOR_EXIT.ok);
       assert.ok(
@@ -205,7 +231,11 @@ describe('broker doctor', () => {
     const temp = makeTempStore();
     try {
       const { streams, captured } = capture();
-      await run(['doctor', '--json'], { streams, env: envFor(temp.directory) });
+      await run(['doctor', '--json'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
 
       assert.equal(captured.out.length, 1);
       const first = captured.out[0];

@@ -26,6 +26,7 @@ import { runDiffs } from './diffs.ts';
 import { runCaptures } from './telemetry.ts';
 import { runImage } from './image.ts';
 import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
+import type { AutomationProbe } from '../doctor/checks.ts';
 import { explainLoginFailure, runLoginCommand } from './login-command.ts';
 import { runReconcileCommand } from './reconcile-command.ts';
 import type { Broker } from '../service/broker.ts';
@@ -122,6 +123,19 @@ export interface RunOptions {
    * Absent, it is a real timer.
    */
   readonly sleep?: (milliseconds: number) => Promise<void>;
+
+  /**
+   * How `broker doctor`'s automation-tool check gets its answer.
+   *
+   * Injected for the same reason {@link RunOptions.service} is: a test
+   * driving `doctor` through this dispatcher, in process, needs to pin what
+   * the check reports rather than depend on whether the machine running the
+   * test happens to have a browser binary resolvable — which is a fact about
+   * the environment, not about the behaviour under test. Absent, it resolves
+   * for real (see {@link resolveAutomationProbe} in
+   * `browser/automation-probe.ts`).
+   */
+  readonly automationProbe?: AutomationProbe;
 }
 
 const defaultStreams: Streams = {
@@ -936,7 +950,13 @@ async function runOperationsCommand(
         }
       }
       try {
-        return runDoctorCommand({ db: opened?.db, environment, streams, json });
+        return runDoctorCommand({
+          db: opened?.db,
+          environment,
+          streams,
+          json,
+          automationProbe: context.options.automationProbe,
+        });
       } finally {
         opened?.close();
       }
