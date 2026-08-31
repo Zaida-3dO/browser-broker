@@ -81,8 +81,8 @@ attempt becomes a race against them. Sign in while there is provably nobody to r
 > ### Signing in here is now **optional** — there are two routes, and this is the one for Phase 0
 >
 > `browser_sign_in` (`SCHEMA.md` §5.5.2) lets a **caller** ask a person to sign in, on the tab it is
-> already holding, at the moment it hits a login wall. So a profile that was never signed into ahead
-> of time is no longer a dead end: the agent asks, somebody signs in, and the work carries on.
+> already holding, at the moment it hits a login wall. So a profile nobody signed into ahead of time
+> still works: the agent asks, somebody signs in, and the work carries on.
 >
 > **Both routes stay, and this phase still uses this one.** The reason is the paragraph above rather
 > than habit: signing in ahead of time is the only way to do it *while there is provably nobody to
