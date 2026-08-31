@@ -27,6 +27,10 @@ import type {
   BeginSignInResult,
   EndSignInInput,
   EndSignInResult,
+  FinishSignInInput,
+  FinishSignInResult,
+  RequestSignInInput,
+  RequestSignInResult,
 } from './operations/sign-in.ts';
 import type { StatusInput, StatusResult } from './operations/status.ts';
 
@@ -80,6 +84,26 @@ export interface Broker {
    */
   begin_sign_in: (input: BeginSignInInput) => Promise<BeginSignInResult>;
   end_sign_in: (input: EndSignInInput) => Promise<EndSignInResult>;
+
+  /**
+   * The two halves of a **caller** asking a person to sign in (§5.5.2).
+   *
+   * **Both are keyed, which is what separates them from the pair above.**
+   * That pair is a person's and holds no lease; this pair is a caller's, and
+   * the lease is the whole mechanism: it names the one lease §5.5.1's
+   * live-lease refusal must exempt — the requester is holding the very tab
+   * the person will sign in on — and it names the one lease entitled to end
+   * the request it made.
+   *
+   * **Neither takes tab budget and neither gives one back.** A requested
+   * sign-in is a pause on the browser, not on the lease: the caller keeps its
+   * tab throughout and keeps renewing, which is §5.5.1's *"a sign-in is a
+   * pause and not a cancellation"* extended to the one caller that asked for
+   * it. A caller that lost its work by asking for help would be a caller that
+   * never asks again.
+   */
+  sign_in: (input: RequestSignInInput) => Promise<RequestSignInResult>;
+  sign_in_done: (input: FinishSignInInput) => Promise<FinishSignInResult>;
 }
 
 export interface BrokerOptions {
@@ -254,5 +278,7 @@ export function createBroker(options: BrokerOptions): Broker {
       run<TabReplaceInput, TabReplaceResult>('tab_replace', withBrowser(input)),
     begin_sign_in: (input) => run<BeginSignInInput, BeginSignInResult>('begin_sign_in', input),
     end_sign_in: (input) => run<EndSignInInput, EndSignInResult>('end_sign_in', input),
+    sign_in: (input) => run<RequestSignInInput, RequestSignInResult>('sign_in', input),
+    sign_in_done: (input) => run<FinishSignInInput, FinishSignInResult>('sign_in_done', input),
   };
 }

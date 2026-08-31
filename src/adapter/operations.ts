@@ -21,13 +21,34 @@
  */
 
 /**
- * The ten operations of `SCHEMA.md` §3.1, in the order it lists them.
+ * The twelve operations of `SCHEMA.md` §3.1, in the order it lists them.
  *
- * Ten tools, ten commands (§5.3), one list. The diff rides on `capture` as an
- * argument rather than being an eleventh operation (§3.11), and the two
- * removed tools are absent rather than deprecated (§3.1) — `browser_compare`
- * folded into capture, and `browser_tab_close` deleted outright because it
- * produced a lease owning nothing while still consuming budget.
+ * Twelve tools, twelve commands (§5.3), one list. The diff rides on `capture`
+ * as an argument rather than being an operation of its own (§3.11), and the
+ * two removed tools are absent rather than deprecated (§3.1) —
+ * `browser_compare` folded into capture, and `browser_tab_close` deleted
+ * outright because it produced a lease owning nothing while still consuming
+ * budget.
+ *
+ * ── Why the eleventh and twelfth are two names rather than one ──────────
+ *
+ * `sign_in` and `sign_in_done` are the two halves of asking a person to sign
+ * in (§5.5.2), and they are separate operations for the reason §3.1 gives
+ * when it reconciles folding comparison into capture: **a destructive
+ * operation keeps its own name; a non-destructive one may be an argument on
+ * another.** Both halves move the browser's state under every other caller —
+ * one takes it away and one gives it back — so a rule matching on the
+ * operation name has to be able to see each. Folding the second into the
+ * first as a `done: true` argument would hide precisely the transition an
+ * operator reading the ledger is trying to find.
+ *
+ * **They are not `begin_sign_in`/`end_sign_in`.** That pair is a person's,
+ * takes no key, and is deliberately absent from this list: §3.13's ceiling is
+ * that *"the worst thing an agent can do through this surface is close its
+ * own tab"*, and an unkeyed verb that ends a sign-in by naming a browser
+ * would end a person's, mid-password. These two are keyed, and the key is
+ * what makes each answerable — which lease to exempt, and which lease is
+ * entitled to finish.
  */
 export const OPERATION_NAMES = [
   'claim',
@@ -40,6 +61,8 @@ export const OPERATION_NAMES = [
   'evaluate',
   'capture',
   'feedback',
+  'sign_in',
+  'sign_in_done',
 ] as const;
 
 /** One operation, named. */
@@ -69,6 +92,10 @@ const WRITE_OPERATIONS: ReadonlySet<OperationName> = new Set<OperationName>([
   'evaluate',
   'capture',
   'feedback',
+  // Both halves of a requested sign-in write: each moves the browser's state,
+  // each appends a ledger row, and each renews the lease that called it.
+  'sign_in',
+  'sign_in_done',
 ]);
 
 /**

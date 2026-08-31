@@ -145,6 +145,59 @@ const withAQueuedLease: CaseSeed = {
   },
 };
 
+/**
+ * A live lease that has **already asked for a sign-in**, so the browser is in
+ * `signing-in` and this lease is the one that put it there.
+ *
+ * ── Why the seed asks rather than the case doing it ─────────────────────
+ *
+ * `sign_in_done` is only reachable against a sign-in that is open, and only
+ * by the lease that opened it (§7.1 `signin.finish_owned`). A case cannot
+ * express two calls — it names one operation and one input — so the first of
+ * the two happens here, which is what a seed is for.
+ *
+ * **It goes through the service, exactly like every other seed here.** The
+ * browser is moved to `signing-in` by a real `sign_in` call rather than by
+ * writing the row, so the state this case finishes is a state the product
+ * produced. Seeding it by hand would prove the finish path can move a row
+ * somebody inserted, which is not the claim.
+ */
+const withARequestedSignIn: CaseSeed = {
+  apply: async (service) => {
+    const granted = await service.perform({
+      operation: 'claim',
+      adapter: 'conformance',
+      arguments: {
+        session_id: 'conformance-signin-seed',
+        browser: 'regular',
+        purpose: 'conformance: a lease that will ask for a sign-in',
+      },
+    });
+    if (granted.outcome !== 'accepted') {
+      throw new Error(`the seed could not obtain a lease: ${granted.rule}`);
+    }
+    if (granted.value['outcome'] !== 'granted') {
+      throw new Error(
+        `the seed obtained a lease that is not live: the service answered ` +
+          `'${String(granted.value['outcome'])}' rather than 'granted', so it holds no tab ` +
+          `and cannot ask for a sign-in on one.`,
+      );
+    }
+
+    const key = granted.value['key'];
+    const asked = await service.perform({
+      operation: 'sign_in',
+      adapter: 'conformance',
+      arguments: { lease_key: key, what: 'conformance: the account dashboard' },
+    });
+    if (asked.outcome !== 'accepted') {
+      throw new Error(`the seed could not open a sign-in: ${asked.rule}`);
+    }
+
+    return { lease_key: key };
+  },
+};
+
 /** A key that was never issued — for the cases whose subject is `key.valid`. */
 const NOT_A_KEY = 'not-a-key';
 
@@ -321,6 +374,42 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     // `tab_not_found` and not a code of its own: §7.1 requires an unowned
     // tab and an unknown one to be indistinguishable to the caller.
     expect: { outcome: 'refused', code: 'tab_not_found', rule: 'tab.owned' },
+  },
+  {
+    name: 'sign in: a live lease holding a tab can ask a person to sign in',
+    operation: 'sign_in',
+    seed: withALiveLease,
+    input: { what: 'conformance: the account dashboard' },
+    expect: { outcome: 'accepted' },
+  },
+  {
+    name: 'sign in: a request that does not say what it is signing into is refused',
+    operation: 'sign_in',
+    // The one free-text field relayed to a person verbatim by a third party,
+    // so an empty one produces a request nobody can act on. Reached with a
+    // real lease rather than a bad key, because a bad key would refuse on
+    // `key.valid` first and the case would measure that instead (§3.14's
+    // ordering is a property callers branch on).
+    seed: withALiveLease,
+    input: { what: '' },
+    expect: {
+      outcome: 'refused',
+      code: 'sign_in_what_out_of_bounds',
+      rule: 'signin.what_bounded',
+    },
+  },
+  {
+    name: 'sign in done: the lease that asked gives the browser back',
+    operation: 'sign_in_done',
+    seed: withARequestedSignIn,
+    input: {},
+    expect: { outcome: 'accepted' },
+  },
+  {
+    name: 'sign in done: an unrecognised key is refused',
+    operation: 'sign_in_done',
+    input: { lease_key: NOT_A_KEY },
+    expect: { outcome: 'refused', code: 'unrecognised_key', rule: 'key.valid' },
   },
   {
     name: 'feedback: a rated report is recorded without a lease',

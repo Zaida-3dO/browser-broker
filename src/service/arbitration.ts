@@ -40,10 +40,16 @@ import {
 import {
   decideBeginSignIn,
   decideEndSignIn,
+  decideFinishSignIn,
+  decideRequestSignIn,
   type BeginSignInInput,
   type BeginSignInResult,
   type EndSignInInput,
   type EndSignInResult,
+  type FinishSignInInput,
+  type FinishSignInResult,
+  type RequestSignInInput,
+  type RequestSignInResult,
 } from './operations/sign-in.ts';
 import { decideStatus, type StatusInput, type StatusResult } from './operations/status.ts';
 import { CallRefusal } from './refusals.ts';
@@ -315,6 +321,30 @@ function endSignInHandler(
 }
 
 /**
+ * The caller-facing pair, and **both are keyed** — which is the difference
+ * from the two above rather than an inconsistency with them.
+ *
+ * The pair above is performed by a person, who holds no lease. This pair is
+ * performed by a caller on behalf of a person, and the lease is what makes
+ * that expressible: it is how the operation knows which lease to exempt from
+ * §5.5.1's live-lease refusal, and which lease is entitled to end the request
+ * it made. Take the key away and neither question has an answer.
+ */
+function requestSignInHandler(
+  scope: ArbitrationScope,
+  input: RequestSignInInput,
+): ArbitrationOutcome<RequestSignInResult> {
+  return decideRequestSignIn(scope, input);
+}
+
+function finishSignInHandler(
+  scope: ArbitrationScope,
+  input: FinishSignInInput,
+): ArbitrationOutcome<FinishSignInResult> {
+  return decideFinishSignIn(scope, input);
+}
+
+/**
  * The six tab-addressed handlers.
  *
  * **None of them takes settings**, for the reason `decideStatus` gives about
@@ -443,6 +473,17 @@ export const ARBITRATION_OPERATIONS = {
       'Give the browser back after a person has signed in; queued callers kept their places.',
     handler: endSignInHandler,
   },
+  sign_in: {
+    kind: 'browser_signin_began',
+    summary:
+      'Ask a person to sign in on the tab this lease already holds, exempting only that lease.',
+    handler: requestSignInHandler,
+  },
+  sign_in_done: {
+    kind: 'browser_signin_ended',
+    summary: 'The person confirmed: give the browser back, and keep the lease and its tab.',
+    handler: finishSignInHandler,
+  },
   tab_replace: {
     kind: 'tab_closing',
     summary: 'Give up this lease’s tab and take a fresh one, without the count dipping.',
@@ -478,6 +519,78 @@ export const ARBITRATION_NAMES: readonly string[] = Object.keys(ARBITRATION_OPER
  * renewal plus the duration that was in force. The ledger row carries the
  * sweep's moment, and says so by being a ledger row.
  */
+/**
+ * Give back a browser whose **requested** sign-in nobody answered.
+ *
+ * ── Why this is a second sweep and not a branch inside the first ────────
+ *
+ * The claim sweep reconciles leases: it reads `claims`, expires the lapsed
+ * ones and collects their tabs. This reconciles a **browser**, on a different
+ * table, against a different column, producing a different ledger kind. Folded
+ * into `sweep` it would make that function's contract two things — which is
+ * how its early return for `lapsed.length === 0` would have silently skipped
+ * this entirely, since a browser can be holding a stale sign-in on a store
+ * where no lease lapsed at all.
+ *
+ * ── Why it belongs in the transaction rather than on a timer ────────────
+ *
+ * §2.4's whole model: **capacity comes back lazily, globally, on every call.**
+ * Nothing here runs a scheduler, and there is no process to run one on — the
+ * service is spawned by its caller and exits with it (§1.0a). So a deadline is
+ * enforced the same way an expiry is: the next caller reconciles it, inside
+ * the transaction that has already opened, before any handler reads the row.
+ * That is what lets a handler read `state` directly and be right.
+ *
+ * ── What it will not do ─────────────────────────────────────────────────
+ *
+ * **It never touches a sign-in held by a process.** `signin_deadline` is null
+ * for every `broker login`, which is precisely the sign-in §5.5.1 says must
+ * not expire — *"a person takes as long as they take, and a timeout would end
+ * a sign-in that was going fine."* The column is the discriminator, and a
+ * sweep written against `state = 'signing-in'` alone would have ended exactly
+ * the sign-ins that rule protects.
+ *
+ * **And it never touches the asking lease.** A request that lapses gives the
+ * browser back and leaves the caller holding its tab, still live, still
+ * renewing. It has lost the request, not the work — the caller finds out by
+ * being refused the next time it tries to finish, and can ask again.
+ */
+function lapseUnansweredSignIns(db: Database, now: string, adapter: EventAdapter): void {
+  const lapsed = db
+    .prepare(
+      `UPDATE browsers
+          SET state = CASE WHEN pid IS NULL THEN 'stopped' ELSE 'running' END,
+              signin_deadline = NULL,
+              signin_claim_id = NULL,
+              updated_at = @now
+        WHERE state = 'signing-in'
+          -- **Not null, which is the whole guard.** A sign-in held by a
+          -- process has no deadline, and must not acquire one here.
+          AND signin_deadline IS NOT NULL
+          AND signin_deadline <= @now
+    RETURNING id AS browserId, state AS nextState, signin_claim_id AS claimId`,
+    )
+    .all({ now }) as { browserId: string; nextState: string; claimId: string | null }[];
+
+  for (const row of lapsed) {
+    // One row per decision (§1.6), and it says it was a lapse rather than a
+    // person finishing — a run of these reads as requests nobody answered,
+    // which is exactly the pattern somebody tuning the deadline would want.
+    append(db, {
+      kind: 'browser_signin_ended',
+      outcome: 'allow',
+      adapter,
+      browserId: row.browserId,
+      detail: {
+        lapsed: true,
+        state: row.nextState,
+        claimId: row.claimId,
+        reason: 'the sign-in this caller asked for was not answered before its deadline',
+      },
+    });
+  }
+}
+
 function sweep(db: Database): SweepResult {
   const sweptAt = db.prepare("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS now").get() as {
     now: string;
@@ -737,6 +850,12 @@ export async function runArbitration<Input, Output>(
       // the point: this is what makes the transaction a writer even when the
       // operation only asks a question (section 1.0a).
       const swept = sweep(db);
+      // And the second reconciliation, for the same reason and in the same
+      // place: a sign-in a caller asked for and nobody answered has lapsed,
+      // and a browser still reading `signing-in` because of it would refuse
+      // every caller over a person who is not coming. See its own header for
+      // why this is separate from the claim sweep rather than folded into it.
+      lapseUnansweredSignIns(db, swept.sweptAt, options.adapter);
 
       // What the operation asks to have closed, collected inside and acted on
       // outside. A list rather than a call: nothing here can reach a browser,

@@ -191,13 +191,19 @@ function check(description, condition, detail) {
 }
 
 /**
- * The nine arbitration operations, as the command line spells them, each
- * with a payload good enough that the key is the only thing left to refuse.
+ * The eleven keyed arbitration operations, as the command line spells them,
+ * each with a payload good enough that the key is the only thing left to
+ * refuse.
  *
  * Read as a list so that a build which registers a new operation and forgets
- * to wire it fails here rather than passing on the eight it remembered.
- * `feedback` is the tenth and is exercised separately: it is the one
- * operation that takes no lease, so it has no key to be refused for.
+ * to wire it fails here rather than passing on the ones it remembered.
+ * `claim` is exercised by being granted rather than by being refused for a
+ * key, and `feedback` is exercised separately: it is the one operation that
+ * takes no lease, so it has no key to be refused for.
+ *
+ * **Each entry's words join with an underscore to the operation name**, which
+ * is how the enforcing test pairs this list against the build's registry.
+ * A command spelled any other way is invisible to that pairing.
  *
  * ── Why the payloads have to be valid, which this check learned ─────────
  *
@@ -222,6 +228,18 @@ export const KEYED_COMMANDS = [
   { words: ['read'], payload: [] },
   { words: ['evaluate'], payload: ['--expression', '1 + 1'] },
   { words: ['capture'], payload: [] },
+  // The two halves of a requested sign-in (§5.5.2). Both are keyed, which is
+  // what puts them on this list at all — the unkeyed pair a person uses,
+  // `begin_sign_in` and `end_sign_in`, is not on either caller-facing route.
+  //
+  // `--what` is supplied for the reason the header gives about the three
+  // payload-validating operations above, even though this one resolves the
+  // lease first: a payload good enough that the key is the only thing left to
+  // refuse is what makes the assertion mean what it claims, and relying on
+  // the current ordering would make this check quietly stop measuring
+  // `key.valid` the day that ordering changed.
+  { words: ['sign', 'in'], payload: ['--what', 'the account dashboard'] },
+  { words: ['sign', 'in', 'done'], payload: [] },
 ];
 
 export async function runOperationsCheck() {

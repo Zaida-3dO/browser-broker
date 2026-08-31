@@ -236,6 +236,36 @@ export const REFUSALS = {
   },
 
   /**
+   * §7.1 `signin.what_bounded`. What a caller gets for a sign-in request that
+   * does not say what is being signed into.
+   *
+   * ── Why this is not `purpose_out_of_bounds` ─────────────────────────────
+   *
+   * Same shape of defect, different field, and the table's own rule is that a
+   * code and a rule are looked up together precisely so they cannot drift. A
+   * caller branching on `purpose_out_of_bounds` would go and rewrite the
+   * purpose it gave its *claim*, which was never wrong and is not what the
+   * refusal is about.
+   *
+   * ── Why it matters more than an ordinary bound ──────────────────────────
+   *
+   * This is the one free-text field in the service that is **relayed to a
+   * person verbatim by a third party**. Everything else a caller writes is
+   * read by an operator with the ledger in front of them; this is read by
+   * somebody who has been interrupted and told to go and type a password. An
+   * empty one produces a request that reaches a person saying nothing about
+   * what they are signing into, which is a request they cannot act on.
+   *
+   * Not retryable: the identical call with the identical argument fails
+   * identically forever. What changes it is the caller writing a sentence.
+   */
+  sign_in_what_out_of_bounds: {
+    rule: 'signin.what_bounded',
+    summary: 'A sign-in request says what is being signed into, three to two hundred characters.',
+    retryable: false,
+  },
+
+  /**
    * Not a §7.1 row, and it is here because the arbitration runner raises it
    * (`arbitration.ts`). An operation named on a surface that this build does
    * not register is a caller mistake rather than a crash, and it is the shape

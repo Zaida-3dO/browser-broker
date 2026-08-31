@@ -5,6 +5,7 @@ import { stepEight } from './step-008-signin-owner.ts';
 import { stepFive } from './step-005-storage-seed-event.ts';
 import { stepNine } from './step-009-named-browsers.ts';
 import { stepSix } from './step-006-signin-events.ts';
+import { stepTen } from './step-010-signin-request.ts';
 import { stepSeven } from './step-007-signin-without-process.ts';
 import { stepFour } from './step-004-tab-never-opened.ts';
 import { stepThree } from './step-003-queue-order.ts';
@@ -43,6 +44,7 @@ export const STEPS: readonly Step[] = [
   stepSeven,
   stepEight,
   stepNine,
+  stepTen,
 ];
 
 /**
@@ -59,7 +61,7 @@ export const STEPS: readonly Step[] = [
  *
  * So the number is written here and the check below is what keeps it honest.
  */
-export const EXPECTED_VERSION = 9;
+export const EXPECTED_VERSION = 10;
 
 /**
  * The list is consistent with the version above, asserted where the list is

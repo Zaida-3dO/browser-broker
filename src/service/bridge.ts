@@ -276,6 +276,26 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         return { ...(await broker.tab_replace({ key, tabId: tabForKey(db, key) })) };
       }
 
+      case 'sign_in': {
+        // **The tab is not an argument and must never become one.** A lease is
+        // one tab (§2.3), so the operation resolves it from the lease itself —
+        // the same rule `tabForKey` exists for, and the reason there is no
+        // `tabForKey` call here: this operation reads its own tab inside the
+        // transaction, where the answer is reconciled.
+        return {
+          ...(await broker.sign_in({
+            key: keyFrom(args),
+            what: asString(argument(args, 'what', 'signing_into', 'signingInto')),
+            ...(argument(args, 'request_seconds', 'requestSeconds') === undefined
+              ? {}
+              : { requestSeconds: asSeconds(argument(args, 'request_seconds', 'requestSeconds')) }),
+          })),
+        };
+      }
+
+      case 'sign_in_done':
+        return { ...(await broker.sign_in_done({ key: keyFrom(args) })) };
+
       case 'feedback':
         return await submitFeedback(db, args);
     }
@@ -295,6 +315,20 @@ export function serviceFor(options: BridgeOptions): BrokerService {
  */
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+/**
+ * A duration in seconds, as each surface spells one.
+ *
+ * The command line has no types, so `--request-seconds=60` arrives as the two
+ * characters. **A value that is not a number becomes `NaN` rather than being
+ * refused here**, deliberately: the operation owns what a legal duration is,
+ * and a route that refused first would answer a different question in a
+ * different order than the other route does — the exact drift §8's parity
+ * assertion exists to catch.
+ */
+function asSeconds(value: unknown): number {
+  return typeof value === 'number' ? value : Number(value);
 }
 
 /**

@@ -43,7 +43,7 @@ import { hashKey } from '../service/keys.ts';
  * WHY THIS IS A COMMAND AND NOT AN ELEVENTH TOOL
  * ══════════════════════════════════════════════════════════════════════════
  *
- * §3.1 fixes the agent-facing surface at **ten tools**, and opens by saying why:
+ * §3.1 fixes the agent-facing surface at **twelve tools**, and opens by saying why:
  * "every description sits in a connected session's context on every turn
  * whether or not anything calls it, so surface area is a standing tax and the
  * list is short on purpose". None of the ten is an image-bytes tool, and that

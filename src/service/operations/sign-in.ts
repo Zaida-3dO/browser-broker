@@ -2,6 +2,7 @@ import type { ArbitrationOutcome, ArbitrationScope } from '../arbitration.ts';
 import { BROWSER_CHOICE_GUIDANCE, type BrowserId, type BrowserKind } from '../../browser/driver.ts';
 import { CallRefusal } from '../refusals.ts';
 import { append } from '../events.ts';
+import { extendLease, resolveLease } from '../leases.ts';
 import {
   classifySignIn,
   processIsRunning,
@@ -80,6 +81,29 @@ export const SIGN_IN_RULES = {
    * distinguishes the pause from the fault.
    */
   serving: 'browser.serving',
+  /**
+   * §7.1 `signin.what_bounded`. The sentence a person reads to know which
+   * sign-in wall this is, bounded exactly as `claims.purpose` is (§1.3).
+   *
+   * **A rule of its own rather than a reuse of `claim.purpose_bounded`**, for
+   * the reason `refusals.ts` gives about those two being the same *shape* of
+   * defect and not the same refusal: a caller branching on the purpose rule
+   * would go and rewrite a purpose that was never wrong.
+   */
+  whatBounded: 'signin.what_bounded',
+  /**
+   * §7.1 `signin.requester_holds_tab`. A request comes from a lease that is
+   * holding an open tab, because the person signs in **on that tab** — there
+   * is nothing to hand them otherwise.
+   */
+  requesterHoldsTab: 'signin.requester_holds_tab',
+  /**
+   * §7.1 `signin.finish_owned`. Only the lease that asked may finish the
+   * request it made. Without it, a caller could end a person's `broker login`
+   * mid-password by naming a browser, which is the browser-scoped destructive
+   * verb §3.13 says must never exist on this surface.
+   */
+  finishOwned: 'signin.finish_owned',
 } as const;
 
 /**
@@ -173,12 +197,16 @@ interface BrowserRow {
   readonly pid: number | null;
   /** Which process began the sign-in, when the browser is in one (step eight). */
   readonly signin_owner_pid: number | null;
+  /** When a *requested* sign-in lapses, when the browser is in one (step ten). */
+  readonly signin_deadline: string | null;
+  /** Which lease asked for it, when a caller did rather than a person (step ten). */
+  readonly signin_claim_id: string | null;
 }
 
 function readBrowser(scope: ArbitrationScope, browser: BrowserId): BrowserRow {
   return scope.db
     .prepare<{ id: string }, BrowserRow>(
-      'SELECT id, state, pid, signin_owner_pid FROM browsers WHERE id = @id',
+      'SELECT id, state, pid, signin_owner_pid, signin_deadline, signin_claim_id FROM browsers WHERE id = @id',
     )
     .get({ id: browser }) as BrowserRow;
 }
@@ -445,8 +473,16 @@ export function decideBeginSignIn(
   // mechanism exists to remove — rarely, which is the worst frequency for a
   // defect of this kind.
   const ownerPid = input.ownerPid ?? null;
+  // **The request columns are cleared as the owner is written**, so a browser
+  // is never held by a process *and* a deadline at once. This path is reached
+  // after a lapsed or reclaimed request as well as from a clean state, and a
+  // deadline left behind from one would lapse a person's `broker login` out
+  // from under them at a moment nothing here chose.
   db.prepare(
-    `UPDATE browsers SET state = 'signing-in', signin_owner_pid = @ownerPid, updated_at = @now WHERE id = @id`,
+    `UPDATE browsers
+        SET state = 'signing-in', signin_owner_pid = @ownerPid,
+            signin_deadline = NULL, signin_claim_id = NULL, updated_at = @now
+      WHERE id = @id`,
   ).run({
     id: browser,
     ownerPid,
@@ -519,8 +555,18 @@ export function decideEndSignIn(
   // with it: a browser that is not signing in has no owner, and a stale
   // identifier left behind would be a record of a process that is not holding
   // anything — the kind of leftover a later reader trusts.
+  // **All three sign-in columns cleared, not just the owner.** Step ten added
+  // a deadline and an asking lease for a *requested* sign-in, and this command
+  // path can meet one: `broker login` reclaims a sign-in whose owner is gone,
+  // and a request that lapsed leaves rows this same statement has to clean.
+  // Leaving them set would record a deadline and a claim against a browser
+  // that is serving — exactly the leftover step eight's own header warns a
+  // later reader will trust.
   db.prepare(
-    `UPDATE browsers SET state = @state, signin_owner_pid = NULL, updated_at = @now WHERE id = @id`,
+    `UPDATE browsers
+        SET state = @state, signin_owner_pid = NULL, signin_deadline = NULL,
+            signin_claim_id = NULL, updated_at = @now
+      WHERE id = @id`,
   ).run({
     id: browser,
     state,
@@ -540,4 +586,639 @@ export function decideEndSignIn(
   });
 
   return { value: { browser, state, queueDepth: queued.depth } };
+}
+
+/**
+ * ════════════════════════════════════════════════════════════════════════
+ * REQUESTING A SIGN-IN — the operation a caller can actually reach
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * `SCHEMA.md` §5.5.2, `DECISIONS.md` §13j.
+ *
+ * ── The gap, stated as the measurement rather than as a feature ─────────
+ *
+ * The two operations above are complete, and **neither is reachable by an
+ * agent**. `begin_sign_in` and `end_sign_in` are called by `broker login`,
+ * which is a command a person types. Nothing on the tool surface moves a
+ * browser into `signing-in`, so a caller that navigated to a page and got a
+ * login form had two moves available: abandon the task, or fabricate a
+ * session.
+ *
+ * §1.2 measured which one they took. **25 sessions in one month hand-seeded
+ * authentication tokens into an isolated browser while the signed-in browser
+ * sat unused.** That is usually read as a browser-choice failure and §13i
+ * treats it as one — but a caller that chose correctly and still hit a login
+ * wall was in exactly the same position, and that position had no exit that
+ * involved asking. **This is the exit that involves asking.**
+ *
+ * ── Why this is not `begin_sign_in` with a different caller ─────────────
+ *
+ * It reuses the state machine and deliberately does not reuse the entry
+ * point, because the two differ on the one refusal that makes
+ * `begin_sign_in` a service operation at all.
+ *
+ * §5.5.1 step 1 refuses a sign-in **while any live lease holds a tab on that
+ * browser**, and the reason is exact: *"somebody is about to drive the window
+ * by hand, and doing that underneath a caller's work would corrupt it."*
+ * **The requesting caller is such a lease.** It is holding the very tab
+ * sitting on the login page — that is the point of the request, since the
+ * person has to sign in where the work already is.
+ *
+ * So an agent calling `begin_sign_in` is refused by its own request, every
+ * time, naming itself as the obstacle. The refusal is not wrong; it is
+ * answering a question about a different situation.
+ *
+ * **The exemption is exactly one lease wide, and that is the design.** The
+ * asking lease is skipped and every other live lease still refuses, because
+ * the corruption §5.5.1 protects against is real for all of them and is not
+ * real for the one whose work the sign-in is for. Expressing this as a flag
+ * on the browser — *"this sign-in was requested, so skip the check"* — would
+ * exempt all of them, which is why the asking lease's identifier goes into
+ * the row (schema step ten) rather than a boolean.
+ */
+
+/**
+ * How long a requested sign-in holds the browser before it lapses.
+ *
+ * ── Why there is a number here when §5.5.1 says there is not ────────────
+ *
+ * §5.5.1: *"A sign-in has no expiry — a person takes as long as they take,
+ * and a timeout would end a sign-in that was going fine."* **That is right
+ * for the command and wrong for the request**, and the difference is what is
+ * on the other end.
+ *
+ * `broker login` is a person at a keyboard with a process blocked on them.
+ * That process is the evidence somebody is still there, which is why step
+ * eight can recover an abandoned sign-in by asking whether it is running.
+ *
+ * A requested sign-in has **no such process**. The service returns
+ * immediately, and the request is relayed onward by the calling agent to a
+ * person who may be away from the machine, may not read it for an hour, and
+ * may never read it. Nothing on this host can be asked whether they are
+ * coming. Left unbounded, one unanswered request holds the browser against
+ * every other caller forever — the same unrecoverable state step eight was
+ * written to remove, arriving through a door step eight cannot watch.
+ *
+ * **So the deadline is the evidence-substitute:** no process to interrogate,
+ * so a number instead.
+ *
+ * ── Why fifteen minutes ─────────────────────────────────────────────────
+ *
+ * It is `BROKER_LEASE_SECONDS` (ten minutes) plus a margin, and the
+ * relationship is the reason rather than the roundness. The requesting lease
+ * survives the wait by being renewed — every keyed call extends it (§3.1) —
+ * so the caller polls throughout. A deadline **shorter** than the lease
+ * lifetime would let the sign-in lapse while the caller that asked for it was
+ * still healthy and still waiting, which is the confusing failure: the agent
+ * is told to keep waiting by its own live lease and told the request is gone
+ * by the browser. A deadline longer than the lease gives the caller room to
+ * notice its own expiry first, which is the failure it can explain.
+ *
+ * **What it is not:** a promise that a person answers within fifteen minutes,
+ * and it is not tuned to human behaviour at all. It bounds how long an
+ * *unanswered* request may cost every other caller, and the cost of getting
+ * it wrong in the generous direction is a browser nobody can use. A person
+ * who arrives late asks the agent to request again; nothing is lost but the
+ * request.
+ */
+export const SIGN_IN_REQUEST_SECONDS = 900;
+
+/**
+ * How close to the deadline a caller is told to check back.
+ *
+ * The same shape `checkBackSeconds` gives a queued caller, and for the same
+ * reason: *"a check made exactly at the deadline races the reclamation and
+ * loses about half the time."*
+ */
+export const SIGN_IN_REQUEST_CHECK_BACK_SECONDS = 30;
+
+/**
+ * The bounds on what a caller says is being signed into.
+ *
+ * The same three-to-two-hundred bound `claims.purpose` carries (§1.3), and
+ * deliberately the same numbers rather than new ones: it is the same kind of
+ * field — a short human sentence a person reads to decide what to do — and a
+ * second set of limits would be a second thing to remember for no gain.
+ */
+export const SIGN_IN_WHAT_MIN = 3;
+export const SIGN_IN_WHAT_MAX = 200;
+
+export interface RequestSignInInput {
+  /** The asking lease's key. This operation is keyed, unlike the two above. */
+  readonly key: string;
+  /**
+   * What is being signed into, in the caller's own words.
+   *
+   * **Required, and it is the whole of what makes the result relayable.**
+   * The service never speaks to a person — the calling agent does — so the
+   * result has to carry enough for that agent to say *which* login wall this
+   * is. A request that said only "please sign in" would send a person to a
+   * browser with no idea what they are signing into, and this is the one fact
+   * the service cannot derive: the tab's address is known to the browser
+   * rather than to the store, since §13f deleted the cached column precisely
+   * because it *"cached something the browser knows"*.
+   */
+  readonly what: string;
+  /**
+   * A shorter deadline than the default, when the caller wants one.
+   *
+   * ── Bounded above, and the bound is the point ───────────────────────────
+   *
+   * **A caller may ask for less time and may never ask for more.** The
+   * deadline exists to bound what an unanswered request costs *other* callers
+   * (see {@link SIGN_IN_REQUEST_SECONDS}), and a bound a caller can raise is
+   * not a bound — it is a default with extra steps, and the first caller to
+   * pass a large number reinstates exactly the unrecoverable state this was
+   * written to prevent.
+   *
+   * So a value above the ceiling is **clamped rather than refused**, which is
+   * the one place this operation does not follow §6.3's *"refuse, never
+   * silently default"*. The reasoning is that §6.3 is about **configuration**
+   * — a value an operator set and would otherwise never learn was ignored —
+   * and this is a per-call argument whose effective value is returned in
+   * `requestSeconds` on the very same response. A caller that asks for an
+   * hour is told it got fifteen minutes, in the field it reads to know when
+   * to stop waiting, so nothing is silent.
+   *
+   * A non-positive or non-numeric value is treated as absent, which is what
+   * a command line that cannot type its arguments will otherwise produce.
+   */
+  readonly requestSeconds?: number;
+}
+
+export interface RequestSignInResult {
+  readonly browser: BrowserId;
+  readonly state: 'signing-in';
+  /** The lease that asked, unchanged and still holding its tab. */
+  readonly claimId: string;
+  /** The tab the person will sign in on — the one already open. */
+  readonly tabId: string;
+  /** Echoed back, because the calling agent relays this onward. */
+  readonly what: string;
+  /** When this request lapses if nobody answers it. */
+  readonly deadline: string;
+  readonly requestSeconds: number;
+  /** The expiry of the asking lease **after** this call renewed it. */
+  readonly leaseExpiresAt: string;
+  /**
+   * What the calling agent should say to the person, and what to do next.
+   * Assembled here rather than by each surface, so both say it once.
+   */
+  readonly relay: string;
+  readonly checkBackSeconds: number;
+}
+
+/**
+ * What the calling agent says to the person, and what it does next.
+ *
+ * ── Why the service writes this sentence at all ─────────────────────────
+ *
+ * **The service never speaks to a person; the calling agent does.** This is
+ * the only place in the design where that indirection matters, because
+ * everywhere else the audience for a message is whoever made the call. Here
+ * the message has to survive being read by an agent and repeated to a human
+ * who has none of the context — so it names the browser, says what is being
+ * signed into, says the tab is already open and waiting, and says the person
+ * should confirm when they are done.
+ *
+ * Assembled here rather than at each surface for the reason
+ * `SIGN_IN_OWNER_UNKNOWN_REMEDY` is: two spellings of one instruction is how
+ * they come to disagree, and the disagreement is found by somebody who is
+ * already stuck.
+ *
+ * **It is not a refusal message and is not worded like one.** §3.14 says
+ * refusal sentences are worded per transport and never compared between them;
+ * this is a *result* field, identical on every surface, and a caller relays
+ * it rather than reading it.
+ */
+export function relaySentence(options: {
+  readonly browser: BrowserId;
+  readonly what: string;
+  readonly requestSeconds: number;
+}): string {
+  const minutes = Math.round(options.requestSeconds / 60);
+  return (
+    `Tell the person: the ${options.browser} browser has a tab open on the sign-in page for ${options.what} — ` +
+    `please sign in there, then say when you are done. The tab is already on the page, so nothing needs opening. ` +
+    `While you wait, keep calling browser_status to hold your lease; your lease and your tab are untouched by the sign-in. ` +
+    `Call browser_sign_in_done once they confirm. If nobody answers within about ${String(minutes)} minutes the request lapses ` +
+    `and the browser serves other callers again — ask again if that happens.`
+  );
+}
+
+/**
+ * Ask a person to sign in, on the tab this lease already holds.
+ *
+ * **Keyed, unlike the two operations above**, and that is what makes the
+ * exemption expressible: the key resolves to exactly one lease, so the
+ * operation knows which lease is asking and can protect every other one.
+ */
+export function decideRequestSignIn(
+  scope: ArbitrationScope,
+  input: RequestSignInInput,
+): ArbitrationOutcome<RequestSignInResult> {
+  const { db, adapter, swept } = scope;
+
+  // The lease first, and the renewal with it. **Before any other check**, for
+  // the reason `claim.ts` gives about the position of its own refusals: a
+  // caller whose key is wrong should hear about the key, not about a browser
+  // it was never going to be allowed to touch. Renewing first also means a
+  // caller refused for any reason below still had its lease extended by the
+  // call — §3.1's rule that there is no keyed call that does not extend, and
+  // the rule that keeps a caller from expiring while being told why it cannot
+  // have something.
+  const lease = resolveLease(db, input.key, {
+    adapter,
+    kind: 'claim_renewed',
+    recordRefusal: scope.recordRefusal,
+  });
+  const leaseExpiresAt = extendLease(db, lease, { adapter, now: swept.sweptAt });
+
+  // The sentence a person will read, bounded exactly as a purpose is (§1.3).
+  // Checked here rather than left to a column, because **there is no column**:
+  // a request is not a row, so nothing downstream would refuse an empty one
+  // and a person would be handed a window with no idea what it is for.
+  const what = typeof input.what === 'string' ? input.what.trim() : '';
+  if (what.length < SIGN_IN_WHAT_MIN || what.length > SIGN_IN_WHAT_MAX) {
+    scope.recordRefusal({
+      kind: 'browser_signin_began',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.whatBounded,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: lease.browserId,
+      detail: { length: what.length },
+    });
+    throw new CallRefusal(
+      'sign_in_what_out_of_bounds',
+      `A sign-in request says what is being signed into, ${String(SIGN_IN_WHAT_MIN)} to ${String(SIGN_IN_WHAT_MAX)} characters — it is relayed to a person verbatim and is the only thing telling them which sign-in wall this is. Name the site or the account rather than the task: "the account dashboard" rather than "step three".`,
+      { detail: { length: what.length } },
+    );
+  }
+
+  // A queued lease has never had a tab (§1.3), so it has no page to be stuck
+  // on. Refused rather than allowed to move a browser it is not yet using.
+  //
+  // ── This check is redundant in this build, and is kept anyway ──────────
+  //
+  // **Measured rather than assumed**, by deleting it and watching the suite
+  // stay green: a queued lease reaches the tab lookup below, finds nothing
+  // open, and is refused there — under the same rule, with a different code.
+  // So no reachable state separates the two, and a mutation removing this
+  // branch survives.
+  //
+  // It is kept for the reason `decideBeginSignIn`'s holder query gives about
+  // its own surviving condition: **the redundancy is a property of this build
+  // rather than of the design.** The two refusals answer different questions —
+  // *you are not holding anything yet* against *the thing you were holding is
+  // gone* — and they send a caller to different next actions: wait for the
+  // queue, or replace a wedged tab. Collapsing them because they presently
+  // coincide would give a queued caller advice about a tab it never had.
+  //
+  // Written down rather than left as a surviving mutation somebody
+  // rediscovers: the branch is deliberate, it is not independently covered,
+  // and the reason it is not covered is that the product cannot produce a
+  // state that separates it from the one below.
+  if (lease.state !== 'active') {
+    scope.recordRefusal({
+      kind: 'browser_signin_began',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.requesterHoldsTab,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: lease.browserId,
+      detail: { state: lease.state },
+    });
+    throw new CallRefusal(
+      'browser_unavailable',
+      'That lease is queued rather than active, so it holds no tab and there is no page for anybody to sign in on. Poll browser_status until it turns active, open the page that wants a sign-in, and ask then.',
+      { detail: { state: lease.state } },
+    );
+  }
+
+  const browser = resolveSignableBrowser(scope, lease.browserId);
+  const row = readBrowser(scope, browser);
+
+  // The tab this lease holds. **Read rather than taken from the caller**, for
+  // the reason `bridge.ts` gives about `tabForKey`: a lease is one tab (§2.3),
+  // so the tab is a fact about the lease, and a caller naming one could only
+  // ever be naming a different one.
+  const tab = db
+    .prepare<{ claimId: string }, { tabId: string }>(
+      `SELECT id AS tabId FROM tabs
+        WHERE claim_id = @claimId AND state IN ('opening', 'open')
+        ORDER BY id LIMIT 1`,
+    )
+    .get({ claimId: lease.claimId });
+
+  if (tab === undefined) {
+    // Active with no open tab. The note on `decideBeginSignIn`'s holder query
+    // records that this pair does not come apart on any path this build can
+    // reach — so this is the honest refusal for a state that should not occur,
+    // rather than a branch with a scenario behind it, and it refuses rather
+    // than handing a person a window with no page in it.
+    scope.recordRefusal({
+      kind: 'browser_signin_began',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.requesterHoldsTab,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: browser,
+      detail: { claimId: lease.claimId, state: lease.state },
+    });
+    throw new CallRefusal(
+      'tab_not_found',
+      'That lease is active but holds no open tab, so there is no page to sign in on. Call browser_tab_replace to take a fresh one, open the page that wants a sign-in, and ask again.',
+      { detail: { claimId: lease.claimId } },
+    );
+  }
+
+  // ── Already signing in ────────────────────────────────────────────────
+  //
+  // Refused, and **not reclaimed here even when the deadline has passed**.
+  // The lapse is the sweep's job, and the sweep has already run by the time
+  // this handler executes — so a browser still reading `signing-in` here is
+  // one whose sign-in is genuinely live, and reclaiming it would take a
+  // window out from under whoever has it.
+  if (row.state === 'signing-in') {
+    scope.recordRefusal({
+      kind: 'browser_signin_began',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.serving,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: browser,
+      detail: { state: row.state, requestedBy: row.signin_claim_id },
+    });
+    throw new CallRefusal(
+      'browser_unavailable',
+      row.signin_claim_id === lease.claimId
+        ? `You have already asked for a sign-in on the ${browser} browser and it is still open. Keep calling browser_status to hold your lease, and tell the person the tab is waiting for them — asking twice does not reach them twice.`
+        : `The ${browser} browser is already being signed into, so a second person cannot be handed the same window. This is a pause rather than a fault: it serves again as soon as they are finished. Keep calling browser_status to hold your lease, and ask again once it is serving.`,
+      { detail: { browser, state: row.state } },
+    );
+  }
+
+  // ── §5.5.1 step 1, with the requester exempted ────────────────────────
+  //
+  // **The same query as `decideBeginSignIn`'s, minus this one lease.** It is
+  // written out rather than shared with that function, and the duplication is
+  // deliberate: the two ask different questions, and a shared helper taking
+  // an "except this one" argument would make the exemption look like a
+  // parameter of the original rule rather than a second rule. The original
+  // must keep refusing every live lease without exception, because a person
+  // typing `broker login` holds no lease and is exempt from nothing.
+  const holders = db
+    .prepare<{ browserId: string; claimId: string }, HoldingLease>(
+      `SELECT c.id AS claimId, c.session_id AS sessionId, c.purpose AS purpose,
+              c.expires_at AS expiresAt
+         FROM claims c
+         JOIN tabs t ON t.claim_id = c.id
+        WHERE c.browser_id = @browserId
+          AND c.state = 'active'
+          AND t.state IN ('opening', 'open')
+          AND c.id != @claimId
+        ORDER BY c.id`,
+    )
+    .all({ browserId: browser, claimId: lease.claimId });
+
+  if (holders.length > 0) {
+    scope.recordRefusal({
+      kind: 'browser_signin_began',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.busyForLogin,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: browser,
+      // The same detail shape `decideBeginSignIn` records, and deliberately
+      // never the keys (§5.6).
+      detail: {
+        holders: holders.map((holder) => ({
+          claimId: holder.claimId,
+          sessionId: holder.sessionId,
+          purpose: holder.purpose,
+          expiresAt: holder.expiresAt,
+        })),
+      },
+    });
+    const described = holders
+      .map(
+        (holder) =>
+          `${holder.claimId} (session ${holder.sessionId}, ${holder.purpose}, until ${holder.expiresAt})`,
+      )
+      .join('; ');
+    throw new CallRefusal(
+      'browser_unavailable',
+      `The ${browser} browser has ${String(holders.length)} other live lease(s) holding a tab, so a person cannot be handed the window yet: driving it by hand underneath somebody else's work would corrupt it. Your own lease is not the obstacle and is untouched. Waiting is enough — every lease expires on its own if its holder stops calling in. Holding: ${described}`,
+      { detail: { browser, holders: [...holders] } },
+    );
+  }
+
+  // ── The request is granted ────────────────────────────────────────────
+  //
+  // The state moves and **nothing about the asking lease moves with it**. No
+  // claim row is touched beyond the renewal above, no tab is closed, no
+  // capacity is returned. That is §5.5.1's *"a sign-in is a pause and not a
+  // cancellation"* extended to the requester — the property most likely to be
+  // got wrong here, because a caller that lost its work by asking for help is
+  // a caller that never asks again.
+  // Clamped, never widened. See {@link RequestSignInInput.requestSeconds} for
+  // why this is a clamp rather than a refusal, and why the ceiling is not a
+  // caller's to move.
+  const asked = input.requestSeconds;
+  const requestSeconds =
+    typeof asked === 'number' && Number.isFinite(asked) && asked > 0
+      ? Math.min(Math.floor(asked), SIGN_IN_REQUEST_SECONDS)
+      : SIGN_IN_REQUEST_SECONDS;
+
+  const deadlineRow = db
+    .prepare<{ id: string; now: string; claimId: string; extend: string }, { deadline: string }>(
+      `UPDATE browsers
+          SET state = 'signing-in',
+              signin_owner_pid = NULL,
+              signin_deadline = strftime('%Y-%m-%dT%H:%M:%fZ', @now, @extend),
+              signin_claim_id = @claimId,
+              updated_at = @now
+        WHERE id = @id
+    RETURNING signin_deadline AS deadline`,
+    )
+    .get({
+      id: browser,
+      now: swept.sweptAt,
+      claimId: lease.claimId,
+      // Assembled from a number this build owns, never from caller text.
+      extend: `+${String(requestSeconds)} seconds`,
+    }) as { deadline: string };
+
+  append(db, {
+    kind: 'browser_signin_began',
+    outcome: 'allow',
+    adapter,
+    sessionId: lease.sessionId,
+    browserId: browser,
+    // **Which lease asked and when it lapses, and nothing a person typed.**
+    // `what` is deliberately absent: it is free text from a caller, it is
+    // relayed to a person rather than acted on, and step six's header is
+    // explicit that this row is built by hand and that a well-meaning
+    // addition is how it stops being true.
+    detail: {
+      requested: true,
+      claimId: lease.claimId,
+      deadline: deadlineRow.deadline,
+      previousState: row.state,
+      browserWasRunning: row.pid !== null,
+    },
+  });
+
+  return {
+    value: {
+      browser,
+      state: 'signing-in',
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      what,
+      deadline: deadlineRow.deadline,
+      requestSeconds,
+      leaseExpiresAt,
+      checkBackSeconds: SIGN_IN_REQUEST_CHECK_BACK_SECONDS,
+      relay: relaySentence({ browser, what, requestSeconds }),
+    },
+  };
+}
+
+export interface FinishSignInInput {
+  /** The asking lease's key. Only the lease that asked may finish it. */
+  readonly key: string;
+}
+
+export interface FinishSignInResult {
+  readonly browser: BrowserId;
+  /** Back to serving. `stopped` when no browser was running to return to. */
+  readonly state: 'running' | 'stopped';
+  readonly claimId: string;
+  /** The tab the lease still holds — the same one it held throughout. */
+  readonly tabId: string;
+  readonly leaseExpiresAt: string;
+  readonly queueDepth: number;
+}
+
+/**
+ * The person is done — give the browser back, keeping the lease.
+ *
+ * ── Why this is not `end_sign_in` ───────────────────────────────────────
+ *
+ * `end_sign_in` takes a browser name and no key, because the thing calling it
+ * is a command a person ran and there is no lease in the picture. Exposing
+ * *that* on the tool surface would hand every caller a verb that ends
+ * **somebody else's** sign-in by naming a browser — including a person's
+ * `broker login`, mid-password.
+ *
+ * So the caller-facing half is keyed, and the key must be the one that asked.
+ * **This is the same reasoning §3.13 gives for there being no browser-scoped
+ * destructive verb on the surface**: the worst thing an agent can do through
+ * this surface is give back something it asked for itself.
+ */
+export function decideFinishSignIn(
+  scope: ArbitrationScope,
+  input: FinishSignInInput,
+): ArbitrationOutcome<FinishSignInResult> {
+  const { db, adapter, swept } = scope;
+
+  const lease = resolveLease(db, input.key, {
+    adapter,
+    kind: 'claim_renewed',
+    recordRefusal: scope.recordRefusal,
+  });
+  const leaseExpiresAt = extendLease(db, lease, { adapter, now: swept.sweptAt });
+
+  const browser = resolveSignableBrowser(scope, lease.browserId);
+  const row = readBrowser(scope, browser);
+
+  if (row.state !== 'signing-in') {
+    scope.recordRefusal({
+      kind: 'browser_signin_ended',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.serving,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: browser,
+      detail: { state: row.state },
+    });
+    throw new CallRefusal(
+      'browser_unavailable',
+      `The ${browser} browser is not being signed into — it is ${row.state}. Your request may have lapsed while nobody answered it, in which case the browser is already serving and your lease and tab are untouched: look at the page, and ask again if it is still showing a sign-in wall.`,
+      { detail: { browser, state: row.state } },
+    );
+  }
+
+  // **Only the lease that asked may finish it**, which is the whole reason
+  // this operation is keyed. A different lease calling this would be ending a
+  // sign-in it did not ask for — and a sign-in begun by `broker login` records
+  // no claim at all, so no lease can end one and a person's command keeps the
+  // window until they close it.
+  if (row.signin_claim_id !== lease.claimId) {
+    scope.recordRefusal({
+      kind: 'browser_signin_ended',
+      outcome: 'deny',
+      guard: SIGN_IN_RULES.finishOwned,
+      adapter,
+      sessionId: lease.sessionId,
+      browserId: browser,
+      detail: { requestedBy: row.signin_claim_id, asking: lease.claimId },
+    });
+    throw new CallRefusal(
+      'browser_unavailable',
+      row.signin_claim_id === null
+        ? `The ${browser} browser is being signed into by a person who ran the sign-in command directly, so there is no request of yours to finish — and ending theirs from here would take the window out from under them mid-password. Keep calling browser_status to hold your lease; it serves again when they close it.`
+        : `The ${browser} browser is being signed into at another lease's request, so it is not yours to finish. Keep calling browser_status to hold your lease, and try your page again once it is serving.`,
+      { detail: { browser } },
+    );
+  }
+
+  const tab = db
+    .prepare<{ claimId: string }, { tabId: string }>(
+      `SELECT id AS tabId FROM tabs
+        WHERE claim_id = @claimId AND state IN ('opening', 'open')
+        ORDER BY id LIMIT 1`,
+    )
+    .get({ claimId: lease.claimId });
+
+  // Back to what the pid says it is, exactly as `decideEndSignIn` does and for
+  // the same constraint: `stopped` requires a null pid and every other state
+  // requires one.
+  const state: 'running' | 'stopped' = row.pid === null ? 'stopped' : 'running';
+
+  // **All three sign-in columns cleared together.** A browser that is not
+  // signing in has no owner, no deadline and no asking lease, and a stale
+  // value in any of them is a leftover a later reader trusts.
+  db.prepare(
+    `UPDATE browsers
+        SET state = @state, signin_owner_pid = NULL, signin_deadline = NULL,
+            signin_claim_id = NULL, updated_at = @now
+      WHERE id = @id`,
+  ).run({ id: browser, state, now: swept.sweptAt });
+
+  const queued = db
+    .prepare<[], { depth: number }>(`SELECT COUNT(*) AS depth FROM claims WHERE state = 'queued'`)
+    .get() as { depth: number };
+
+  append(db, {
+    kind: 'browser_signin_ended',
+    outcome: 'allow',
+    adapter,
+    sessionId: lease.sessionId,
+    browserId: browser,
+    detail: { state, queueDepth: queued.depth, claimId: lease.claimId, confirmed: true },
+  });
+
+  return {
+    value: {
+      browser,
+      state,
+      claimId: lease.claimId,
+      tabId: tab?.tabId ?? '',
+      leaseExpiresAt,
+      queueDepth: queued.depth,
+    },
+  };
 }
