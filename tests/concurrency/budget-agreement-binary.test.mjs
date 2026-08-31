@@ -204,33 +204,60 @@ describe('the tab-budget agreement, through the shipped executable', () => {
     // A budget disagreement is one of the states `doctor` exists to describe.
     // Diagnosing it through a path that refuses on it would hand the operator a
     // refusal where the report naming both numbers is the whole point of
-    // asking. So this asserts the report, and — when the automation check
-    // does not itself fail first — asserts the exit code is the budget code
-    // rather than a startup refusal.
+    // asking. So this asserts the report and the exit code is the budget
+    // code, not a startup refusal.
     //
-    // The automation check can legitimately fail first here: this spawns the
-    // real `broker` binary as a child process, which resolves automation for
-    // real (`src/browser/automation-probe.ts`) with no seam this test can
-    // inject through, and §5.6's "lowest code wins" rule means a machine with
-    // no resolvable browser binary reports 11 (automation) ahead of 16
-    // (budget) — correct doctor behaviour, not a fault in the disagreement
-    // this test exists to prove. The report naming both numbers without
-    // refusing is what is asserted unconditionally either way.
+    // This spawns the real `broker` binary as a child process, which
+    // resolves automation for real (`src/browser/automation-probe.ts`) with
+    // no seam this test can inject `AutomationProbeDependencies` through —
+    // and §5.6's "lowest code wins" rule means a machine with no resolvable
+    // browser binary would otherwise report 11 (automation) ahead of 16
+    // (budget), which is correct doctor behaviour but not what this test
+    // exists to prove. `BROKER_DOCTOR_AUTOMATION_OVERRIDE=present` (honoured
+    // only by `resolveAutomationProbe`, never a documented configuration
+    // variable) pins the automation check to pass, so the budget code is the
+    // only one that can surface here — on every machine, with or without a
+    // browser binary fetched, which is what makes the exit code an
+    // unconditional `=== 16` here rather than a check that has to tolerate
+    // two possible codes depending on the host it runs on.
     const install = freshInstallation();
     await spawnBroker(['init'], { env: install.environmentFor(9) });
 
-    const doctor = await spawnBroker(['doctor'], { env: install.environmentFor(30) });
+    const doctor = await spawnBroker(['doctor'], {
+      env: { ...install.environmentFor(30), BROKER_DOCTOR_AUTOMATION_OVERRIDE: 'present' },
+    });
 
     assert.match(doctor.stdout, /The store records 9 and this process/);
     assert.match(doctor.stdout, /says 30/);
-    assert.ok(
-      doctor.code === 16 || doctor.code === 11,
-      `expected the budget code (16) or, if no browser binary is resolvable, the automation code (11) — got ${String(doctor.code)}`,
+    assert.equal(
+      doctor.code,
+      16,
+      `expected the budget code (16) with automation forced present — got ${String(doctor.code)}. stdout:\n${doctor.stdout}\nstderr:\n${doctor.stderr}`,
     );
     assert.doesNotMatch(
       doctor.stderr,
       /refused \(budget\.agrees_with_store\)/,
       'doctor refused to run instead of reporting the disagreement it exists to report',
+    );
+  });
+
+  it('doctor reports the budget disagreement as exit code 11 when automation is forced absent', async () => {
+    // The control for the override itself: forcing `absent` must still let
+    // §5.6's lowest-code-wins rule pick automation (11) ahead of budget (16),
+    // proving the override actually reaches the real spawn rather than being
+    // silently ignored — which is exactly the failure mode that would make
+    // the `present` assertion above pass for the wrong reason.
+    const install = freshInstallation();
+    await spawnBroker(['init'], { env: install.environmentFor(9) });
+
+    const doctor = await spawnBroker(['doctor'], {
+      env: { ...install.environmentFor(30), BROKER_DOCTOR_AUTOMATION_OVERRIDE: 'absent' },
+    });
+
+    assert.equal(
+      doctor.code,
+      11,
+      `expected the automation code (11) with automation forced absent — got ${String(doctor.code)}. stdout:\n${doctor.stdout}\nstderr:\n${doctor.stderr}`,
     );
   });
 });

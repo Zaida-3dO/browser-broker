@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { join } from 'node:path';
 
-import { resolveAutomationProbe } from '../../src/browser/automation-probe.ts';
+import {
+  REAL_DEPENDENCIES,
+  resolveAutomationProbe,
+  resolvePlaywrightCoreVersion,
+} from '../../src/browser/automation-probe.ts';
 
 /**
  * The doctor's automation probe, resolved for real.
@@ -65,5 +71,54 @@ describe('resolveAutomationProbe', () => {
     const probe = resolveAutomationProbe();
 
     assert.equal(typeof probe.present, 'boolean');
+  });
+
+  it('resolves playwright-core’s installed version from its own package.json', () => {
+    // What `REAL_DEPENDENCIES.libraryVersion` is set from. Asserted directly
+    // against `resolvePlaywrightCoreVersion()` rather than through
+    // `resolveAutomationProbe()`'s `present: true` branch, because that
+    // branch also requires `pathExists` to hold — which needs a browser
+    // binary actually fetched, and would make this test pass or fail
+    // depending on whether the machine running it has one. Resolving the
+    // *library's own* version has no such dependency, so it must hold on
+    // every machine, browser or not — including this repo's CI, which has
+    // none fetched.
+    const packageJson: { version: string } = JSON.parse(
+      readFileSync(
+        join(import.meta.dirname, '../../node_modules/playwright-core/package.json'),
+        'utf8',
+      ),
+    ) as { version: string };
+
+    assert.equal(resolvePlaywrightCoreVersion(), packageJson.version);
+  });
+
+  it('wires libraryVersion into REAL_DEPENDENCIES, so the default resolution path can echo it', () => {
+    // `resolvePlaywrightCoreVersion()` working in isolation (the test above)
+    // does not, on its own, prove the real dependency object the default
+    // resolution uses actually sets `libraryVersion` from it — those two
+    // could regress independently of each other, which is exactly the
+    // original defect this row exists for: the field was documented as
+    // "echoed on success" while `REAL_DEPENDENCIES` never set it at all.
+    // Asserted directly against the exported constant rather than through
+    // `resolveAutomationProbe()`'s `present: true` branch, for the same
+    // browser-independence reason as the test above.
+    assert.equal(REAL_DEPENDENCIES.libraryVersion, resolvePlaywrightCoreVersion());
+  });
+
+  it('echoes libraryVersion on the present branch when a dependency injects it', () => {
+    // Proves `resolveAutomationProbe` actually plumbs
+    // `dependencies.libraryVersion` into the reported `version` on the
+    // `present: true` path itself, using an injected path pair so this
+    // holds regardless of whether this machine has a real browser binary
+    // fetched.
+    const probe = resolveAutomationProbe({
+      resolveExecutablePath: () => '/fake/chrome',
+      pathExists: (candidate) => candidate === '/fake/chrome',
+      libraryVersion: resolvePlaywrightCoreVersion(),
+    });
+
+    assert.equal(probe.present, true);
+    assert.equal(probe.version, resolvePlaywrightCoreVersion());
   });
 });
