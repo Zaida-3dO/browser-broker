@@ -68,14 +68,17 @@ import type { StoreHandle } from '../store/open.ts';
  */
 
 /**
- * How long a launch-race loser waits before giving up on the winner.
+ * How long a launch-race loser waits before giving up on the winner —
+ * documented here, not consulted here.
  *
- * **Row #55's fallback, not its own default** — `BROKER_LAUNCH_READINESS_
- * TIMEOUT_SECONDS` (`src/config/environment.ts`) is where the number that
- * actually governs a spawn lives, and it is `.env.example`'s registry entry.
- * This constant exists only for a caller that builds a provider without
- * going through `readEnvironment` at all, and it is kept equal to that
- * variable's default (30s) so the two cannot silently drift apart.
+ * **Not read by `waitForWinner`.** `environment.launchReadinessTimeoutSeconds`
+ * (`BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS`, `src/config/environment.ts`) is
+ * the number that actually governs a spawn — `environment` is a required
+ * field on {@link BrowserSessionProviderOptions}, so every caller that builds
+ * a provider supplies one. This constant has no production consumer; it is
+ * kept as a doc anchor equal to that variable's default (30s) so the two
+ * cannot silently drift apart, and a test may still use it as a readable
+ * stand-in for "the default" without hardcoding `30_000` a second time.
  */
 export const WAIT_TIMEOUT_MS = 30_000;
 
