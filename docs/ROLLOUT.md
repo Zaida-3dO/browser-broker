@@ -22,6 +22,22 @@ Install and first-run are documented in the [README](../README.md) — `npm inst
 `broker init` → `broker login` → `broker doctor`. Do that first; this document assumes a checkout
 that already passes `broker doctor`. Nothing here repeats those steps.
 
+**One prerequisite `npm install` does not cover: a browser binary.** This repository depends on
+`playwright-core`, not the full `playwright` distribution, precisely because the browser binary is
+spawned by this service, detached and by path (`src/browser/real.ts`) rather than downloaded and
+managed by the package. **`playwright-core` does not download a browser on install.** A checkout
+that has never had one fetched by some other tooling has none, and `broker doctor`'s automation
+check (below) will genuinely fail with exit code 11 rather than silently reading as unevaluated —
+that check is now wired to a real probe rather than always defaulting to absent. Fetch one with:
+
+```bash
+npx playwright-core install chromium
+```
+
+Run this once per machine, before `broker doctor`. It is the same install mechanism the full
+`playwright` package would run automatically on `npm install`; `playwright-core` just does not run
+it for you.
+
 Two things this runbook uses throughout:
 
 - **`broker doctor`** reports every precondition separately and exits with a **distinct code per
@@ -364,8 +380,12 @@ directly, which is how the phase 1 gap was found.
 - **The multi-caller ledger-completeness check is described but not exercised.** With no real callers
   there was nothing to count, so the check's *shape* is verified (the ledger records allows and denies
   alike, and `broker events` reads it) while its use as a phase gate is not.
-- **Browser-dependent checks report `[--]` on a machine with no automation tool wired in**, so the
-  keeper-tab, capture-surface and discovery-record lines were seen in their unevaluated form only.
+- **Checks that need a live, running browser still report `[--]` on a machine where nothing has
+  launched one** — the keeper-tab, capture-surface and discovery-record lines were seen in their
+  unevaluated form only, and that is unchanged. (The automation-tool *presence* check, above, is a
+  different question — "is a browser binary resolvable at all" rather than "does a browser have a
+  process running right now" — and it is wired to a real answer rather than always reading as
+  unevaluated.)
 
 **Anything below that line is a claim about behaviour that was tested. Anything in it is a claim
 about a process that has not been run.** Do not read the two as carrying equal weight.

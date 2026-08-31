@@ -116,12 +116,29 @@ describe('broker snapshot', () => {
   });
 });
 
+// Pinned to `present: true` throughout this suite. None of these cases are
+// about the automation-tool check itself — they are about the store, the
+// schema, side effects and the --json shape — so what they need is a doctor
+// run that evaluates every OTHER check on its merits, on any machine,
+// regardless of whether a browser binary happens to be resolvable where the
+// suite runs. Without this pin, a checkout with no browser fetched (a bare
+// `npm ci`, exactly what continuous integration does) would fail every one
+// of these on the real automation check now genuinely finding nothing — the
+// correct behaviour for that check, but not what any of these cases assert
+// against. The automation check's own behaviour, including exit code 11
+// firing on a genuine absence, is exercised separately below.
+const AUTOMATION_PRESENT = { present: true } as const;
+
 describe('broker doctor', () => {
   it('reports every precondition and exits zero on a clean install', async () => {
     const temp = makeTempStore();
     try {
       const { streams, captured } = capture();
-      const code = await run(['doctor'], { streams, env: envFor(temp.directory) });
+      const code = await run(['doctor'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
 
       assert.equal(code, DOCTOR_EXIT.ok);
       const text = captured.out.join('\n');
@@ -149,6 +166,7 @@ describe('broker doctor', () => {
           BROKER_ARTIFACTS_ROOT: path.join(temp.directory, 'artefacts'),
           BROKER_PROFILE_ROOT: path.join(temp.directory, 'profiles'),
         },
+        automationProbe: AUTOMATION_PRESENT,
       });
 
       assert.equal(code, DOCTOR_EXIT.ok);
@@ -166,7 +184,11 @@ describe('broker doctor', () => {
     const temp = makeTempStore();
     try {
       const { streams } = capture();
-      await run(['doctor'], { streams, env: envFor(temp.directory) });
+      await run(['doctor'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
       assert.equal(fs.existsSync(path.join(temp.directory, 'broker.db')), false);
     } finally {
       temp.remove();
@@ -189,7 +211,11 @@ describe('broker doctor', () => {
     try {
       const { streams, captured } = capture();
 
-      const code = await run(['doctor'], { streams, env: envFor(temp.directory) });
+      const code = await run(['doctor'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
 
       assert.equal(code, DOCTOR_EXIT.ok);
       assert.ok(
@@ -205,7 +231,11 @@ describe('broker doctor', () => {
     const temp = makeTempStore();
     try {
       const { streams, captured } = capture();
-      await run(['doctor', '--json'], { streams, env: envFor(temp.directory) });
+      await run(['doctor', '--json'], {
+        streams,
+        env: envFor(temp.directory),
+        automationProbe: AUTOMATION_PRESENT,
+      });
 
       assert.equal(captured.out.length, 1);
       const first = captured.out[0];
@@ -216,6 +246,120 @@ describe('broker doctor', () => {
       };
       assert.equal(parsed.exit_code, DOCTOR_EXIT.ok);
       assert.ok(parsed.checks.some((check) => check.id === 'config.tab_budget_agrees'));
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('evaluates the automation check with the real probe, so it answers rather than reading unknown always', async () => {
+    // Asserts that the check evaluates to a real answer — `ok` or `failed`,
+    // never `unknown` — rather than asserting which one: whether a browser
+    // binary is resolvable is a fact about the environment running this
+    // test, not a fact this suite should assume either way. What is under
+    // test is that `runDoctorCommand()` supplies a probe at all, so this
+    // check is never permanently unevaluated the way it was before the
+    // call site passed one through.
+    const temp = makeTempStore();
+    try {
+      const { streams, captured } = capture();
+      const code = await run(['doctor', '--json'], { streams, env: envFor(temp.directory) });
+
+      assert.ok(code === DOCTOR_EXIT.ok || code === DOCTOR_EXIT.automation);
+      const first = captured.out[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const automation = parsed.checks.find((check) => check.id === 'automation.present');
+      assert.ok(automation, 'the automation check is missing from the report');
+      assert.notEqual(
+        automation.status,
+        'unknown',
+        'the automation check must actually evaluate, not report unknown regardless of the environment',
+      );
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('EXITS 11 when the automation probe reports no browser resolvable — proving the code is reachable', async () => {
+    // Exit code 11 is documented in `docs/ROLLOUT.md` as one of the doctor's
+    // distinct failure codes. It was unreachable because nothing ever
+    // supplied a probe that could report `present: false`. This drives the
+    // real call site (`runDoctorCommand`), through the real `runDoctor` and
+    // `exitCodeFor`, with only the automation answer stubbed — so a revert
+    // of the wiring at the `runDoctorCommand` call site (passing no
+    // `automationProbe` through to `runDoctor`) makes this fail, and a
+    // revert of `checkAutomation`'s `present: false → failed` branch makes
+    // it fail too.
+    //
+    // Not run through `broker doctor`'s CLI dispatch, deliberately: that
+    // path always resolves the real `playwright-core` probe, and this
+    // machine has a browser — exercising the failure path there would mean
+    // uninstalling one, which the task rules out.
+    const { runDoctorCommand } = await import('../../src/cli/operations-commands.ts');
+    const { readEnvironment } = await import('../../src/config/environment.ts');
+    const temp = makeTempStore();
+    try {
+      const environment = readEnvironment({ env: envFor(temp.directory) });
+      const { streams, captured } = capture();
+
+      const code = runDoctorCommand({
+        db: undefined,
+        environment,
+        streams,
+        json: true,
+        automationProbe: {
+          present: false,
+          detail: 'no browser binary at the stubbed path',
+        },
+      });
+
+      assert.equal(code, DOCTOR_EXIT.automation);
+      assert.equal(
+        code,
+        11,
+        'exit code 11 is the contract docs/ROLLOUT.md documents for this group',
+      );
+
+      const first = captured.out[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const automation = parsed.checks.find((check) => check.id === 'automation.present');
+      assert.ok(automation);
+      assert.equal(automation.status, 'failed');
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('a check with nothing to examine still reports [--] and does not affect the exit code', async () => {
+    // The contract this fix must not disturb: an explicit `present:
+    // undefined` (nobody asked) stays `unknown` and does not fail the
+    // command, even though `present: false` (asked, and the answer is no)
+    // now does. Folding the two together in either direction would either
+    // make exit 11 unreachable again or turn a fresh, unevaluated install
+    // into a reported failure.
+    const { runDoctorCommand } = await import('../../src/cli/operations-commands.ts');
+    const { readEnvironment } = await import('../../src/config/environment.ts');
+    const temp = makeTempStore();
+    try {
+      const environment = readEnvironment({ env: envFor(temp.directory) });
+      const { streams, captured } = capture();
+
+      const code = runDoctorCommand({
+        db: undefined,
+        environment,
+        streams,
+        json: true,
+        automationProbe: { present: undefined },
+      });
+
+      assert.equal(code, DOCTOR_EXIT.ok);
+      const first = captured.out[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const automation = parsed.checks.find((check) => check.id === 'automation.present');
+      assert.ok(automation);
+      assert.equal(automation.status, 'unknown');
     } finally {
       temp.remove();
     }
