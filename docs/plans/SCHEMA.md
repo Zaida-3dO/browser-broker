@@ -1493,8 +1493,8 @@ surface (§3.13), never on the agent's.
 
 ### 3.1 The list, and what it costs
 
-**Ten tools.** Every description sits in a connected session's context on every turn whether or not
-anything calls it, so surface area is a standing tax and the list is short on purpose.
+**Twelve tools.** Every description sits in a connected session's context on every turn whether or
+not anything calls it, so surface area is a standing tax and the list is short on purpose.
 
 | # | Tool | One line |
 |---|---|---|
@@ -1507,7 +1507,9 @@ anything calls it, so surface area is a standing tax and the list is short on pu
 | 7 | `browser_read` | The page snapshot by default; console, network or cookies on request. Written to disk, returned as a path. |
 | 8 | `browser_evaluate` | Evaluate an expression in the page and get its value. |
 | 9 | `browser_capture` | Take a picture — **and, if you name an earlier capture, the difference from it.** Returns paths, never the image. |
-| 10 | `browser_feedback` | Record that something here helped or got in the way. **No lease needed**, written locally, and **built to be removed** (§3.16). |
+| 10 | `browser_sign_in` | **Hit a login wall? Ask, on the tab you already hold** (§5.5.2). Your lease and your tab survive the wait. |
+| 11 | `browser_sign_in_done` | The person confirmed: give the browser back, **keeping this lease and its tab**. |
+| 12 | `browser_feedback` | Record that something here helped or got in the way. **No lease needed**, written locally, and **built to be removed** (§3.16). |
 
 **Plus one thing that is not a tool: the operations snapshot** (§4.5). A command generates a
 self-contained file a person opens. It is deliberately absent from this list because no agent needs
@@ -2652,9 +2654,14 @@ the service for that reason, not merely for tidiness.
 ### 5.3 The commands that mirror an operation
 
 Every §3 operation has one, so parity is real rather than claimed: `claim`, `status`, `release`,
-`tab replace`, `navigate`, `act`, `read`, `evaluate`, `capture`, `feedback`. **Ten commands for ten
-tools**, and the diff rides on `capture` here exactly as it does there (§3.11) rather than being an
-eleventh.
+`tab replace`, `navigate`, `act`, `read`, `evaluate`, `capture`, `feedback`, `sign in`, `sign in
+done`. **Twelve commands for twelve tools**, and the diff rides on `capture` here exactly as it does
+there (§3.11) rather than being a command of its own.
+
+**`broker sign in` is not `broker login`, and both stay.** The first is a *caller* asking a person to
+sign in on the tab it already holds (§5.5.2) and takes a lease key; the second is the person driving
+directly (§5.5.1) and has no lease in the picture at all. Signing in ahead of time remains the right
+move when you already know a profile needs it; asking on demand is for when it turns out one does.
 
 **`broker feedback` carries both halves** — it writes a row with the same arguments the tool takes,
 and with no arguments it reads the rows back (§3.16). That is the one command whose reading half has
@@ -2722,6 +2729,65 @@ the identity — so there is no state to copy anywhere, and no credential-export
 **Refused on the private browser.** Signing into an ephemeral profile produces nothing that outlives
 the browser, so the command would appear to work and quietly do nothing — the worst of the available
 failures.
+
+#### 5.5.2 `browser_sign_in` — the same pause, asked for by a caller
+
+**§5.5.1 built the whole mechanism and left it unreachable.** `begin_sign_in` and `end_sign_in` are
+called by `broker login`, which is a command a person types. Nothing on the agent surface moved a
+browser into `signing-in` — so a caller that navigated somewhere and got a login form had exactly two
+moves: **abandon the task, or fabricate a session.**
+
+**§1.2 measured which one they took.** Over one month, **25 sessions hand-seeded authentication
+tokens into an isolated browser while the signed-in browser sat unused.** §13i reads that measurement
+as a browser-choice failure and fixes it with a default, which is right as far as it goes — but a
+caller that chose correctly and *still* hit a login wall was in the identical position, and that
+position had no exit that involved asking. This is the exit that involves asking.
+
+**The person signs in on the tab that is already there.** Not a fresh window and not a fresh tab: the
+work is on that page, whatever redirect chain got it there, and handing somebody a blank browser and
+a site name asks them to reconstruct it.
+
+##### The requesting lease is exempted, and it is exempted alone
+
+§5.5.1's first step refuses a sign-in **while any live lease holds a tab on that browser**. The
+requesting caller *is* such a lease — it is holding the very tab the person will type into — so a
+caller reaching `begin_sign_in` is refused by its own request, naming itself as the obstacle.
+
+So the exemption is **exactly one lease wide**. Every *other* live lease still refuses, because the
+corruption §5.5.1 protects against is real for all of them and is not real for the one whose work the
+sign-in is for. This is why the asking lease's identifier is recorded rather than a flag: *"this
+sign-in was requested, so skip the check"* would exempt all of them at once.
+
+##### The wait is bounded, and §5.5.1's "no expiry" is not contradicted
+
+§5.5.1: *"a person takes as long as they take, and a timeout would end a sign-in that was going
+fine."* **That is right for the command and does not transfer to the request**, because of what is on
+the other end of each.
+
+`broker login` blocks a process on a person who is sitting there; the process is the evidence, which
+is what lets an abandoned one be recovered by asking whether it is still running. **A requested
+sign-in has no such process.** The service returns at once and the request is relayed onward by the
+calling agent to somebody who may be away from the machine and may never read it. Nothing on this host
+can be asked whether they are coming.
+
+So the bound is the evidence-substitute: **fifteen minutes, longer than a lease lifetime**, after which
+the browser serves other callers again. A request that lapses **costs the caller its request and not
+its work** — the lease and the tab are untouched, and the refusal it gets from `browser_sign_in_done`
+says so and says to ask again. The number is not a claim about how fast people answer; it bounds what
+one unanswered request may cost everybody else, and getting it wrong in the generous direction
+reinstates the unrecoverable browser this whole mechanism exists to prevent.
+
+**A sign-in held by a person is never lapsed by it.** The deadline is recorded only for a requested
+sign-in, and it is the deadline rather than the state that the reconciliation matches on — a sweep
+written against `signing-in` alone would have ended exactly the sign-ins §5.5.1 protects.
+
+##### Finishing is keyed, and that is the whole of why it is safe
+
+`end_sign_in` takes a browser name and no key. Putting *that* on the agent surface would hand every
+caller a verb that ends **somebody else's** sign-in by naming a browser — including a person's
+`broker login`, mid-password. `browser_sign_in_done` is refused unless the calling lease is the one
+that asked, which keeps §3.13's ceiling intact: **the worst thing an agent can do through this surface
+is give back something it asked for itself.**
 
 ### 5.6 Output, exit codes and identity
 
@@ -2918,6 +2984,9 @@ build.
 | `browser.serving` | The browser is available | browser unavailable, with a retry hint. Covers signing-in, failed, starting and stopped |
 | `browser.attach_verified` | **A browser is attached to only after its discovery record passes both checks** — the endpoint answers, and the browser identifies itself as the expected one (§1.2c) | browser unavailable. **Never attach on the strength of the record alone**: it was verified to survive a hard kill, and a reused port makes the number alone a false match |
 | `browser.busy_for_login` | Signing in is refused while any live lease holds a tab on that browser | browser busy, naming the leases |
+| `signin.what_bounded` | A **requested** sign-in (§5.5.2) says what is being signed into, three to two hundred characters | sign-in what out of bounds. The one free-text field in this service **relayed to a person verbatim by a third party** — the calling agent repeats it to somebody who has none of the context, so an empty one produces a request nobody can act on. Deliberately a different code from `claim.purpose_bounded`, which is about a different field |
+| `signin.requester_holds_tab` | A sign-in request comes from an **active** lease holding an open tab, because the person signs in **on that tab** | browser unavailable, or tab not found. A queued lease has never had a tab (§1.3), so it has no login page to be stuck on and nothing to hand anybody |
+| `signin.finish_owned` | **Only the lease that asked may finish the request it made** (§5.5.2) | browser unavailable. Without it a caller could end a person's `broker login` mid-password by naming a browser, which is precisely the browser-scoped destructive verb §3.13 says must never exist on the agent surface |
 | `keeper.never_leased` | **The keeper tab is never handed to a caller and is never addressable** (§3.15) | **Not a refusal — a shape.** A caller cannot name it, so there is nothing to refuse |
 | `navigate.scheme_allowed` | Ordinary web traffic or a blank page | invalid address. **A local-file address is refused explicitly**: it turns a browser lease into an arbitrary read of the machine's filesystem |
 | `capture.max_tier_reason` | The top tier carries a reason, **free text within its length bounds** (§3.11) | reason required. **The only capture refusal about anything other than a malformed argument, and it is about recording rather than about cost** |

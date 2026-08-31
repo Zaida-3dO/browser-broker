@@ -78,7 +78,7 @@ export const SERVER_INFO = {
  * claiming either would make a client offer its user a menu that answers
  * `method_not_found` when chosen. An empty object is the specification's way
  * of saying "this capability, with no optional extras" — notably not
- * `listChanged`, since the ten tools are fixed at build time and a surface
+ * `listChanged`, since the twelve tools are fixed at build time and a surface
  * that promised change notifications would owe notifications it can never
  * have a reason to send.
  */
@@ -92,7 +92,7 @@ export function initializeResult(
   };
 }
 
-/** What `tools/list` returns: the ten, with their descriptions and schemas. */
+/** What `tools/list` returns: the twelve, with their descriptions and schemas. */
 export function listTools(): Readonly<Record<string, unknown>> {
   return {
     tools: TOOL_DEFINITIONS.map((tool) => ({
@@ -192,7 +192,7 @@ export async function handleRequest(
       id: request.id,
       error: {
         code: 'tool_not_found',
-        message: `There is no tool named "${name}". Call ${METHODS.listTools} for the ten this surface offers.`,
+        message: `There is no tool named "${name}". Call ${METHODS.listTools} for the twelve this surface offers.`,
       },
     };
   }

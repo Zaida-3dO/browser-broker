@@ -2002,6 +2002,163 @@ consequences of it — and the budget will not tell them, because it is doing it
 tabs.
 
 
+## 13j. Signing in on demand — the mechanism that was built and left unreachable
+
+One ruling, and it is unusual for this document in that **it overturns nothing.** Every decision
+below is consistent with §5.5.1 as written; what changed is that a capability the design already
+had turned out to have no door on the side callers stand.
+
+### The thing that was wrong, stated as the measurement
+
+§5.5.1 built a complete sign-in state machine. A browser moves to `signing-in`, callers are refused
+with a retry hint, queued callers keep their places and their timers, and a sign-in whose owning
+process died is recoverable. All of it works.
+
+**None of it is reachable by an agent.** The two operations behind it are called by `broker login`,
+which is a command a person types. The tools contain nothing that moves a browser into `signing-in`.
+So a caller that navigated somewhere and got a login form had exactly two moves available: **abandon
+the task, or fabricate a session.**
+
+**§1.2 measured which one they took.** Over one month, **25 sessions hand-seeded authentication
+tokens into an isolated browser while the signed-in browser sat unused** — reaching for arbitrary
+code execution to manufacture a signed-in session, with a real one sitting there.
+
+§13i reads that measurement as a browser-choice failure and answers it with a default. **That
+reading is right and it is not the whole of it.** A caller that chose the signed-in browser
+correctly and *still* hit a login wall — because the profile's session had expired, or that
+particular site had never been signed into — was in exactly the same position, and had exactly the
+same two moves. Guidance tells a caller which browser to pick. It does nothing for one that picked
+correctly and still needs a human.
+
+**What none of those 25 sessions could do was ask.** There was nobody to ask and no call to ask
+with, and a person was very often sitting right there.
+
+### Ruling one: an eleventh and twelfth tool, not an argument on an existing one
+
+The alternative considered seriously was a flag — `browser_navigate` with `on_login_wall: 'ask'`, or
+an `action` on `browser_act`. It is rejected, and **this document's own §3.1 supplies the test**:
+
+> *A destructive operation keeps its own name; a non-destructive one may be an argument on another.*
+> The earlier wording implied the rule was about collapsing, and it is about consequences.
+
+Asking for a sign-in **takes a shared browser away from every other caller on the machine**. That is
+the most consequential thing available on this surface — more so than closing your own tab, which
+§3.13 names as the previous ceiling. Folding it under a parameter is precisely how *"a rule matching
+on the operation's name becomes invisible"*: the ledger would record a navigate, the parity suite
+would drive a navigate, and an operator asking *when did somebody take the browser* would have
+nothing to grep for.
+
+**Two names rather than one, for the same reason.** Finishing is also a state change every other
+caller can observe — it is the moment the browser comes back — so it is `browser_sign_in_done`
+rather than a `done: true` argument on the first. A single tool with a flag would hide the exact
+transition somebody reading the ledger is looking for.
+
+**What this costs, stated rather than implied away.** §3.1 opens with *"surface area is a standing
+tax"*, and this is a 20% increase in the tool list — two descriptions in every connected session's
+context on every turn, forever, whether or not anybody signs in. That is a real and permanent cost
+and it is not waved away by the feature being good. It is accepted because the measurement is
+specific: 25 sessions in a month took a worse path, and **the description text is the only surface
+that can reach a caller who does not know to ask** — a caller stuck at a login wall never makes the
+call that a refusal could correct.
+
+### Ruling two: the requesting lease is exempted, and it alone
+
+This is the part with no prior art, and the part most likely to be got wrong.
+
+§5.5.1's first step refuses a sign-in **while any live lease holds a tab on that browser**, and the
+reason is exact: *"doing that underneath a caller's work would corrupt it. That refusal is why
+signing in is a service operation."*
+
+**The requesting caller is such a lease.** It is holding the very tab sitting on the login page —
+that is the point, since the person has to sign in where the work already is. So an agent calling
+`begin_sign_in` is refused by its own request, every time, naming itself as the obstacle. The
+refusal is not wrong; it is answering a question about a different situation.
+
+**So the exemption is exactly one lease wide.** Every other live lease still refuses. The corruption
+§5.5.1 protects against is real for all of them and is not real for the one whose work the sign-in
+is for.
+
+**Rejected: a flag on the browser meaning "this one was requested, skip the check."** It is the
+obvious implementation and it exempts *all* of them — a second caller working in another tab would
+have its page driven out from under it by a person who was told the window was free. The asking
+lease's identifier goes into the row instead, so the exemption is a comparison against one value
+rather than a mode the browser is in.
+
+**Rejected: sharing the holder query between the two operations with an "except this one"
+parameter.** The query is written out twice, which is duplication and is deliberate. A shared helper
+taking an exemption argument makes the exemption look like a parameter *of the original rule* — and
+the original must keep refusing every live lease without exception, because a person typing `broker
+login` holds no lease and is exempt from nothing. Two callers, two questions, two queries.
+
+### Ruling three: the wait is bounded, and §5.5.1's "no expiry" is not overturned
+
+§5.5.1 says a sign-in has no expiry: *"a person takes as long as they take, and a timeout would end
+a sign-in that was going fine."* **That is upheld, and it does not transfer**, because of what is on
+the other end of each.
+
+| | `broker login` | A requested sign-in |
+|---|---|---|
+| Who is waiting | a person, at the keyboard | nobody on this machine |
+| What holds it | a **process**, blocked | a **deadline** |
+| How it recovers | ask whether the process is running (§5.5.1, step eight) | the deadline passes |
+
+`broker login` blocks a process on a person who is sitting there, and that process is the evidence
+somebody is still present — which is exactly what makes an abandoned one recoverable. **A requested
+sign-in has no such process.** The service returns immediately; the request is relayed onward by the
+calling agent to a person who may be in another room, may not read it for an hour, and may never
+read it at all. **Nothing on this host can be asked whether they are coming.**
+
+Left unbounded, one unanswered request holds the browser against every other caller **forever** —
+which is the same unrecoverable state the owner column was added to remove, arriving through a door
+that column cannot watch.
+
+**So the deadline is the evidence-substitute: no process to interrogate, so a number instead.**
+
+**Fifteen minutes, and the number is relative rather than round.** It is the lease lifetime plus a
+margin. The requesting caller survives the wait by polling, and polling renews — so a deadline
+*shorter* than a lease would let the request lapse while the caller that made it was still healthy
+and still waiting, which is the confusing failure: told to keep waiting by its own live lease and
+told the request is gone by the browser. Longer than the lease, the caller notices its own expiry
+first, which is a failure it can explain.
+
+**What the number is not:** a claim about how quickly people answer. It is not tuned to human
+behaviour at all, and it should not be defended as though it were. It bounds **what one unanswered
+request costs everybody else**, and the cost of erring generously is a browser nobody can use.
+
+**A lapse costs the request and not the work**, which is the property that makes the bound
+acceptable. The lease and the tab are untouched; the caller finds out by being refused when it tries
+to finish, and the refusal says to look at the page and ask again.
+
+**Rejected: no bound, matching §5.5.1 exactly.** It is the consistent-looking answer and it
+reinstates the unrecoverable browser. The two situations differ in the one respect the original rule
+depended on, so copying the rule copies the words and not the reasoning.
+
+**Rejected: ending the caller's lease when the request lapses.** Symmetrical, and wrong in the way
+that matters most: a caller that lost its work by asking for help is a caller that never asks again,
+and not asking is the entire failure being fixed.
+
+**Rejected: a caller-settable deadline.** The argument exists and is **clamped, never widened** — a
+caller may ask for less time and may not ask for more. A bound a caller can raise is not a bound; it
+is a default, and the first caller to pass a large number reinstates the state above. Clamping
+rather than refusing is the one place this departs from §6.3's *"refuse, never silently default"*,
+and the distinction is that §6.3 governs **configuration** — a value an operator set and would
+otherwise never learn was ignored — while this is a per-call argument whose effective value comes
+back on the very same response, in the field the caller reads to know when to stop waiting.
+
+### What is given up
+
+**A person can now be interrupted by an agent.** Before this, every sign-in began with a human
+deciding to type a command. That was worth something — nothing could ask for attention — and it is
+genuinely gone. What stands in its place is that the alternative was measured: the callers who could
+not ask did not wait politely, they **fabricated sessions**, which is worse in every direction
+including the one this property was protecting.
+
+**And the tool surface is 20% larger, permanently.** §3.1's standing tax, paid on every turn of
+every session forever, for a capability most sessions never use. Named here rather than discovered
+later by somebody counting tokens and wondering what happened.
+
+---
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because

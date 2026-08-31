@@ -44,7 +44,7 @@ with it, and the browsers outlive any one of them.
 
 ## Surfaces
 
-The rules live in one service layer, and every surface is a thin adapter over it: **ten tools**,
+The rules live in one service layer, and every surface is a thin adapter over it: **twelve tools**,
 served by the caller's own spawned process, and a `broker` command line that runs the same logic in
 the process you typed it in. A shared conformance suite asserts that the same operation and the same
 refusal happen on both.
@@ -146,10 +146,10 @@ process using the file to sit on one host.
 
 ### Pointing a client at the tools
 
-The ten tools are served over standard input and output by `src/bin/broker-tool.ts`, which speaks
+The twelve tools are served over standard input and output by `src/bin/broker-tool.ts`, which speaks
 [the Model Context Protocol](https://modelcontextprotocol.io/specification/2025-06-18) — revision
 `2025-06-18`, with `2025-03-26` accepted for a client that asks for it. A client spawns that file,
-opens with `initialize`, and the ten tools are listed to it.
+opens with `initialize`, and the twelve tools are listed to it.
 
 Most clients read a JSON file naming the servers they may spawn. The block is the same shape in all
 of them; put it in whichever file yours reads — commonly `.mcp.json` in a project, or the client's
@@ -202,7 +202,7 @@ printf '%s\n' \
 
 The first response carries the negotiated `protocolVersion`, the server's `capabilities` and its
 `serverInfo`; the second message is a notification and is deliberately not answered; the third lists
-the ten tools. A client that gets that far will work.
+the twelve tools. A client that gets that far will work.
 
 ## First run
 

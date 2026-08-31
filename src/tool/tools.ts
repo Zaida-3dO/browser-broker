@@ -2,13 +2,13 @@ import { OPERATION_NAMES, type OperationName } from '../adapter/operations.ts';
 import { BROWSER_CHOICE_GUIDANCE } from '../browser/driver.ts';
 
 /**
- * The ten tools, their descriptions, and their argument schemas.
+ * The twelve tools, their descriptions, and their argument schemas.
  *
  * ── Surface area is a standing tax, and this file is where it is paid ────
  *
  * `SCHEMA.md` §3.1 opens with it: every description here sits in a connected
  * session's context **on every turn**, whether or not anything calls the
- * tool. Ten descriptions is the whole agent-facing documentation of this
+ * tool. Twelve descriptions is the whole agent-facing documentation of this
  * service and it is also a per-turn cost on every session, so each one is
  * written to be the shortest text that still prevents a wrong call.
  *
@@ -17,6 +17,15 @@ import { BROWSER_CHOICE_GUIDANCE } from '../browser/driver.ts';
  * changes what a caller does — that `browser_status` is also the renew verb,
  * that the browser choice has no default, that feedback needs no lease — the
  * fact is in the description rather than only in the argument list.
+ *
+ * **`browser_sign_in`'s description is the strongest case of that rule, and
+ * the reason it reads as an instruction rather than a summary.** The failure
+ * it exists to end is a caller hitting a login wall and never learning it
+ * could ask — and **no refusal can reach that caller**, because it never
+ * makes a call to be refused. It abandons the task or fabricates a session
+ * instead, which is what 25 measured sessions did in a month. There is no
+ * second surface for that guidance to live on, so the description names the
+ * alternative outright, the way a refusal would.
  *
  * ── What is deliberately absent ─────────────────────────────────────────
  *
@@ -28,6 +37,16 @@ import { BROWSER_CHOICE_GUIDANCE } from '../browser/driver.ts';
  * **The worst thing an agent can do through this surface is close its own
  * tab**, and that ceiling is the reason this surface can be handed to an
  * arbitrary caller at all.
+ *
+ * **`browser_sign_in` and `browser_sign_in_done` move a browser's state and
+ * do not breach that ceiling**, which is worth stating because they look like
+ * the exception. Both are keyed, and both act only on the lease that called
+ * them: the first takes the browser only when no *other* lease holds a tab on
+ * it, and the second is refused unless the calling lease is the one that
+ * asked — so a caller can neither interrupt somebody else's work nor end a
+ * person's sign-in command mid-password. The unkeyed pair that could do those
+ * things, `begin_sign_in` and `end_sign_in`, is deliberately not on this
+ * surface at all.
  *
  * `browser_tab_close` is absent for a second, separate reason (§3.1): it
  * closed a caller's only tab while keeping the lease, producing a lease that
@@ -63,7 +82,7 @@ const LEASE_KEY: ToolArgument = {
 };
 
 /**
- * The ten, in §3.1's order.
+ * The twelve, in §3.1's order.
  *
  * The list is data rather than a switch statement for the same reason the
  * command table is: the conformance driver reads it to translate a neutral
@@ -272,6 +291,52 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           'Free text, recorded, never refused — why this capture needed more than the default tier.',
       },
     ],
+  },
+  {
+    name: 'browser_sign_in',
+    operation: 'sign_in',
+    // **Row #67 lands here, and §3.2's sentence is the reason.** The
+    // description is the only place a calling agent reliably reads, and the
+    // measured failure this tool exists to end is one no refusal can reach: a
+    // caller that hits a login wall and never learns it could ask. §1.2
+    // counted 25 sessions hand-seeding tokens into an isolated browser rather
+    // than asking, so the alternative is named explicitly — the way the
+    // refusals do — rather than left to be inferred from the tool existing.
+    description:
+      'Hit a login wall? Ask the person to sign in, on the tab you already have. Do NOT abandon ' +
+      'the task and do NOT fabricate a session by seeding tokens or cookies — ask. Your lease and ' +
+      'your tab survive the wait: keep calling browser_status while the person signs in, then ' +
+      'call browser_sign_in_done when they say they are finished. The result carries a sentence ' +
+      'to relay to them. If nobody answers, the request lapses and the browser serves others ' +
+      'again — you keep your tab either way.',
+    arguments: [
+      LEASE_KEY,
+      {
+        name: 'what',
+        type: 'string',
+        required: true,
+        description:
+          'What they are signing into, 3-200 characters, relayed to them verbatim. Name the site ' +
+          'or account — "the account dashboard" — not the step you are on.',
+      },
+      {
+        name: 'request_seconds',
+        type: 'integer',
+        required: false,
+        description:
+          'Ask for a shorter wait than the default. Capped, never extended; the wait you actually ' +
+          'got comes back on the response.',
+      },
+    ],
+  },
+  {
+    name: 'browser_sign_in_done',
+    operation: 'sign_in_done',
+    description:
+      'The person says they have signed in. Gives the browser back to other callers and keeps ' +
+      'your lease and your tab exactly as they were, so carry straight on. Only the lease that ' +
+      'asked can call this.',
+    arguments: [LEASE_KEY],
   },
   {
     name: 'browser_feedback',

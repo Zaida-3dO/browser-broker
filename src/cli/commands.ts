@@ -38,7 +38,22 @@ export interface CommandOption {
 }
 
 /**
- * Ten commands for ten tools (§5.3).
+ * Twelve commands for twelve tools (§5.3).
+ *
+ * ── Two of them are `broker sign in` and `broker sign in done` ──────────
+ *
+ * **Not `broker login`, which stays exactly where it is** (§5.5). That
+ * command is a person driving, and these two are a *caller* asking a person
+ * to drive — they take a lease key, and `broker login` has no lease in the
+ * picture at all. Both routes in exist on purpose and §5.5.1 says which is
+ * which: sign in ahead of time with `broker login` when you know a profile
+ * needs it, and let a caller ask on demand when it turns out one does.
+ *
+ * The words join to the operation name (`sign in` to `sign_in`, `sign in
+ * done` to `sign_in_done`), which is not a coincidence: `check-operations.mjs`
+ * derives a command's operation by joining its words with an underscore, so a
+ * command spelled any other way would be invisible to the check that proves
+ * the shipped executable reaches the service.
  *
  * The diff rides on `capture` as an argument exactly as it does on the tool
  * surface (§3.11) rather than being an eleventh command, and the two removed
@@ -84,6 +99,23 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
     words: ['capture'],
     operation: 'capture',
     summary: 'Take a picture, and optionally the difference from an earlier one.',
+  },
+  {
+    words: ['sign', 'in'],
+    operation: 'sign_in',
+    summary: 'Ask a person to sign in on the tab this lease already holds.',
+    options: [
+      { flag: '--what <text>', summary: 'What they are signing into, relayed to them verbatim.' },
+      {
+        flag: '--request-seconds <n>',
+        summary: 'A shorter wait than the default. Capped, never extended.',
+      },
+    ],
+  },
+  {
+    words: ['sign', 'in', 'done'],
+    operation: 'sign_in_done',
+    summary: 'The person has signed in: give the browser back, keeping this lease and its tab.',
   },
   {
     words: ['feedback'],
@@ -154,7 +186,7 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     // The bytes of one recorded image, named by the identifier of a row.
     // Standalone for the same reason `diffs` is: it takes no tab budget,
     // drives no browser and decides nothing — it reads what is already
-    // recorded. §3.1 fixes the agent surface at ten tools and none of them
+    // recorded. §3.1 fixes the agent surface at twelve tools and none of them
     // serves bytes, deliberately: the tools return paths so a caller pays for
     // the part it opens.
     words: ['image'],

@@ -95,7 +95,7 @@ function refusalName(response: Record<string, unknown> | undefined): string {
   return String(name);
 }
 
-test('tools/list returns the ten tools, NAMED', () => {
+test('tools/list returns the twelve tools, NAMED', () => {
   // Named rather than counted: `MILESTONES.md` records a hollow test that
   // "iterated a list rather than naming its entries, so deleting an entry
   // stayed green". Deleting a tool changes this list and fails here.
@@ -112,6 +112,8 @@ test('tools/list returns the ten tools, NAMED', () => {
       'browser_read',
       'browser_evaluate',
       'browser_capture',
+      'browser_sign_in',
+      'browser_sign_in_done',
       'browser_feedback',
     ],
   );
@@ -126,7 +128,7 @@ test('every tool has a description, because the description is the only place a 
   }
 });
 
-test('the ten tools cover the ten operations, one each', () => {
+test('the twelve tools cover the twelve operations, one each', () => {
   assert.deepEqual(
     [...TOOL_DEFINITIONS.map((tool) => tool.operation)].sort((a, b) => a.localeCompare(b)),
     [...OPERATION_NAMES].sort((a, b) => a.localeCompare(b)),
@@ -408,7 +410,7 @@ test('INITIALIZE is answered with a negotiated version, capabilities and serverI
   // The single change that breaks this test: deleting the `initialize` branch
   // from `handleRequest`. That is precisely the state the surface shipped in,
   // where a real client got `method_not_found` on its first message and hung
-  // up before reaching the ten tools.
+  // up before reaching the twelve tools.
   const { service, requests } = recordingService();
   const [response] = await serve(
     service,
@@ -518,7 +520,7 @@ test('the whole handshake runs in order and the session still serves tools after
     'responses did not correlate with the requests that caused them',
   );
   const listed = responses[1]?.['result'] as { tools: { name: string }[] };
-  assert.equal(listed.tools.length, 10, 'the ten tools were not reachable after the handshake');
+  assert.equal(listed.tools.length, 12, 'the twelve tools were not reachable after the handshake');
 });
 
 test('an error response carries the numeric code AND the internal name, on the same message', () => {

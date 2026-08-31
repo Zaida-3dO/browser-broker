@@ -77,6 +77,16 @@ export const SERVICE_RULE_REGISTRY: RuleRegistry = {
     'evaluate.expression_bounded',
     'capture.exclusive_mode',
     'feedback.rating_in_scale',
+    // The sign-in request's own bound. It is the only one of the three
+    // §5.5.2 rules a conformance case reaches, and that is deliberate rather
+    // than an omission: this registry is *"every rule the real service
+    // produces in this suite's run"*, and the suite asserts equality in both
+    // directions — so a name listed here that no case produces fails just as
+    // loudly as one produced and not listed. `signin.requester_holds_tab` and
+    // `signin.finish_owned` are exercised by the service tests, where a
+    // second lease and a queued lease can be arranged; a conformance case
+    // names one operation and one input and cannot set either up.
+    'signin.what_bounded',
   ],
 };
 

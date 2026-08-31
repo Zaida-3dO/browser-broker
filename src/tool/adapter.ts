@@ -41,7 +41,7 @@ export const TOOL_SURFACE_OPERATIONS: readonly OperationName[] = TOOL_OPERATIONS
 /**
  * Operations this route does not offer, with the reason each is absent.
  *
- * **Empty, and that is the claim.** §3.1 lists ten tools and §5.3 lists ten
+ * **Empty, and that is the claim.** §3.1 lists twelve tools and §5.3 lists twelve
  * commands for them, so every operation is on both routes. The array exists
  * so that a later row removing a tool has somewhere to write down why — and
  * so the runner's waiver rule has something to check rather than an absence

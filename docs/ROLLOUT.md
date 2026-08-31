@@ -78,6 +78,27 @@ requires driving a browser window by hand, and `broker login` **refuses if any l
 on that browser**. Once callers are pointed at the broker there will be leases, and every sign-in
 attempt becomes a race against them. Sign in while there is provably nobody to race.
 
+> ### Signing in here is now **optional** — there are two routes, and this is the one for Phase 0
+>
+> `browser_sign_in` (`SCHEMA.md` §5.5.2) lets a **caller** ask a person to sign in, on the tab it is
+> already holding, at the moment it hits a login wall. So a profile that was never signed into ahead
+> of time is no longer a dead end: the agent asks, somebody signs in, and the work carries on.
+>
+> **Both routes stay, and this phase still uses this one.** The reason is the paragraph above rather
+> than habit: signing in ahead of time is the only way to do it *while there is provably nobody to
+> race*, and it front-loads the interruption to a moment you chose. Asking on demand interrupts
+> somebody at a moment the agent chose, which is the right trade when the alternative is abandoning
+> the task — and the wrong one when you could simply have signed in first.
+>
+> | | Sign in ahead of time (`broker login`) | Ask on demand (`browser_sign_in`) |
+> |---|---|---|
+> | Who starts it | a person, deliberately | a caller, on hitting a login wall |
+> | When it interrupts | at a moment you chose | at a moment the agent chose |
+> | Bounded | no — takes as long as it takes | yes, and the browser serves others again if nobody answers |
+> | Best for | a profile you already know needs a sign-in | one that turns out to |
+>
+> **Use both.** Sign in here for what you can predict; let callers ask for what you cannot.
+
 ```bash
 broker init      # creates the store and both browser profiles; reports created vs found
 broker login     # opens the shared browser headed; you sign in by hand
@@ -103,6 +124,11 @@ it is documented here rather than smoothed over:
 **Ending the sign-in: close the window.** Closing it is what ends the step. While it is open the
 browser serves nobody: requests for it are refused with a retry hint, and **queued callers keep
 their places and their timers** — a sign-in is a pause, not a cancellation.
+
+**A sign-in a caller asked for ends differently**, and the difference is worth knowing before you
+meet it: the person tells the agent they are done and the agent calls `browser_sign_in_done`, so
+closing the window is not what ends that one. If nobody answers at all it lapses on its own and the
+browser goes back to serving — the caller keeps its lease and its tab throughout, and can ask again.
 
 **On interrupting a sign-in.** An interrupted sign-in is now recoverable: a browser left in
 `signing-in` whose owning process is gone is reclaimed, and `broker doctor` carries a check for it
