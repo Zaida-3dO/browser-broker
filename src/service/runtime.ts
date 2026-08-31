@@ -3,7 +3,7 @@ import type { EventAdapter } from './events.ts';
 import { readEnvironment, type Environment } from '../config/environment.ts';
 import { prepareStore, type StoreHandle } from '../store/open.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
-import type { BrowserDriver, BrowserId } from '../browser/driver.ts';
+import type { BrowserDriver } from '../browser/driver.ts';
 import { browserSessionProvider, type BrowserSessionProvider } from './browser-session.ts';
 import { serviceFor } from './bridge.ts';
 import { createBroker, type Broker } from './broker.ts';
@@ -183,10 +183,10 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     // stays open for the life of the browser. Reclaiming capacity does not
     // depend on a browser; reclaiming the page does.
     closeTab: async (tab) => {
-      const session = await browsers.session(tab.browserId as BrowserId);
+      const session = await browsers.session(tab.browserId);
       const opened = await resolveDriverTab(store.db, tab.tabId);
       if (opened !== undefined) {
-        await session.closeTab({ browser: tab.browserId as BrowserId, driverTabId: opened });
+        await session.closeTab({ browser: tab.browserId, driverTabId: opened });
       }
     },
   });

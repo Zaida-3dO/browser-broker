@@ -23,11 +23,21 @@
  *
  * **Structural — the compiler refuses these.**
  *
- * - **A third browser is not expressible.** {@link BrowserId} is a union of
- *   two string literals, not `string`, so `SCHEMA.md` §1.2's "exactly two
- *   rows, always" is a type error rather than a review comment. The store
- *   enforces the same thing with a check constraint; this makes the code
- *   that talks to browsers agree with it by construction.
+ * - **A browser's *kind* is one of two, and there is no third.**
+ *   {@link BrowserKind} is a union of two string literals, and the store
+ *   enforces the same thing with a check constraint (schema step nine), so
+ *   the code that talks to browsers agrees with the database by
+ *   construction.
+ *
+ *   **What is not structural, said plainly rather than left to be
+ *   discovered:** the *number* of browsers. `DECISIONS.md` §13i makes the
+ *   configured browsers a bounded list per kind read from the environment,
+ *   and a set that is not known until a spawn starts cannot be a type. The
+ *   bound is enforced — by
+ *   `src/config/environment.ts`, which refuses a list over its cap and names
+ *   the entries — but **it is enforced at startup rather than by the
+ *   compiler**, and a reader who assumes otherwise will look for a guarantee
+ *   in the wrong place.
  * - **No operation takes a list of tabs.** Every member of
  *   {@link TabOperations} is singular, because a lease is one tab (§2.3) and
  *   `SCHEMA.md` §3.1 puts it plainly: there was never more than one to list.
@@ -69,17 +79,63 @@
  */
 
 /**
- * The two browsers, and there is no third.
+ * One browser, by the name it was configured under.
  *
- * `SCHEMA.md` §1.2: the **regular** browser is persistent and signed in by a
- * person, and the **private** one is ephemeral and signed in to nothing. The
- * ceiling does not move with the number of callers, which is the whole point
- * — concurrency is expressed in tabs (`DECISIONS.md` §6).
+ * `SCHEMA.md` §1.2: a browser is either **regular** — persistent, signed in
+ * by a person — or **private** — ephemeral, signed in to nothing. Which one a
+ * given browser is, is its {@link BrowserKind}; what it is *called* is
+ * configuration, and the default configuration names them after their kinds.
+ *
+ * ── Why this is `string` rather than a union of the configured names ────
+ *
+ * It cannot be a union: the names are read from the environment at the start
+ * of a spawn (`DECISIONS.md` §13i), so they are not knowable when this file
+ * is compiled. What the type still buys is that a browser identifier is a
+ * distinguishable thing in a signature rather than an anonymous string, which
+ * is what stops a lease key or a tab identifier being passed where a browser
+ * belongs by anything reading the code.
+ *
+ * **The bound lives elsewhere, and it is worth being exact about where.**
+ * A browser beyond the cap is refused at the two places that can see the
+ * configured set — `src/config/environment.ts`, which refuses a list longer
+ * than its cap and names the entries, and the claim path, which refuses a
+ * name no configured browser has. Neither of those is the compiler, and
+ * saying so is the point: the ceiling is enforced, and it is not enforced
+ * *here*.
  */
-export type BrowserId = 'regular' | 'private';
+export type BrowserId = string;
 
-/** Both of them, in a fixed order, for anything that has to visit each. */
-export const BROWSER_IDS: readonly BrowserId[] = ['regular', 'private'];
+/**
+ * What a browser **is**, as against what it is called.
+ *
+ * Total, and enforced by the store's own check (schema step nine): every
+ * browser is one of these two and there is no third. This is the property the
+ * rest of the design branches on — a clean-room browser launches against an
+ * ephemeral profile, a signed-in one does not, and §5.5.1's sign-in is a
+ * claim over a persistent profile.
+ *
+ * It is a separate type from {@link BrowserId} because a configured name like
+ * `checkout` carries no kind in the word. §1.2's *"whether a browser uses a
+ * persistent profile is a property of which browser it is"* was true while
+ * the name was one of two literals; once a name is free, the property has to
+ * be written down or it is enforced nowhere.
+ */
+export type BrowserKind = 'regular' | 'private';
+
+/** Both kinds, in a fixed order, for anything that has to visit each. */
+export const BROWSER_KINDS: readonly BrowserKind[] = ['regular', 'private'];
+
+/**
+ * The browsers the default configuration names, in a fixed order.
+ *
+ * **The default set, never the permitted set.** Anything deciding what a
+ * particular installation actually has must read the configured lists or the
+ * store; this is what an installation that has set nothing runs, and it is
+ * what fixtures and the fake driver stand up when no configuration is in
+ * play. Reading it as the permitted set is the mistake this sentence exists
+ * to prevent.
+ */
+export const DEFAULT_BROWSER_IDS: readonly BrowserId[] = ['regular', 'private'];
 
 /**
  * **Which browser to claim, in one sentence** (`SCHEMA.md` §1.2, §3.2, row
@@ -104,17 +160,31 @@ export const BROWSER_IDS: readonly BrowserId[] = ['regular', 'private'];
  *
  * ── The caveat travels with it, and that is not optional ────────────────
  *
- * **Tabs in the signed-in browser share one cookie jar.** Two callers there
- * are clean-room relative to the private profile and **relative to nothing
- * else** — not to each other. That is right for reviewing an authenticated
- * surface, where every caller wants the same identity and wants it to be the
- * real one, and **wrong for exercising two identities at once**, which this
- * design declares unsupported rather than leaving to be discovered from a
- * test that mysteriously sees the wrong account.
+ * **Tabs in one browser share its cookie jar.** Two callers in the same
+ * browser are clean-room relative to every other browser and **relative to
+ * nothing else** — not to each other. That is right for reviewing an
+ * authenticated surface, where every caller wants the same identity and wants
+ * it to be the real one, and **wrong for exercising two identities at once in
+ * one browser**.
+ *
+ * Two identities at once is what a second configured browser is for
+ * (`DECISIONS.md` §13i), and the guidance says so rather than leaving it to
+ * be discovered from a test that mysteriously sees the wrong account.
  *
  * Stating the caveat in the same breath is the whole point: guidance that
  * sent callers to the signed-in browser without it would trade one silent
  * failure for another.
+ *
+ * ── The default makes this string carry more, not less ──────────────────
+ *
+ * `browser` is optional, and an unstated one resolves to the first signed-in
+ * browser (§3.2, `DECISIONS.md` §13i). **That is an argument for this text
+ * being more load-bearing rather than less**, and it is worth saying because
+ * the opposite reading is the tempting one. A caller that states nothing
+ * never sees the unknown-browser refusal, so the refusal stops being a place
+ * the caveat can reach it — and the default routes *more* traffic into one
+ * shared cookie jar, which is the exact condition the caveat is about. This
+ * is where a caller learns it or does not learn it at all.
  *
  * ── Kept short on purpose ───────────────────────────────────────────────
  *
@@ -124,13 +194,13 @@ export const BROWSER_IDS: readonly BrowserId[] = ['regular', 'private'];
  * one.
  */
 export const BROWSER_CHOICE_GUIDANCE =
-  'Pick by what the work needs: an authenticated surface goes to "regular", ' +
-  'which is signed in already and stays signed in; genuinely-fresh-visitor work ' +
-  '— first-visit behaviour, an undismissed banner, a consent prompt as a stranger ' +
-  'sees it — goes to "private". Note that tabs in "regular" share one cookie jar, ' +
-  'so callers there are isolated from "private" but not from each other: it is the ' +
-  'right choice for reviewing one signed-in surface, and the wrong one for exercising ' +
-  'two identities at once, which is not supported.';
+  'Omit this and you get the first signed-in browser, which is what most work wants. ' +
+  'Pass "private" for genuinely-fresh-visitor work — first-visit behaviour, an ' +
+  'undismissed banner, a consent prompt as a stranger sees it — or a configured ' +
+  'browser name to pick that one exactly. Tabs in one browser share its cookie jar, ' +
+  'so callers in the same browser are isolated from other browsers but not from each ' +
+  'other: for two identities at once, claim two differently-named browsers rather than ' +
+  'two tabs in one.';
 
 /**
  * Whether a browser draws a window.

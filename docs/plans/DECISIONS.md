@@ -148,6 +148,22 @@ everything downstream believes it.
 
 ## 6. Exactly two browsers; concurrency is expressed in tabs
 
+> **Overturned 2026-08-31 (§13i): the fixed pair becomes a bounded list per kind, at most three
+> each, defaulting to one of each.** The sentence below — *"exactly two browsers, no exceptions,
+> ever"* — **stops being true**, and so does the rejection of a library of purpose-named profiles.
+> Both are rewritten there rather than reinterpreted here, because no reading of "exactly two, ever"
+> accommodates six.
+>
+> **What survives untouched is the technical reasoning, and most of this section is that.** One
+> persistent browser really does hold many sign-ins at once, a purpose-named profile really is a
+> purpose-named tab, and process count really is bounded by configuration rather than by caller
+> count — that last property is preserved verbatim, the bound being a configured number rather than
+> the literal two. What §13i buys is the case this section explicitly declines to cover: **two identities at
+> once.** The support that gave way is the one below that named its own condition — *"if a case
+> genuinely arises, it is a decision to take then"* — and the case arose.
+>
+> **The tab budget below is untouched and is not part of the reversal.**
+
 **Verified, not assumed.** A named automation session **is a browser instance** — its own process,
 its own cookies, local storage, history and console. Tabs live inside a session and share its storage
 partition. So "sign in once, every tab inherits it" is the documented behaviour, and an *isolated
@@ -483,6 +499,11 @@ costs it a place it can retake by asking again. Same rule; different price for g
 > explicit scheduling nudge.
 
 ### No profiles table
+
+> **Overturned 2026-08-31 (§13i), with §6, which this restates.** Browsers are a bounded list per
+> kind read from configuration, so `SCHEMA.md` does carry a named-browser concept: the name is free
+> and the *kind* is the column that stays database-enforced. The sentence below about a fixed
+> two-row table and no named-profile concept is the one that moves.
 
 Confirmed as written. One persistent browser holds many sign-ins simultaneously, so a purpose-named
 profile is a purpose-named **tab**. Reasoning and the rejected alternative are in §6. The concrete
@@ -1730,6 +1751,243 @@ that it is a claim.
 report a value meaning *unset* as though it were a release. The packaging question behind that
 (whether this is ever published, given `README.md`'s position that installation is the whole of
 deployment) is untouched here and is recorded in §14 rather than decided in passing.
+
+## 13i. Named browsers — two recorded decisions overturned (2026-08-31)
+
+Two rulings here, and both **overturn decisions this document argued for and defended**. They are
+written as reversals rather than as refinements, because each overturns a sentence that was meant
+to settle its question permanently, and a reversal presented as a clarification is a reversal nobody
+can audit.
+
+The reading conventions from §13e and §13f carry forward unchanged. **The earlier text keeps its
+place and gains a dated banner**; nothing above is deleted. What is unusual about this round is that
+neither reversal rests on new measurement contradicting old measurement — the measurements
+underneath §6 are all still true. **What changed is that a condition §6 named out loud has been
+met.**
+
+### The shape of the change, before either argument
+
+Configuration gains four variables:
+
+```
+BROKER_REGULAR_BROWSERS=regular          # comma-separated names, at most 3
+BROKER_PRIVATE_BROWSERS=private          # comma-separated names, at most 3
+BROKER_REGULAR_BROWSER_ENGINE=msedge     # chrome | brave | msedge
+BROKER_PRIVATE_BROWSER_ENGINE=msedge     # chrome | brave | msedge, may differ
+```
+
+**Two lists split by kind, rather than one list with a per-entry private flag.** This removes the
+per-entry attribute entirely, which is what makes it satisfy §1.2's own reasoning rather than
+bending it: *"No `persistent` flag. Whether a browser uses a persistent profile is a property of
+which browser it is… A column would let the row disagree with the word in it."* Which list a name is
+written in **is** its kind, so there is nothing for a name and its kind to disagree about, and
+nothing needs encoding to carry.
+
+**This is not the parser §6.1 declines to buy.** §6.1 asks for *"plain strings and enums, nothing
+nested, nothing needing a parser"*. A comma-separated list of names cannot nest, has no quoting and
+no escaping, and has no syntax error available to it: every token either is a legal name or is not,
+which is the check a single enum runs, run once per token. Splitting on a comma is a different
+object from a grammar.
+
+**One engine per kind, never per browser**, for the same reason there is no per-entry private flag:
+an engine per entry puts the attribute back on the entry.
+
+A lease resolves in three forms, and the first is new:
+
+| Caller states | Gets |
+|---|---|
+| nothing | the first entry of `BROKER_REGULAR_BROWSERS` |
+| `regular` / `private` | the first entry of that kind |
+| a configured name | that browser exactly |
+
+**Four configurations refuse the spawn, each naming the offending entry:** a duplicate within one
+list, the same name in both lists, more names than the cap, and an unrecognised engine. The
+authority is §6.3's own table — *"refuse to start, naming the variable and what was expected. Not
+the default silently: a caller that set a value and got the default would be running a configuration
+it did not choose and has no way to notice."* This costs nothing at runtime: configuration is read
+once on the way in, before any browser exists or any lease is held.
+
+**A name in both lists is refused rather than resolved**, because the name is the lease-time key, so
+a name written in both kinds has no single answer to *which browser is this*.
+
+### Reversal one: the fixed pair becomes a bounded list per kind
+
+> **What is overturned.** §6's *"Exactly two browsers, no exceptions, ever"*, and §6's **"Rejected:
+> a library of purpose-named profiles"** with its consequence *"There is no profiles table and no
+> profile registry — adding one would turn a fixed two-row fact into an unbounded collection."*
+> §13a's "No profiles table" restates the same ruling and is overturned with it.
+
+**This is the thing §6 rejected, and it is argued on those terms.** It is not a relaxation of §1.2's
+table, and presenting it as one would be the politer name §6 warned about.
+
+The original ruling stood on two supports. They did not fare the same way, and separating them is
+the whole of the argument:
+
+| The original argument | What became of it |
+|---|---|
+| *"Sequential execution already solves it — the escape hatch buys parallelism, not capability."* | **True, and it does not answer the requirement.** Capability was never the question. The requirement is **six concurrent stateful browsers**, and that figure is a high-water mark taken from real use rather than a round number. Parallelism *is* the requirement, so an argument that concedes parallelism concedes the point |
+| *"A capability held open in advance, on the chance it might be wanted, is a surface with no caller. If a case genuinely arises, it is a decision to take then, with the real requirement in front of it rather than an imagined one."* | **This is the support that gave way, and it gave way exactly as it said it would.** It is not an argument that the capability is wrong; it is an instruction about *when* to take the decision, and it names its own condition — a case genuinely arising, with a real requirement in front of it. That condition is met |
+
+**What is not claimed, because §6's technical reasoning is untouched.** One persistent browser
+really does hold many sign-ins at once — that is what a shared cookie jar is — and a purpose-named
+profile really is a purpose-named tab. Both statements are true and neither is argued with here.
+**They are true of the single-identity case.** The case §6 explicitly declines to cover, in the same
+paragraph, is **two identities at once**, and that is the only thing being bought. Nothing in this
+ruling suggests §6 was wrong about the case it was about.
+
+**What keeps §6's real fear away is the bound, and it has to be the bound rather than good
+intentions.** §6's sharpest sentence is the one owed an answer: *"'Exactly two, except when someone
+asks' is the same thing as 'as many as are asked for', with a politer name and a delay before anyone
+notices."* That is a description of an **on-demand escape hatch**, and it is exactly right about
+one. A bounded list is a different object:
+
+- **Nothing mints a browser on request.** There is no call that creates one and no argument on any
+  tool that widens the set. A browser exists because configuration named it before the process
+  started.
+- **The cap cannot be moved at request time.** It is a constant in `src/config/environment.ts`, read
+  once on the way in, and a list over it refuses the spawn and names the entries.
+- **The property §6 was defending survives verbatim: process count is bounded by configuration, not
+  by how many callers connect.** That sentence is still true. What changes is that the bound is a
+  small number somebody sets rather than the literal two.
+
+**Given up, stated plainly rather than softened.** *"Exactly two browsers, no exceptions, ever"*
+**stops being true.** It is rewritten rather than reinterpreted, because there is no reading of
+"exactly two, ever" that accommodates six, and pretending otherwise would leave this document
+asserting something the code contradicts. §6 keeps its text and gains a banner saying so.
+
+**Also given up, and it is what that sentence was really protecting:** a reader could know the
+process count from this document without consulting a configuration. That was worth something and it
+is genuinely gone. What stands in its stead is a bound readable in one line of `.env.example`, and a
+refusal that fires before anything launches.
+
+#### The cap is three per list, and per-list rather than a shared total
+
+**Six browsers worst case**, sized to an observed high-water mark of six concurrent stateful
+browsers rather than picked round.
+
+**Per-list rather than one total, deliberately.** The two kinds are not interchangeable. A shared
+total of six could be spent entirely on signed-in browsers, leaving **no clean-room browser at all**
+— and clean-room is the one that cannot be substituted for, because a signed-in browser cannot show
+what a page does for somebody who has never been there. A cap per list keeps both kinds reachable.
+The memory concern that would have argued for a single total is answered by six being small enough
+either way.
+
+#### Rows are created on first launch, not from configuration at startup
+
+**A browser's row appears when that browser is first launched.** Nothing seeds rows from the
+configured lists.
+
+Seeding from configuration on the way in was considered, and it is wrong here for a reason worth
+recording: **two processes on one machine may hold different configurations**, so a process that
+seeded from its own environment would write its own beliefs into a store the other one shares.
+Creating a row on first launch means a row exists only for a browser somebody actually started,
+which is a fact both processes can agree about because it happened.
+
+**This needs no new arbitration.** §1.2a already resolves the launch race through the same
+transaction that arbitrates claims — *"one row, one winner"* — so row creation is serialised by a
+mechanism that exists.
+
+#### The browser list is not given the tab budget's stored-agreement row
+
+§1.10's rule is that **a value several processes must *agree* on gets the row; a value they merely
+each *use* does not.** The browser list is the second kind, and the test is what each disagreement
+actually does:
+
+- **A process holding a stale configuration asks for a browser this one does not have** → refused,
+  by name.
+- **A process arbitrating capacity** → the budget is one total, and it is already protected by its
+  own row.
+- **One process launches a browser another has never heard of** → the other never touches it. §1.2:
+  the service *"acts on processes recorded here and on nothing else."*
+
+Every disagreement is a **nameable refusal rather than a silently broken invariant.** That is the
+`BROKER_LEASE_SECONDS` category, not the budget's. The budget needed its row because a disagreement
+there is *undetectable*: each process stays internally consistent while the ceiling quietly stops
+being a ceiling. Nothing here has that shape.
+
+### Reversal two: `browser` becomes optional, and unstated means signed-in
+
+> **What is overturned.** `SCHEMA.md` §3.2's *"No default, deliberately. Defaulting to private would
+> silently give clean-room behaviour to a caller that needed a sign-in; defaulting to regular would
+> put unnecessary work on the profile that has something to lose."*
+
+**The original treats the two wrong guesses as symmetric. They are not, and that is the whole
+argument.**
+
+- **Defaulting to clean-room when a sign-in was needed produces a login redirect** — a wrong page
+  that looks like a right page. It surfaces later, somewhere else, as somebody reading a screenshot
+  of a login form and wondering why.
+- **Defaulting to signed-in when clean-room was needed produces a personalised page** — also wrong,
+  and **it is the page most callers were asking for**. It is wrong visibly, in the place the caller
+  is already looking.
+
+A default cannot avoid being wrong sometimes. What it can choose is which wrongness it buys, and one
+of these two is recoverable by the person reading the result.
+
+**The design's own measurement points the same way.** §1.2 records **25 sessions that hand-seeded
+authentication tokens into an isolated browser while the signed-in browser sat unused** — 25 callers
+who wanted signed-in behaviour and did not find it. **No population was measured wanting a
+stranger's view and accidentally receiving an identity.** The asymmetry in the failure modes and the
+asymmetry in the measured demand point the same way, which is the strongest form this argument comes
+in.
+
+It also matches what a person already believes about browsers: **you get your ordinary window unless
+you deliberately open a private one.** A design whose default contradicts that spends caller
+attention teaching something they will keep forgetting.
+
+**What must survive, and it becomes more load-bearing rather than less: the shared-cookie-jar
+caveat.** Tabs in one browser share its jar, so concurrent callers there are clean-room relative to
+other browsers and **not to each other**. A default routes *more* traffic into the signed-in
+browser, which is precisely the condition the caveat describes. §3.2 already names where it has to
+live — the tool's description text, *"the only place a calling agent reliably reads"* — and that
+text is rewritten around the default rather than merely kept.
+
+**There is a second reason that text carries more weight now, and it is easy to miss:** a caller
+that states nothing **never sees the unknown-browser refusal**, so the refusal stops being a surface
+that can reach it at all. For a defaulting caller the description is not one of two places the
+guidance lives. It is the only one.
+
+**Given up:** a caller can hold a lease on the signed-in browser without ever having typed the word.
+That is the cost of a default and it is real. The argument is not that it does not happen — it is
+that the other failure is worse, and the measurement says it is also commoner.
+
+### The engine choice, and what is deliberately not built
+
+**`msedge` is the default engine.** It is present on every Windows machine, so a fresh install runs
+with nothing set, which is §6.1's *"a fresh install runs with nothing set."*
+
+**This is a behaviour change**, not a new setting with a neutral default: it changes which binary
+launches on an installation that sets nothing. §6.3's last row puts a changed default in **release
+notes** rather than a quiet edit, so it is written there. No third-party installation exists, so it
+is as cheap now as it will ever be.
+
+**What is built is the hook and the validation, and nothing else.** Chrome, Brave and Edge are all
+Chromium over the same remote-debugging protocol, so choosing between them is choosing a binary path
+— and `src/browser/real.ts` already takes an injectable one. **Per-engine verification is
+deliberately not built:** executable resolution per engine, per-engine discovery-record locations,
+per-engine doctor checks. That work is separable from what is actually wanted, which is **more
+addressable identities**, and building it now would be the surface-with-no-caller §6 correctly warns
+against.
+
+### Explicitly unchanged: the tab budget
+
+**One counter across all browsers, default 15.** Per-browser caps stay rejected — *"they look like
+fairness and are actually two budgets, each of which can be exhausted while the machine is idle."*
+The scarce thing is renderer processes, and a renderer costs the same in any browser. `requested` is
+always 1, so the budget, the pool bound and the count of live claims remain the same integer. Keeper
+tabs stay uncounted.
+
+**Fifteen tabs across six browsers is the same tab memory as fifteen across two, so a variable
+browser count does not disturb this.** An earlier claim that a variable browser list "breaks the tab
+budget" was wrong, and it is **withdrawn** rather than quietly dropped.
+
+**But the memory figure is said out loud in `.env.example`, because the budget does not bound it.**
+The budget counts *tabs*, and each browser costs a process **before any tab exists**. So
+`BROKER_TAB_BUDGET=15` with six browsers is six browser processes, plus up to fifteen tabs, plus six
+uncounted keeper tabs. Somebody setting all six should meet that number before they meet the
+consequences of it — and the budget will not tell them, because it is doing its job, and its job is
+tabs.
+
 
 ## 14. Still open
 

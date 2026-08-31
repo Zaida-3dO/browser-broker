@@ -145,21 +145,67 @@ test('the two browser rows exist after stepping', async () => {
   });
 });
 
-test('a third browser is refused', async () => {
-  // "Exactly two" holds from both ends: the check and the primary key cap the
-  // table at two, and the seed floors it at two.
+test('a browser with a name of its own is accepted, and its kind is stated', async () => {
+  // **The reversal, asserted rather than assumed** (`DECISIONS.md` §13i).
+  // The check that named two literals is gone, so a configured name is an
+  // ordinary insert — which is what makes a third browser possible at all.
+  await withSteppedStore((store) => {
+    store.db
+      .prepare("INSERT INTO browsers (id, kind, state) VALUES ('checkout', 'regular', 'stopped')")
+      .run();
+    const row = store.db
+      .prepare<{ id: string }, { kind: string }>('SELECT kind FROM browsers WHERE id = @id')
+      .get({ id: 'checkout' });
+    assert.equal(row?.kind, 'regular');
+  });
+});
+
+test('a browser kind outside the two is refused', async () => {
+  // **The load-bearing half of what the dropped check protected.**
+  // The name is free; the kind is not, because the rest of the design
+  // branches on it — an ephemeral profile is launched differently and cannot
+  // be signed into.
   await withSteppedStore((store) => {
     assert.throws(() => {
-      store.db.prepare("INSERT INTO browsers (id, state) VALUES ('extra', 'stopped')").run();
+      store.db
+        .prepare("INSERT INTO browsers (id, kind, state) VALUES ('odd', 'ephemeral', 'stopped')")
+        .run();
     }, /CHECK constraint failed/);
+  });
+});
+
+test('a browser with no kind is refused', async () => {
+  // `NOT NULL` with no default, deliberately: rows are created on first
+  // launch rather than seeded from configuration, so the writer that creates
+  // one has to say which kind it is rather than inheriting a guess.
+  await withSteppedStore((store) => {
+    assert.throws(() => {
+      store.db.prepare("INSERT INTO browsers (id, state) VALUES ('nameless', 'stopped')").run();
+    }, /NOT NULL constraint failed/);
   });
 });
 
 test('a duplicate browser is refused', async () => {
   await withSteppedStore((store) => {
     assert.throws(() => {
-      store.db.prepare("INSERT INTO browsers (id, state) VALUES ('regular', 'stopped')").run();
+      store.db
+        .prepare("INSERT INTO browsers (id, kind, state) VALUES ('regular', 'regular', 'stopped')")
+        .run();
     }, /UNIQUE constraint failed/);
+  });
+});
+
+test('the two rows step one seeded are backfilled to their own kinds', async () => {
+  // Exact rather than a guess: the dropped check permitted these two names
+  // and no others, and each named its own kind.
+  await withSteppedStore((store) => {
+    const rows = store.db
+      .prepare<[], { id: string; kind: string }>('SELECT id, kind FROM browsers ORDER BY id')
+      .all();
+    assert.deepEqual(rows, [
+      { id: 'private', kind: 'private' },
+      { id: 'regular', kind: 'regular' },
+    ]);
   });
 });
 

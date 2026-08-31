@@ -47,6 +47,10 @@ describe('the store’s location', () => {
         leaseSeconds: 600,
         queueSeconds: 600,
         launchReadinessTimeoutSeconds: 30,
+        regularBrowsers: ['regular'],
+        privateBrowsers: ['private'],
+        regularBrowserEngine: 'msedge',
+        privateBrowserEngine: 'msedge',
       },
       checksReporting({}),
     );
@@ -73,6 +77,10 @@ describe('the store’s location', () => {
         leaseSeconds: 600,
         queueSeconds: 600,
         launchReadinessTimeoutSeconds: 30,
+        regularBrowsers: ['regular'],
+        privateBrowsers: ['private'],
+        regularBrowserEngine: 'msedge',
+        privateBrowserEngine: 'msedge',
       },
       checksReporting({}),
     );
@@ -99,6 +107,10 @@ describe('the store’s location', () => {
         leaseSeconds: 600,
         queueSeconds: 600,
         launchReadinessTimeoutSeconds: 30,
+        regularBrowsers: ['regular'],
+        privateBrowsers: ['private'],
+        regularBrowserEngine: 'msedge',
+        privateBrowserEngine: 'msedge',
       },
       checksReporting({
         mappings: { [mapped]: sharePath('fileserver', 'store', 'broker.db') },
@@ -124,6 +136,10 @@ describe('the store’s location', () => {
         leaseSeconds: 600,
         queueSeconds: 600,
         launchReadinessTimeoutSeconds: 30,
+        regularBrowsers: ['regular'],
+        privateBrowsers: ['private'],
+        regularBrowserEngine: 'msedge',
+        privateBrowserEngine: 'msedge',
       },
       checksReporting({}),
     );

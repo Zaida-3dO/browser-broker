@@ -77,7 +77,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description:
       'Ask for a lease on one browser tab. You get a tab, or a place in the queue — queued is an ' +
       'outcome, not a failure; poll browser_status until it turns active. One lease is one tab: ' +
-      'call this again for a second. Pick the browser deliberately, there is no default.',
+      'call this again for a second.',
     arguments: [
       {
         name: 'session_id',
@@ -88,13 +88,20 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       {
         name: 'browser',
         type: 'string',
-        required: true,
+        // **Optional** (`DECISIONS.md` §13i): unstated resolves to the first
+        // signed-in browser. The two wrong guesses are not symmetric —
+        // defaulting to clean-room when a sign-in was wanted returns a login
+        // redirect, a wrong page that looks like a right one, while
+        // defaulting to signed-in returns a personalised page, which is the
+        // page most callers were asking for.
+        required: false,
         // **Row #66 lands here.** The description is the only place a calling
         // agent reliably reads, and 25 measured sessions hand-seeded tokens
         // into an isolated browser while the signed-in one sat unused. The
         // cookie-jar caveat is carried in the same string rather than left to
-        // a refusal, because a caller that picks correctly never sees one.
-        description: `No default: neither is a safe guess. ${BROWSER_CHOICE_GUIDANCE}`,
+        // a refusal — and the default makes that more load-bearing, not less,
+        // because a caller that states nothing never sees a refusal at all.
+        description: BROWSER_CHOICE_GUIDANCE,
       },
       {
         name: 'purpose',

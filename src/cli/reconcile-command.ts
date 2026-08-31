@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
-import { BROWSER_IDS, type BrowserId, type BrowserSession } from '../browser/driver.ts';
+import { DEFAULT_BROWSER_IDS, type BrowserId, type BrowserSession } from '../browser/driver.ts';
 import { append } from '../service/events.ts';
 import {
   applyReconciliation,
@@ -96,6 +96,15 @@ export interface ReconcileCommandOptions {
   readonly session?: (browser: BrowserId) => Promise<BrowserSession>;
   readonly streams: CommandStreams;
   readonly json: boolean;
+  /**
+   * The browsers this installation is configured with (`DECISIONS.md` §13i).
+   *
+   * Defaulted for a caller with no environment snapshot to hand; every
+   * shipped caller passes the configured lists, because a command that
+   * validated a name against the default set would refuse a browser the
+   * person had configured and named.
+   */
+  readonly browsers?: readonly BrowserId[];
 }
 
 /** Timestamps are spelled one way in this store. */
@@ -103,8 +112,8 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function isBrowserId(value: string): value is BrowserId {
-  return (BROWSER_IDS as readonly string[]).includes(value);
+function isBrowserId(value: string, browsers: readonly BrowserId[]): value is BrowserId {
+  return browsers.includes(value);
 }
 
 /**
@@ -122,17 +131,18 @@ export async function runReconcileCommand(
   const flags = parseFlags(rest);
   const named = rest.find((word) => !word.startsWith('--'));
   const browser = typeof flags.browser === 'string' ? flags.browser : named;
+  const browsers = options.browsers ?? DEFAULT_BROWSER_IDS;
 
   if (browser === undefined) {
     options.streams.err(
-      `broker reconcile needs to be told which browser: ${BROWSER_IDS.join(' or ')}. It asks that browser what it has open, closes pages no live lease owns, and settles rows whose pages are gone.`,
+      `broker reconcile needs to be told which browser: ${browsers.join(' or ')}. It asks that browser what it has open, closes pages no live lease owns, and settles rows whose pages are gone.`,
     );
     return COMMAND_EXIT.malformed;
   }
 
-  if (!isBrowserId(browser)) {
+  if (!isBrowserId(browser, browsers)) {
     options.streams.err(
-      `There is no browser named ${JSON.stringify(browser)}. This service manages ${BROWSER_IDS.join(' and ')}.`,
+      `There is no browser named ${JSON.stringify(browser)}. This service manages ${browsers.join(' and ')}.`,
     );
     return COMMAND_EXIT.malformed;
   }

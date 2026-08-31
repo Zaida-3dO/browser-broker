@@ -176,16 +176,23 @@ export interface BrowserSessions {
 export function browserSessionProvider(options: BrowserSessionProviderOptions): BrowserSessions {
   const driver =
     options.driver ??
-    new RealBrowserDriver(
-      options.artifacts === undefined
+    new RealBrowserDriver({
+      ...(options.artifacts === undefined
         ? {}
         : // The driver names a file; the store decided the directory. See
           // `RealDriverOptions.outputDirectory` for why the split is the rule
           // rather than a preference, and {@link
           // BrowserSessionProviderOptions.artifacts} for why this is the
           // shared tree rather than one lease's.
-          { outputDirectory: path.join(options.artifacts.root, 'snapshots') },
-    );
+          { outputDirectory: path.join(options.artifacts.root, 'snapshots') }),
+      // **The signed-in engine, carried from this process's one environment
+      // snapshot** (§6.3, `DECISIONS.md` §13i). One driver serves every
+      // browser in this process, so the kind-specific engine cannot be chosen
+      // per session here — see the note on `RealDriverOptions.engine` for
+      // what the value does and does not do, which is what makes one engine
+      // per process the honest shape rather than a shortcut.
+      engine: options.environment.regularBrowserEngine,
+    });
 
   const inFlight = new Map<BrowserId, Promise<BrowserSession>>();
   const settled = new Map<BrowserId, BrowserSession>();

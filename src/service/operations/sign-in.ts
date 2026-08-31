@@ -1,5 +1,5 @@
 import type { ArbitrationOutcome, ArbitrationScope } from '../arbitration.ts';
-import { BROWSER_IDS, BROWSER_CHOICE_GUIDANCE, type BrowserId } from '../../browser/driver.ts';
+import { BROWSER_CHOICE_GUIDANCE, type BrowserId, type BrowserKind } from '../../browser/driver.ts';
 import { CallRefusal } from '../refusals.ts';
 import { append } from '../events.ts';
 import {
@@ -98,6 +98,18 @@ export const SIGN_IN_RULES = {
  */
 export const SIGNABLE_BROWSER: BrowserId = 'regular';
 
+/**
+ * The kind of browser a person can sign into.
+ *
+ * The kind rather than the name, because a name says nothing about the kind
+ * once names are configured (`DECISIONS.md` §13i). This is what the store's
+ * `kind` column is compared against, and the reasoning for *why* clean-room
+ * browsers are refused is on {@link SIGNABLE_BROWSER} above — it is a fact
+ * about ephemeral profiles, which is a property of the kind and never of the
+ * word.
+ */
+export const SIGNABLE_KIND: BrowserKind = 'regular';
+
 /** A lease named in a refusal, so a person knows who they would interrupt. */
 export interface HoldingLease {
   readonly claimId: string;
@@ -172,48 +184,73 @@ function readBrowser(scope: ArbitrationScope, browser: BrowserId): BrowserRow {
 }
 
 /**
- * Refuse anything that is not the browser with a profile to sign into.
+ * Refuse anything that is not a browser with a profile to sign into.
  *
  * Two refusals rather than one, because they are two different mistakes and
  * merging them sends the second person hunting for a typo they did not make:
- * a name that is not a browser at all, and the private browser — which *is* a
- * browser, and is the one where signing in would appear to work.
+ * a name that is not a browser at all, and a clean-room browser — which *is*
+ * a browser, and is the one where signing in would appear to work.
+ *
+ * ── Why the store answers this rather than a constant ───────────────────
+ *
+ * A browser's name does not say what kind it is (`DECISIONS.md` §13i), so
+ * *"is this signable"* is a question about the browser rather than a
+ * comparison against the word `regular` — which the store answers from
+ * the `kind` column schema step nine added, under the same check constraint
+ * that makes the kind total. **The row is the right authority here** for the
+ * same reason §1.2 gives about `pid`: the service acts on what it has
+ * recorded, and a browser with no row is a browser this service does not
+ * manage, whatever a configuration elsewhere on the machine may say.
+ *
+ * A browser configured but never launched therefore has no row and is
+ * refused as unknown. That is the honest answer rather than a gap: signing in
+ * is a claim over a **profile**, and §5.5.1 has the caller establish the
+ * profile and the row before it asks — `login-command.ts` runs the setup
+ * handshake first for exactly this reason.
  */
 function resolveSignableBrowser(scope: ArbitrationScope, requested: string): BrowserId {
   const { adapter } = scope;
 
-  if (!BROWSER_IDS.includes(requested as BrowserId)) {
+  const known = scope.db
+    .prepare<[], { id: string; kind: string }>('SELECT id, kind FROM browsers ORDER BY id')
+    .all();
+
+  const match = known.find((row) => row.id === requested);
+
+  if (match === undefined) {
+    const names = known.map((row) => row.id);
     scope.recordRefusal({
       kind: 'browser_signin_began',
       outcome: 'deny',
       guard: 'claim.browser_known',
       adapter,
-      detail: { requested, known: BROWSER_IDS },
+      detail: { requested, known: names },
     });
     throw new CallRefusal(
       'unknown_browser',
-      `There is no browser named ${JSON.stringify(requested)}. This service has exactly two: ${BROWSER_IDS.join(' and ')}. ${BROWSER_CHOICE_GUIDANCE}`,
-      { detail: { requested, known: BROWSER_IDS } },
+      `There is no browser named ${JSON.stringify(requested)}. This service has ${names.join(' and ')}. ${BROWSER_CHOICE_GUIDANCE}`,
+      { detail: { requested, known: names } },
     );
   }
 
-  if (requested !== SIGNABLE_BROWSER) {
+  if (match.kind !== SIGNABLE_KIND) {
+    const signable = known.filter((row) => row.kind === SIGNABLE_KIND).map((row) => row.id);
     scope.recordRefusal({
       kind: 'browser_signin_began',
       outcome: 'deny',
       guard: SIGN_IN_RULES.serving,
       adapter,
       browserId: requested,
-      detail: { requested, signable: SIGNABLE_BROWSER },
+      detail: { requested, signable },
     });
     throw new CallRefusal(
-      // **Not `unknown_browser`.** The private browser is one of the two, and
+      // **Not `unknown_browser`.** A clean-room browser is a real browser, and
       // refusing it with the code for a name that does not exist made the
       // command report `claim.browser_known` — telling a person their browser
       // name was wrong when it was right. See the taxonomy entry.
       'cannot_sign_in',
-      `The ${requested} browser cannot be signed into. Its profile is ephemeral, so everything a sign-in produces is discarded with the browser — the command would appear to work and leave you signed into nothing. Sign in to the ${SIGNABLE_BROWSER} browser, whose profile persists and is the identity every caller shares.`,
-      { detail: { requested, signable: SIGNABLE_BROWSER } },
+      `The ${requested} browser cannot be signed into. Its profile is ephemeral, so everything a sign-in produces is discarded with the browser — the command would appear to work and leave you signed into nothing. Sign in to ${signable.join(' or ')}, whose profile persists and is an identity callers share.`,
+      { detail: { requested, signable } },
     );
   }
 

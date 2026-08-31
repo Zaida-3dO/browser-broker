@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3';
 import { stepOne } from './step-001-initial.ts';
 import { stepEight } from './step-008-signin-owner.ts';
 import { stepFive } from './step-005-storage-seed-event.ts';
+import { stepNine } from './step-009-named-browsers.ts';
 import { stepSix } from './step-006-signin-events.ts';
 import { stepSeven } from './step-007-signin-without-process.ts';
 import { stepFour } from './step-004-tab-never-opened.ts';
@@ -41,6 +42,7 @@ export const STEPS: readonly Step[] = [
   stepSix,
   stepSeven,
   stepEight,
+  stepNine,
 ];
 
 /**
@@ -57,7 +59,7 @@ export const STEPS: readonly Step[] = [
  *
  * So the number is written here and the check below is what keeps it honest.
  */
-export const EXPECTED_VERSION = 8;
+export const EXPECTED_VERSION = 9;
 
 /**
  * The list is consistent with the version above, asserted where the list is

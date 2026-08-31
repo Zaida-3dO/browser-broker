@@ -85,6 +85,10 @@ function environmentFor(store: StoreHandle): Parameters<typeof browserSessionPro
       // rather than this field, which mirrors how `tabBudget` above is a
       // provider-level default that individual tests already override.
       launchReadinessTimeoutSeconds: 30,
+      regularBrowsers: ['regular'],
+      privateBrowsers: ['private'],
+      regularBrowserEngine: 'msedge',
+      privateBrowserEngine: 'msedge',
     },
   };
 }

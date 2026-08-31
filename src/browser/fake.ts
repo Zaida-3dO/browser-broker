@@ -1,5 +1,5 @@
 import { solidPng } from '../capture/image.ts';
-import { BROWSER_IDS, type ActionRequest } from './driver.ts';
+import { DEFAULT_BROWSER_IDS, type ActionRequest } from './driver.ts';
 import type {
   ArtifactResult,
   CaptureRequest,
@@ -197,17 +197,40 @@ function storageKey(
   return `${driverTabId}|${origin}|${area}|${key}`;
 }
 
-const DEFAULT_MODE: Readonly<Record<BrowserId, BrowserMode>> = {
+const DEFAULT_MODE: Readonly<Record<string, BrowserMode | undefined>> = {
   // The signed-in browser is headed, and that is the whole reason the keeper
   // tab is a correctness mechanism rather than tidiness (`SCHEMA.md` §3.15).
   regular: 'headed',
   private: 'headless',
 };
 
-const DEFAULT_PID: Readonly<Record<BrowserId, number>> = {
+const DEFAULT_PID: Readonly<Record<string, number | undefined>> = {
   regular: 4001,
   private: 4002,
 };
+
+/**
+ * A stable per-name offset, so a browser keeps one endpoint and one process
+ * identifier across the calls of a single test.
+ *
+ * The two browsers the default configuration names keep the numbers they
+ * always had, which is what stops an assertion written against them moving.
+ * Any other name is hashed into the same small range — collisions are
+ * possible and harmless: nothing here dials the number, it only has to differ
+ * between browsers often enough that a test asserting two browsers are
+ * distinct is asserting something.
+ */
+function endpointOffset(browser: string): number {
+  const known = DEFAULT_BROWSER_IDS.indexOf(browser);
+  if (known !== -1) {
+    return known;
+  }
+  let hash = 0;
+  for (const character of browser) {
+    hash = (hash * 31 + character.charCodeAt(0)) % 900;
+  }
+  return DEFAULT_BROWSER_IDS.length + hash;
+}
 
 /**
  * What a tab's cookies look like when a test has not said otherwise.
@@ -295,7 +318,7 @@ export class FakeBrowserDriver implements BrowserDriver {
 
   constructor(options: FakeDriverOptions = {}) {
     this.#options = options;
-    for (const browser of BROWSER_IDS) {
+    for (const browser of DEFAULT_BROWSER_IDS) {
       this.#openTabs.set(browser, new Set());
     }
   }
@@ -462,10 +485,14 @@ export class FakeBrowserDriver implements BrowserDriver {
     const configured = browser === 'regular' ? this.#options.regular : this.#options.private;
     return {
       browser,
-      mode: mode ?? configured?.mode ?? DEFAULT_MODE[browser],
-      pid: configured?.pid ?? DEFAULT_PID[browser],
+      // A configured browser the fake has no entry for is headless with a
+      // derived process identifier. Named rather than defaulted silently:
+      // the fake stands up whatever browser a test asks for, and the two
+      // entries below are the two the default configuration has.
+      mode: mode ?? configured?.mode ?? DEFAULT_MODE[browser] ?? 'headless',
+      pid: configured?.pid ?? DEFAULT_PID[browser] ?? 4000 + endpointOffset(browser),
       discovery: {
-        endpoint: `http://127.0.0.1:${String(9000 + BROWSER_IDS.indexOf(browser))}`,
+        endpoint: `http://127.0.0.1:${String(9000 + endpointOffset(browser))}`,
         browserUuid: `fake-${browser}-uuid`,
       },
     };

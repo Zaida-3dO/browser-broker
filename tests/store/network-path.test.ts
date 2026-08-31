@@ -330,6 +330,10 @@ test('the configured value is checked, not only the resolved one', () => {
     leaseSeconds: 600,
     queueSeconds: 600,
     launchReadinessTimeoutSeconds: 30,
+    regularBrowsers: ['regular'],
+    privateBrowsers: ['private'],
+    regularBrowserEngine: 'msedge',
+    privateBrowserEngine: 'msedge',
   };
 
   // The resolved value alone cannot refuse: nothing about it says share.
@@ -354,6 +358,10 @@ test('a location that was never configured is still checked on its own account',
     leaseSeconds: 600,
     queueSeconds: 600,
     launchReadinessTimeoutSeconds: 30,
+    regularBrowsers: ['regular'],
+    privateBrowsers: ['private'],
+    regularBrowserEngine: 'msedge',
+    privateBrowserEngine: 'msedge',
   };
   assert.throws(() => {
     resolveStoreLocation(environment, checksReporting({ volumeTypes: { [target]: 0x6969 } }));

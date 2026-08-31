@@ -114,8 +114,12 @@ test('every variable this build declares is the set below, and no other', () => 
     'BROKER_DB',
     'BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS',
     'BROKER_LEASE_SECONDS',
+    'BROKER_PRIVATE_BROWSERS',
+    'BROKER_PRIVATE_BROWSER_ENGINE',
     'BROKER_PROFILE_ROOT',
     'BROKER_QUEUE_SECONDS',
+    'BROKER_REGULAR_BROWSERS',
+    'BROKER_REGULAR_BROWSER_ENGINE',
     'BROKER_TAB_BUDGET',
   ]);
 });
