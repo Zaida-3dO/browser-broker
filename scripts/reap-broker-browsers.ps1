@@ -72,8 +72,46 @@ $marker = 'broker-'
 # page whose URL happens to contain the stem is not swept.
 $tempPattern = [regex]::Escape($env:TEMP)
 
-$procs = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
+$listed = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -match $marker -and $_.CommandLine -match $tempPattern })
+
+# ── A LISTED PROCESS IS NOT NECESSARILY A RUNNING ONE ───────────────────────
+#
+# Win32_Process lists Windows ZOMBIES: processes that have already terminated
+# but whose process object the kernel still holds because something has an open
+# handle to it. They report a plausible ThreadCount and a ~130MB working set,
+# so to a command line filter they are indistinguishable from a live browser.
+#
+# MEASURED 2026-08-31, and this is the whole reason this block exists. Under
+# 40-way CPU load on a 32-core machine, four runs of the browser suites showed
+# 9, 22, 11 and 16 apparently-orphaned root browsers. Every single one was a
+# zombie. Three independent instruments agreed, per process:
+#
+#   process.kill(pid, 0)                      -> ESRCH        (gone)
+#   [Diagnostics.Process]::GetProcessById(id) -> HasExited    (true)
+#   watched with nothing killing them         -> drained to 0 unaided, ~4 min
+#
+# The release is near-instant on an idle machine and takes minutes on a loaded
+# one, so the busier the box the more leaks a naive count invents. That is
+# precisely why the "leak" was only ever seen when two agents ran at once, and
+# why every serial re-check came back clean and proved nothing.
+#
+# `HasExited` is the question that actually matters -- "would terminating this
+# do anything" -- so it is what is asked. Filtering on it turns a count that
+# grows with load into one that reports the thing it names.
+$procs = @($listed | Where-Object {
+        $live = $null
+        try { $live = [System.Diagnostics.Process]::GetProcessById($_.ProcessId) } catch { $live = $null }
+        # No object at all means it is already gone. An object reporting
+        # HasExited is the zombie case. Anything else is a browser still
+        # running, which is what this script is for.
+        $null -ne $live -and -not $live.HasExited
+    })
+
+$zombies = $listed.Count - $procs.Count
+if ($zombies -gt 0) {
+    Write-Output "Terminated-but-not-yet-reaped    : $zombies (zombie process objects, NOT leaks -- these drain on their own)"
+}
 
 if ($OlderThanHours -gt 0) {
     $cutoff = (Get-Date).AddHours(-$OlderThanHours)
