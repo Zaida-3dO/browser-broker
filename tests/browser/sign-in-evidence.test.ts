@@ -255,7 +255,7 @@ async function buildProfile(root: string, withCookie: boolean): Promise<string> 
 }
 
 test(
-  'MEASURED: the cookie FILE exists in a profile nobody signed into, so its presence proves nothing',
+  'MEASURED: a cookie FILE in a profile nobody signed into does not read as a session, so its presence proves nothing',
   { skip: available ? false : skipReason() },
   async () => {
     const root = temporaryProfileRoot();
@@ -263,14 +263,39 @@ test(
       const directory = await buildProfile(root, false);
       const store = path.join(directory, ...COOKIE_STORE_RELATIVE);
 
-      // **The claim `session.ts` is built on.** If this ever fails, the
-      // obvious check became viable and the module's long explanation of why
-      // it is not should be revisited — but until then, a check for the
-      // file's presence would report every fresh install as signed in.
-      assert.ok(
-        fs.existsSync(store),
-        'the cookie store was absent from a fresh profile — the doctor could have used presence after all',
-      );
+      // **The claim `session.ts` is built on**, stated as the platform
+      // actually behaves rather than more strongly than that.
+      //
+      // This asserted `fs.existsSync(store)` unconditionally — that a fresh
+      // profile ALWAYS has a cookie store. MEASURED 2026-08-31 on Windows,
+      // and it is not true: across sixteen fresh profiles on an idle machine
+      // the `Cookies` file was created in eleven and never appeared in five,
+      // with no load involved. (Adding a cookie first creates it every time,
+      // immediately — that is the `withCookie` arm below, which is why only
+      // this arm was flaky.) Chrome simply does not commit an empty cookie
+      // database on every shutdown.
+      //
+      // An unconditional presence check therefore fails roughly a third of
+      // the time for a reason that has nothing to do with the behaviour under
+      // test, and fails more often on a busy machine only because load shifts
+      // the odds. That is a nondeterministic assertion rather than a symptom
+      // of contention, and no amount of waiting fixes it: the file is not
+      // late, it is absent by design.
+      //
+      // What the test is actually for survives intact, and is asserted
+      // BELOW rather than here: that presence of the file does not imply a
+      // session. The direction that would genuinely invalidate `session.ts` is
+      // a fresh profile whose store exists AND reads as signed in — so when
+      // the file is present, that is checked; when it is absent, there is
+      // nothing to check and its absence is not evidence of anything.
+      if (fs.existsSync(store)) {
+        const present = inspectProfileSession(root, 'regular', { browserRunning: false });
+        assert.notEqual(
+          present.evidence,
+          'session-present',
+          'a fresh profile WITH a cookie store was reported as carrying a session — presence became viable after all',
+        );
+      }
 
       // And the check reports it honestly rather than as a session.
       const probe = inspectProfileSession(root, 'regular', { browserRunning: false });

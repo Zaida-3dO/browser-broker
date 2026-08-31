@@ -40,11 +40,47 @@ import fs from 'node:fs';
  * @param directory the directory to remove, recursively
  * @throws if the directory still exists after the retries are exhausted
  */
-/** How many times removal is attempted before the failure is reported. */
-const REMOVE_ATTEMPTS = 10;
+/**
+ * How long removal is retried before the failure is reported.
+ *
+ * ── Why this is seconds and not milliseconds ────────────────────────────
+ *
+ * The header above describes the wait as buying time "for a release the OS is
+ * already performing". How long that actually takes is the whole question, and
+ * a sub-second figure is an order of magnitude short of it — which is a
+ * mistake about the platform rather than about the approach, and therefore one
+ * that a plausible-looking number hides very well.
+ *
+ * MEASURED 2026-08-31 on Windows, timing from the browser's process actually
+ * exiting to `rmSync` first succeeding against a real profile directory:
+ *
+ *   quiet machine        194ms, 367ms, 2113ms, 3300ms   -> 3 of 4 over 300ms
+ *   40-way CPU load      334ms, 464ms, 502ms, 826ms,
+ *                        1945ms, 2712ms, 2830ms, 4056ms -> 8 of 8 over 300ms
+ *
+ * A sub-second budget therefore expires on essentially every removal on a
+ * loaded machine, and the resulting `EPERM` is thrown from a `finally` and
+ * attributed by `node --test` to the FILE rather than to any test — the exact
+ * names-nothing signature this module's header sets out to eliminate. On a
+ * quiet machine it lands inside a short budget about half the time, which is
+ * what makes a too-small figure here look survivable.
+ *
+ * **This is a bound on a condition, not a guess at a duration.** The loop
+ * below returns the instant the removal succeeds, so a quiet machine still
+ * pays only the ~200ms it actually needs; the budget is only how long the
+ * wait is willing to last before it reports a genuine, persistent failure.
+ * It is set well above the slowest figure measured so that ordinary
+ * contention cannot expire it, because expiring early here does not degrade
+ * gracefully — it turns a passing run red with a message about the wrong
+ * thing.
+ */
+const REMOVE_BUDGET_MS = 30_000;
 
 /** How long to wait between attempts, in milliseconds. */
 const REMOVE_RETRY_DELAY_MS = 30;
+
+/** How many times removal is attempted before the failure is reported. */
+const REMOVE_ATTEMPTS = Math.ceil(REMOVE_BUDGET_MS / REMOVE_RETRY_DELAY_MS);
 
 /**
  * Block this thread for `ms`.
