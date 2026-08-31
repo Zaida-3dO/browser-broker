@@ -1624,6 +1624,113 @@ refused"* — it discarded the refusal's code and rule one line before reporting
 was the entire diagnosis. It is now carried in the finding, so the next occurrence names its own
 cause.
 
+## 13h. The handshake: hand-rolled, not imported (2026-08-31)
+
+The tool surface had ten tools, a conformance suite proving each of them behaves identically to its
+command-line twin, and **no way for any client to reach a single one of them.** `protocol.ts`
+declared exactly two methods — `tools/list` and `tools/call` — over bare JSON objects, one per line.
+A Model Context Protocol client opens with `initialize`, waits for the server's `protocolVersion`,
+`capabilities` and `serverInfo`, sends `notifications/initialized`, and only then asks what tools
+exist. Against that surface the first message came back `method_not_found` and the client hung up.
+
+The defect is worth naming precisely, because it is a shape that recurs: **every layer was tested and
+the composition was not.** Nothing was broken. The tools worked, the framing worked, the refusals
+were correct on both routes, and the parity claim held. What did not exist was the doorway, and no
+test could have failed because no test spoke as a client — the conformance driver and the spawned
+smoke subset both open with `tools/list`, which is the second thing a client says, not the first.
+
+> **A surface tested only by callers who know its conventions is not tested as a surface.** The
+> question that would have caught this is not "does each method work" but "what does the first
+> message a stranger sends get back".
+
+### The dependency question, decided rather than defaulted
+
+The real choice was whether to adopt `@modelcontextprotocol/sdk` and let it own the handshake, or to
+write it out here. **Settled: hand-rolled**, and the argument for the other side is strong enough to
+record properly rather than dismiss.
+
+**What the SDK would have bought** is the thing that actually matters here: the specification moves,
+and a maintained client library moves with it. Spec drift is a class of bug this repository is now
+exposed to and has no instrument for — nothing in the test suite can notice that a revision published
+next year changed what `initialize` must return. That is a real, permanent cost and it is accepted
+with open eyes.
+
+**What decided it against** was three things, in order of weight:
+
+1. **The dependency would not have been small.** The SDK brings a server abstraction, a transport
+   abstraction and a registration model, and adopting it means the session loop, the framing and the
+   dispatch all become its rather than this repository's. That is not adding a dependency; it is
+   handing over the surface. This service has **four runtime dependencies**, each doing something
+   genuinely hard — a native SQLite binding, a browser driver, an image decoder, a pixel comparison.
+   A protocol envelope is not in that category.
+2. **The thing being imported is a documented wire format, and the subset used is small.** What was
+   missing is one request, one notification, an envelope with four fields and a version comparison.
+   It came to roughly a hundred lines including the reasoning. A framework earning its place has to
+   do more than that.
+3. **The existing refusal taxonomy would have been the price.** See below — this is the part that
+   would have been quietly lost.
+
+The honest summary: **the SDK is the better answer for a service that expects to track the
+specification closely, and the worse answer for one that implements a small fixed subset and wants to
+keep its own error semantics.** This is the second kind. If that stops being true — if the surface
+grows resources, prompts, sampling or server-initiated messages — the balance flips, and this entry
+should be read as the thing to overturn rather than as settled forever.
+
+### Two code spaces, because flattening one would have cost a real distinction
+
+JSON-RPC requires numeric error codes from a small fixed set. This surface already had a vocabulary:
+`method_not_found`, `tool_not_found`, `malformed_call`, `malformed_message`, `unexpected_failure`.
+Those are not decoration — `SCHEMA.md` names `unexpected_failure` when describing what a caller sees
+if a constraint is reached by a path that should have refused earlier, and two build checks read
+these names to distinguish a structured refusal from a crash.
+
+Mapping them onto five integers is many-to-one and lossy: `method_not_found` and `tool_not_found`
+both become `-32601`, and they are genuinely different facts about what the caller did wrong.
+
+**Settled: both travel.** The numeric code goes in `error.code` where the transport requires it, and
+this surface's own name goes in `error.data.code`, which is the field JSON-RPC reserves for exactly
+this. A generic client reads the integer and behaves correctly. A caller that knows this service
+reads the name and keeps every distinction it had before. Nothing was flattened, and the mapping is
+one function rather than a rewrite.
+
+This is the same principle §5.6 already holds elsewhere: **a refusal is the service working, and a
+caller that cannot tell a typo from a capacity refusal will retry the one and give up on the other.**
+Collapsing the taxonomy to satisfy a transport would have taken that distinction away from every
+caller on this route to buy nothing.
+
+### The notification is the part most likely to be got wrong
+
+`notifications/initialized` has no identifier, and a message with no identifier **must not be
+answered**. A surface that treats it as a request with a missing field will either reject it as
+malformed or — worse — invent an identifier and reply, which a strict client is entitled to read as a
+broken stream.
+
+So the absence of the identifier is decoded as a *kind* rather than as a defect, and the type
+carrying it **cannot express an identifier at all**. That is deliberate: the failure mode is
+answering one by accident, and a type that has no field to answer to cannot do it accidentally. The
+test asserting this counts messages in against messages out — four in, three out — because the
+absence of a response is the whole claim and it is not observable any other way.
+
+### Version negotiation answers; it does not refuse
+
+A client asking for a revision this surface does not implement is told which revision it does speak,
+and decides for itself whether to go on. **That is a negotiation rather than a rejection**, and it is
+what the specification asks for. The alternative — refusing an unfamiliar version string — would
+break this surface on the next revision of the specification rather than on anything wrong with the
+client, which is a failure mode that arrives on somebody else's release schedule.
+
+`SUPPORTED_PROTOCOL_VERSIONS` is a list of revisions this surface has actually been made to speak,
+newest first. A revision is added to it when that is true and not before: the point of the list is
+that it is a claim.
+
+### What is still owed
+
+**The version in `serverInfo` is the literal `0.0.0`**, and it is a literal rather than a read of
+`package.json` because that file says `"version": "0.0.0"` and `"private": true` — reading it would
+report a value meaning *unset* as though it were a release. The packaging question behind that
+(whether this is ever published, given `README.md`'s position that installation is the whole of
+deployment) is untouched here and is recorded in §14 rather than decided in passing.
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because
@@ -1676,6 +1783,15 @@ deleting the thing that raised them:
 
 **Open:**
 
+0. **Whether this is ever published, and what `serverInfo` should then say.** `package.json` is
+   `"private": true` with `"version": "0.0.0"`, no `files` field, and a `bin` pointing at a raw
+   TypeScript file. `README.md`'s position — *installation is the whole of deployment* — is coherent
+   and matches a service that binds nothing, but it makes install git-clone-only: it cannot be
+   installed or run from the registry by anyone. That is very likely the intended design; what makes
+   it worth an entry is that `private: true` and `0.0.0` read as *not yet considered* rather than as
+   *decided*, and §13h now has a `serverInfo` version literal that has to agree with the answer.
+   **Not a defect and not blocking the handshake** — a client spawns a path and never consults a
+   registry.
 1. **Whether the four capabilities added in §13f cover what the refused arbitrary-code verb was
    being used for.** The arguments **have since been sampled**, and the presumption they were tested
    against was half right. Of **328 calls across 53 sessions**, 186 (56.7%) are expressible on the

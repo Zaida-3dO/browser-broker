@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { JSONRPC_ERROR_CODES, JSONRPC_VERSION, PROTOCOL_VERSION } from '../../src/tool/protocol.ts';
+
 /**
  * The spawned smoke subset: **a real process, a real session, a real pipe.**
  *
@@ -156,9 +158,14 @@ test('a spawned session answers several messages in order, one line each', async
     'the spawned shim did not reach the arbitration core',
   );
 
-  // The last one is an unknown method, which IS a protocol error.
-  const unknown = JSON.parse(lines[2] ?? '') as { error?: { code: string } };
-  assert.equal(unknown.error?.code, 'method_not_found');
+  // The last one is an unknown method, which IS a protocol error — carrying
+  // JSON-RPC's integer for the transport and this surface's own name beside
+  // it for a caller that knows the taxonomy.
+  const unknown = JSON.parse(lines[2] ?? '') as {
+    error?: { code: number; data?: { code: string } };
+  };
+  assert.equal(unknown.error?.code, JSONRPC_ERROR_CODES.methodNotFound);
+  assert.equal(unknown.error?.data?.code, 'method_not_found');
 });
 
 test('HUMAN TEXT NEVER REACHES THE PROTOCOL STREAM', async () => {
@@ -179,4 +186,111 @@ test('HUMAN TEXT NEVER REACHES THE PROTOCOL STREAM', async () => {
   }
   // And the unanswerable line was reported rather than dropped in silence.
   assert.match(result.err, /not JSON/u);
+});
+
+test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () => {
+  // This is the case the spawned subset exists for. `MILESTONES.md` reserves
+  // spawning for where the process boundary is itself the thing under test,
+  // and a client handshake is exactly that: what a client does is spawn this
+  // file and speak to its pipes. Every part of the exchange below was
+  // unreachable before — the surface answered `initialize` with
+  // `method_not_found`, so a client hung up on its first message and the ten
+  // tools behind it were never reached.
+  //
+  // The single change that breaks this test: deleting the `initialize` branch
+  // in `handleRequest`. Deleting the `jsonrpc` key from the envelope breaks
+  // it too, and so does answering the notification.
+  const result = await spawnSession([
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'a-client', version: '1.0.0' },
+      },
+    }),
+    JSON.stringify({ jsonrpc: JSONRPC_VERSION, method: 'notifications/initialized' }),
+    JSON.stringify({ jsonrpc: JSONRPC_VERSION, id: 2, method: 'tools/list' }),
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'browser_status', arguments: { lease_key: 'a-key' } },
+    }),
+  ]);
+
+  assert.equal(result.code, 0, `the session did not exit cleanly: ${result.err}`);
+
+  const lines = result.out.trim().split('\n');
+  // **Four messages in, three out.** The notification is the one that draws
+  // no response, and the count is what proves it — a surface that replied
+  // would put four lines here and break a strict client.
+  assert.equal(lines.length, 3, `expected three responses, got: ${result.out}`);
+
+  const [initialize, listed, called] = lines.map(
+    (line) => JSON.parse(line) as Record<string, unknown>,
+  );
+
+  // Every response carries the envelope, over a real pipe.
+  for (const response of [initialize, listed, called]) {
+    assert.equal(response?.['jsonrpc'], JSONRPC_VERSION, 'a real response carried no envelope');
+  }
+  assert.deepEqual(
+    [initialize?.['id'], listed?.['id'], called?.['id']],
+    [1, 2, 3],
+    'responses did not correlate with their requests',
+  );
+
+  // The handshake itself.
+  const handshake = initialize?.['result'] as {
+    protocolVersion: string;
+    capabilities: { tools?: unknown };
+    serverInfo: { name: string; version: string };
+  };
+  assert.equal(handshake.protocolVersion, PROTOCOL_VERSION);
+  assert.ok(handshake.capabilities.tools !== undefined, 'the server announced no tools capability');
+  assert.equal(handshake.serverInfo.name, 'browser-broker');
+  assert.equal(typeof handshake.serverInfo.version, 'string');
+
+  // `tools/list` after the handshake: the ten, reached the way a client
+  // reaches them.
+  const tools = (listed?.['result'] as { tools: { name: string }[] }).tools;
+  assert.equal(tools.length, 10);
+  assert.ok(
+    tools.some((tool) => tool.name === 'browser_status'),
+    'the tool the next message calls was not listed',
+  );
+
+  // And a real call went all the way to the arbitration core. The key names
+  // no lease in this spawn's fresh store, so a rule refuses it — and the rule
+  // NAME is the assertion, because only the core can produce `key.valid`. A
+  // shim serving a stand-in would refuse by some other rule.
+  const call = called?.['result'] as { outcome: string; rule: string };
+  assert.equal(called?.['error'], undefined, 'a refusal came back as a protocol error');
+  assert.equal(call.outcome, 'refused');
+  assert.equal(call.rule, 'key.valid', 'the handshaken session did not reach the arbitration core');
+});
+
+test('a client asking for an UNKNOWN protocol version is negotiated with, not dropped', async () => {
+  // Version skew is the thing most likely to happen in the field, and a
+  // handshake that crashed on it would fail on the next revision of the
+  // specification rather than on anything wrong with the client.
+  const result = await spawnSession([
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '3999-01-01', capabilities: {} },
+    }),
+  ]);
+
+  assert.equal(result.code, 0, result.err);
+  const response = JSON.parse(result.out.trim()) as {
+    error?: { code: number };
+    result?: { protocolVersion: string };
+  };
+  assert.equal(response.error, undefined, 'an unfamiliar version was refused rather than met');
+  assert.equal(response.result?.protocolVersion, PROTOCOL_VERSION);
 });
