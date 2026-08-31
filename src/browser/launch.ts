@@ -47,6 +47,52 @@ import type { BrowserMode, DiscoveryRecord } from './driver.ts';
  * exists, answers, and identifies itself as the browser this launch produced.
  * Anything else is a failure, including a launch whose command exited
  * zero.
+ *
+ * ── What happens to the process when the assertion fails ────────────────
+ *
+ * **Measured, 1,637 browser processes across 164 launches, and a frozen
+ * machine.** A detached spawn whose endpoint never answered was thrown away
+ * without being killed, on every failure path, and each one stayed alive: the
+ * table at the top of this file records that a detached browser survives the
+ * death of the process that spawned it by design, which is exactly why it
+ * cannot be left behind by accident.
+ *
+ * The rule that made this easy to miss is a real one and it is kept:
+ * **browsers are adopted, not owned, and a browser outlives every process
+ * that touched it.** There is deliberately no close-browser operation on the
+ * seam (`browser_scoped.never`, §7.3).
+ *
+ * That rule governs a browser that was **successfully launched and adopted**.
+ * A browser whose endpoint never answered **was adopted by nobody**: nothing
+ * holds a reference to it, no row names it, and the lazy global sweep
+ * reconciles claims and tabs rather than orphaned operating-system processes.
+ * It is unreachable by every reclamation path this design has, so if this
+ * function does not end it here, nothing ever will. Cleaning up a launch that
+ * failed is not owning a browser — there is no browser, only a process that
+ * never became one.
+ *
+ * ── The kill-condition table: which failure paths kill, and which must not ──
+ *
+ * | Failure path | Kills? | Why |
+ * |---|---|---|
+ * | **No process identifier assigned** (the spawn was refused synchronously) | **No** | There is no process. Nothing was started, so there is nothing to end and no identifier to aim at |
+ * | **Profile collision** — an endpoint answered and it is the *previous* record | **NEVER** | The process this call spawned **has already exited zero on its own** — that is what a collision *is*. The browser holding the profile belongs to **somebody else** and is quite possibly the signed-in one carrying the shared sign-in. Killing here destroys another caller's browser and the very thing the keeper tab exists to protect. This path is the reason the kill is aimed at a **specific identifier this call spawned** rather than at whatever is holding the profile |
+ * | **Spawn failure reported *during* the readiness loop** (the early-report race) | **Yes** | Same process, same reasoning — it just leaves the function from the race rather than from a `throw`. Called out separately because it is the **fast** path: a machine whose browser binary is broken takes this one every time, so a version that only cleaned up the two written `throw`s would still leak on the most common failure |
+ * | **Spawn failure reported after the readiness loop** | **Yes** | An identifier was assigned before the failure arrived, so a process may exist. The failure says the browser could not start, so whatever is under that identifier never became an adoptable browser |
+ * | **Readiness timeout** — spawned, but no endpoint of its own ever answered | **Yes** | This is the path that produced the incident. The process is alive and is the one this call started, and it is reachable by nothing else |
+ *
+ * The kill is therefore **narrow by construction**: only a process that (a)
+ * this call spawned, and (b) never became adoptable. It is aimed at the
+ * identifier the spawn returned and never at a profile directory, a browser
+ * that answered, or an image name.
+ *
+ * And it is **best effort**, because it is cleanup on a path that is already
+ * reporting a refusal. An identifier that has already exited, one the
+ * operating system will not let this process signal, and one that was never
+ * assigned are all ordinary states here, and none of them is worse than the
+ * refusal already being raised. So a failure to kill is swallowed and the
+ * original refusal travels unchanged: turning a clean, explanatory refusal
+ * into a crash from its own cleanup would be a worse bug than the leak.
  */
 
 /** The refusals this module raises, spelled as `SCHEMA.md` §7.2 spells them. */
@@ -261,6 +307,62 @@ export interface LaunchOptions {
   /** How often to re-check. */
   readonly pollIntervalMs?: number;
   readonly fetchImpl?: typeof fetch;
+  /**
+   * How the browser is started. Injected so the failure paths can be driven
+   * without a real browser: the leak this guards against is a *process left
+   * alive*, and a test that spawned a real one to prove it gets killed would
+   * be a test that leaks a browser whenever it fails.
+   */
+  readonly spawnImpl?: typeof spawn;
+  /**
+   * How a process this call spawned is ended. Injected for the same reason,
+   * and separately from the spawn so a test can assert on **which identifier**
+   * was signalled — the whole correctness of this fix is that it aims at the
+   * process this call started and at nothing else.
+   */
+  readonly killImpl?: (pid: number) => void;
+}
+
+/**
+ * End a process this launch spawned that never became an adoptable browser.
+ *
+ * **Best effort, and silent about its own failures on purpose.** Every caller
+ * is on a path that is already raising a refusal, and every plausible failure
+ * here — the process exited on its own between the check and the signal, the
+ * operating system refuses this process permission to signal it, no
+ * identifier was ever assigned — means either *there is nothing left to kill*
+ * or *this process cannot do anything about it*. Neither is news the caller
+ * can act on, and neither is worth losing the refusal over: it explains what
+ * actually went wrong, and a crash raised by the cleanup would not.
+ *
+ * See the kill-condition table in the module header for **which** paths call
+ * this and, more importantly, which one must not.
+ *
+ * **The identifier is a `number`, not an optional one, deliberately.** The
+ * no-identifier case is refused before the readiness loop begins, so every
+ * caller here has already been narrowed to a definite identifier. Accepting
+ * an optional one and returning early on `undefined` would look more careful
+ * and would in fact be *less* safe: the branch is unreachable, so nothing can
+ * test it, and an unreachable branch is exactly the shape that quietly starts
+ * swallowing a real identifier when a later caller is added. The type is what
+ * enforces the table's first row instead.
+ */
+function killSpawnedProcess(pid: number, killImpl: (pid: number) => void): void {
+  try {
+    killImpl(pid);
+  } catch {
+    // Already gone, or not ours to signal. Both are fine here: the refusal
+    // this cleanup runs alongside is the thing the caller needs, and it must
+    // reach them unchanged.
+  }
+}
+
+/** Signal a process by identifier, and only by identifier. */
+function defaultKill(pid: number): void {
+  // By process identifier, never by image name: this must end the one process
+  // this call spawned, and a name matches every browser on the machine
+  // including other callers' adopted ones.
+  process.kill(pid);
 }
 
 /**
@@ -292,6 +394,8 @@ export async function coldStartDetached(
 
   const timeoutMs = options.readinessTimeoutMs ?? READINESS_TIMEOUT_MS;
   const pollMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
+  const spawnImpl = options.spawnImpl ?? spawn;
+  const killImpl = options.killImpl ?? defaultKill;
   const args = launchArguments(request);
 
   // The profile directory has to exist for the browser to write its record
@@ -304,7 +408,7 @@ export async function coldStartDetached(
   // this profile — which is the collision case below.
   const previous = readDiscoveryRecord(request.profileDirectory);
 
-  const child = spawn(request.executablePath, [...args], {
+  const child = spawnImpl(request.executablePath, [...args], {
     // The whole point of this module. See the header: the library's launcher
     // owns what it starts, and this must not be owned.
     detached: true,
@@ -387,6 +491,29 @@ export async function coldStartDetached(
           // the browser already holding the profile and exited zero. Serving
           // this would mean reporting a launch that did not happen and
           // recording a process identifier that is not the browser's.
+          //
+          // ── AND NOTHING IS KILLED HERE. THIS IS DELIBERATE ──────────────
+          //
+          // The other two failure paths below end the process this call
+          // spawned, because a browser that never answered was adopted by
+          // nobody and nothing else will ever reap it. **This path is the
+          // exception, and it is the one that matters most to get right.**
+          //
+          // The process this call spawned has *already exited zero on its
+          // own* — handing its address to the browser already holding the
+          // profile is precisely what makes this a collision. So there is
+          // nothing of ours left to end. What *is* alive is the browser
+          // behind the endpoint that just answered, and that browser is
+          // **somebody else's**: another caller's adopted browser, quite
+          // possibly the signed-in one whose keeper tab exists to hold the
+          // shared sign-in open. Killing it would destroy another caller's
+          // work and the sign-in with it, in order to clean up a process
+          // that is not running.
+          //
+          // This is why the cleanup below aims at the identifier the spawn
+          // returned rather than at whatever holds the profile directory: an
+          // implementation that killed "the browser on this profile" would
+          // read as symmetrical and would do exactly this damage.
           throw new StartupRefusal(
             LAUNCH_RULES.explicitProfileDir,
             'A browser is already running against this profile directory. The launch exited without opening its own endpoint and without reporting an error, which is what a profile collision looks like: the second process hands its address to the first and exits successfully. Attach to the running browser instead of starting a second one.',
@@ -402,10 +529,29 @@ export async function coldStartDetached(
     // reported the moment it says so rather than after the readiness timeout
     // has elapsed. Waiting out the full timeout would turn *no browser
     // installed* — an instant, knowable answer — into the slowest path here.
-    await Promise.race([new Promise((resolve) => setTimeout(resolve, pollMs)), failed]);
+    //
+    // The rejection is caught **only** to run the cleanup, and is then
+    // re-thrown exactly as it was. This is a fourth way out of this function
+    // and it is easy to miss when reading for `throw`, because the refusal is
+    // constructed far above and escapes from here without one: a spawn
+    // failure arriving *during* the loop leaves by this line rather than by
+    // the check below it. Without this, the early-report optimisation would
+    // be the one path that still leaked — and it is the fast path, so it is
+    // the one a machine with a broken browser binary would take every time.
+    try {
+      await Promise.race([new Promise((resolve) => setTimeout(resolve, pollMs)), failed]);
+    } catch (error) {
+      killSpawnedProcess(pid, killImpl);
+      throw error;
+    }
   }
 
   if (spawnFailure !== undefined) {
+    // An identifier was assigned before the failure arrived — that is the
+    // measured shape of an asynchronous spawn failure — so a process may
+    // exist under it, and whatever it is, it never became a browser anything
+    // could adopt. Best effort, so the refusal below is what the caller sees.
+    killSpawnedProcess(pid, killImpl);
     throw new StartupRefusal(
       LAUNCH_RULES.detached,
       `The browser could not be started: ${spawnFailure.message}. Nothing was launched, so there is nothing to attach to.`,
@@ -413,6 +559,15 @@ export async function coldStartDetached(
     );
   }
 
+  // ── The path that produced the incident ────────────────────────────────
+  //
+  // Spawned, alive, and no endpoint of its own ever answered. Nothing holds a
+  // reference to this process, no row names it, and the sweep that reclaims
+  // abandoned work reconciles claims and tabs rather than orphaned processes
+  // — so this function is the only thing that will ever end it. Left alone it
+  // accumulates one browser per failed launch, which is how 164 launches
+  // became 1,637 processes and a machine that stopped responding.
+  killSpawnedProcess(pid, killImpl);
   throw new StartupRefusal(
     LAUNCH_RULES.explicitProfileDir,
     `The browser was spawned but no debugging endpoint of its own ever answered (${lastDetail}). A launch is never inferred from the command exiting: a browser started against a profile directory already in use exits zero, opens no endpoint, and reports nothing.`,
