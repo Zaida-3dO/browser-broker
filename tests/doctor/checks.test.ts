@@ -326,12 +326,28 @@ describe('the tab budget', () => {
   });
 });
 
-describe('the checks that have nothing to check yet', () => {
-  it('says the automation tool is unevaluable rather than inventing a pass', () => {
+describe('the automation-tool check', () => {
+  // `present` follows the same `boolean | undefined` convention as
+  // `checkKeeperTab`'s `present` argument: `undefined` and `false` are
+  // different answers, not two spellings of the same one.
+
+  it('says the check is unevaluable when nobody supplied a probe, rather than inventing a pass', () => {
     // A check that always passes is worse than one saying it has nothing to
     // check: the first is a no-op with a green tick beside it.
-    const check = checkAutomation({ present: false });
+    const check = checkAutomation({ present: undefined });
     assert.equal(check.status, 'unknown');
+  });
+
+  it('FAILS when a probe actually looked and found nothing — this is what makes exit code 11 reachable', () => {
+    // Breaks if `present: false` is folded back into the `unknown` branch:
+    // a probe that genuinely could not find the automation tool would then
+    // report the same benign `[--]` as a probe never having been asked, and
+    // exit code 11 would stay unreachable exactly as it was before this was
+    // wired in.
+    const check = checkAutomation({ present: false, detail: 'no browser binary at that path' });
+    assert.equal(check.status, 'failed');
+    assert.match(check.detail, /no browser binary at that path/);
+    assert.ok(check.remedy, 'a failing check must say what to do about it');
   });
 
   it('passes once an automation tool is reported present', () => {
@@ -339,7 +355,9 @@ describe('the checks that have nothing to check yet', () => {
     assert.equal(check.status, 'ok');
     assert.match(check.detail, /1\.2\.3/);
   });
+});
 
+describe('the checks that have nothing to check yet', () => {
   it('says the capture surface is unevaluable rather than inventing a pass', () => {
     assert.equal(checkCaptureSurface(undefined).status, 'unknown');
   });

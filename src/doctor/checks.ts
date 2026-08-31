@@ -295,20 +295,27 @@ export function checkSchemaVersion(found: number | null): GroupedCheck {
 /**
  * That the automation tool is present, and what version it is.
  *
- * **This build has no automation tool**, and this check says so rather than
- * guessing. The row that brings the real driver is the row that fills this
- * in, and the shape it fills in is here so the report has an entry for it
- * from the first version rather than growing a section later.
+ * `present` follows the same `boolean | undefined` convention as
+ * {@link checkKeeperTab}'s `present` argument: **`undefined` and `false` are
+ * different answers, not two spellings of the same one.**
+ *
+ * - `undefined` — nobody asked. No probe was supplied, so there is nothing
+ *   to report and this stays `unknown` (`[--]`). This is the state a caller
+ *   is in before it wires a probe, and it must not read as a failure.
+ * - `false` — asked, and the answer is no. Something actually looked for the
+ *   automation tool and did not find it. That is a real, actionable failure
+ *   and reports `failed`, which is what makes doctor exit code 11 reachable.
+ * - `true` — asked, found. Reports `ok`.
  */
 export interface AutomationProbe {
   /** Whether an automation tool is available to this process. */
-  readonly present: boolean;
+  readonly present: boolean | undefined;
   readonly version?: string;
   readonly detail?: string;
 }
 
 export function checkAutomation(probe: AutomationProbe): GroupedCheck {
-  if (!probe.present) {
+  if (probe.present === undefined) {
     return {
       group: 'automation',
       id: 'automation.present',
@@ -316,7 +323,18 @@ export function checkAutomation(probe: AutomationProbe): GroupedCheck {
       status: 'unknown',
       detail:
         probe.detail ??
-        'This build has no automation tool wired in, so there is nothing to report a version for.',
+        'No automation probe was supplied, so there is nothing to report a version for.',
+    };
+  }
+  if (!probe.present) {
+    return {
+      group: 'automation',
+      id: 'automation.present',
+      title: 'The automation tool is present',
+      status: 'failed',
+      detail: probe.detail ?? 'No automation tool could be found for this process to use.',
+      remedy:
+        'Install a browser binary for the automation driver this build depends on — see the README’s install section.',
     };
   }
   return {

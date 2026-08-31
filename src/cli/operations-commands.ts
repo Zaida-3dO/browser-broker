@@ -1,6 +1,8 @@
 import type { Database } from 'better-sqlite3';
 
+import { resolveAutomationProbe } from '../browser/automation-probe.ts';
 import { runDoctor, formatReport } from '../doctor/report.ts';
+import type { AutomationProbe } from '../doctor/checks.ts';
 import { EXIT } from './adapter.ts';
 import type { Environment } from '../config/environment.ts';
 import { readLedger, type LedgerQuery } from '../operations/ledger.ts';
@@ -170,6 +172,17 @@ export interface DoctorCommandOptions {
   readonly environment: Environment;
   readonly streams: CommandStreams;
   readonly json: boolean;
+  /**
+   * How the automation-tool check gets its answer.
+   *
+   * Optional and defaulted to {@link resolveAutomationProbe} — the real
+   * check, which asks `playwright-core` where its browser binary should be
+   * and confirms it is actually there. Injectable so a test can supply a
+   * stub reporting the tool absent without needing (or lacking) a real
+   * Chromium install, the same shape `configuredTabBudget` already uses for
+   * the budget check below.
+   */
+  readonly automationProbe?: AutomationProbe;
 }
 
 /**
@@ -187,8 +200,17 @@ export function runDoctorCommand(options: DoctorCommandOptions): number {
   // store held. The only callers ever passing it were the doctor's own tests,
   // which is why the gap survived — see `operations/status.ts` for the other
   // half of the same failure.
+  //
+  // **The automation probe is passed the same way, for the same reason.**
+  // `checkAutomation` compares what it is told against nothing on its own;
+  // with no probe supplied it reported `unknown` regardless of whether a
+  // browser binary was actually resolvable. The only callers ever passing
+  // one were the doctor's own tests — see `resolveAutomationProbe` in
+  // `browser/automation-probe.ts` for the real answer this call site now
+  // supplies by default.
   const report = runDoctor(options.environment, options.db, {
     configuredTabBudget: options.environment.tabBudget,
+    automation: options.automationProbe ?? resolveAutomationProbe(),
   });
 
   if (options.json) {

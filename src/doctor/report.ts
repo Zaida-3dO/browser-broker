@@ -110,7 +110,7 @@ export function runDoctor(
     checkStoreLocation(environment, probes.networkChecks),
     checkStorePresent(environment),
     checkSchemaVersion(version),
-    checkAutomation(probes.automation ?? { present: false }),
+    checkAutomation(probes.automation ?? { present: undefined }),
     checkRootWritable(
       'roots.artifacts_writable',
       'The artifact root is writable',

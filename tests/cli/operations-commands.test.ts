@@ -220,6 +220,120 @@ describe('broker doctor', () => {
       temp.remove();
     }
   });
+
+  it('evaluates the automation check with the real probe, so it answers rather than reading unknown always', async () => {
+    // Asserts that the check evaluates to a real answer — `ok` or `failed`,
+    // never `unknown` — rather than asserting which one: whether a browser
+    // binary is resolvable is a fact about the environment running this
+    // test, not a fact this suite should assume either way. What is under
+    // test is that `runDoctorCommand()` supplies a probe at all, so this
+    // check is never permanently unevaluated the way it was before the
+    // call site passed one through.
+    const temp = makeTempStore();
+    try {
+      const { streams, captured } = capture();
+      const code = await run(['doctor', '--json'], { streams, env: envFor(temp.directory) });
+
+      assert.ok(code === DOCTOR_EXIT.ok || code === DOCTOR_EXIT.automation);
+      const first = captured.out[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const automation = parsed.checks.find((check) => check.id === 'automation.present');
+      assert.ok(automation, 'the automation check is missing from the report');
+      assert.notEqual(
+        automation.status,
+        'unknown',
+        'the automation check must actually evaluate, not report unknown regardless of the environment',
+      );
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('EXITS 11 when the automation probe reports no browser resolvable — proving the code is reachable', async () => {
+    // Exit code 11 is documented in `docs/ROLLOUT.md` as one of the doctor's
+    // distinct failure codes. It was unreachable because nothing ever
+    // supplied a probe that could report `present: false`. This drives the
+    // real call site (`runDoctorCommand`), through the real `runDoctor` and
+    // `exitCodeFor`, with only the automation answer stubbed — so a revert
+    // of the wiring at the `runDoctorCommand` call site (passing no
+    // `automationProbe` through to `runDoctor`) makes this fail, and a
+    // revert of `checkAutomation`'s `present: false → failed` branch makes
+    // it fail too.
+    //
+    // Not run through `broker doctor`'s CLI dispatch, deliberately: that
+    // path always resolves the real `playwright-core` probe, and this
+    // machine has a browser — exercising the failure path there would mean
+    // uninstalling one, which the task rules out.
+    const { runDoctorCommand } = await import('../../src/cli/operations-commands.ts');
+    const { readEnvironment } = await import('../../src/config/environment.ts');
+    const temp = makeTempStore();
+    try {
+      const environment = readEnvironment({ env: envFor(temp.directory) });
+      const { streams, captured } = capture();
+
+      const code = runDoctorCommand({
+        db: undefined,
+        environment,
+        streams,
+        json: true,
+        automationProbe: {
+          present: false,
+          detail: 'no browser binary at the stubbed path',
+        },
+      });
+
+      assert.equal(code, DOCTOR_EXIT.automation);
+      assert.equal(
+        code,
+        11,
+        'exit code 11 is the contract docs/ROLLOUT.md documents for this group',
+      );
+
+      const first = captured.out[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const automation = parsed.checks.find((check) => check.id === 'automation.present');
+      assert.ok(automation);
+      assert.equal(automation.status, 'failed');
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('a check with nothing to examine still reports [--] and does not affect the exit code', async () => {
+    // The contract this fix must not disturb: an explicit `present:
+    // undefined` (nobody asked) stays `unknown` and does not fail the
+    // command, even though `present: false` (asked, and the answer is no)
+    // now does. Folding the two together in either direction would either
+    // make exit 11 unreachable again or turn a fresh, unevaluated install
+    // into a reported failure.
+    const { runDoctorCommand } = await import('../../src/cli/operations-commands.ts');
+    const { readEnvironment } = await import('../../src/config/environment.ts');
+    const temp = makeTempStore();
+    try {
+      const environment = readEnvironment({ env: envFor(temp.directory) });
+      const { streams, captured } = capture();
+
+      const code = runDoctorCommand({
+        db: undefined,
+        environment,
+        streams,
+        json: true,
+        automationProbe: { present: undefined },
+      });
+
+      assert.equal(code, DOCTOR_EXIT.ok);
+      const first = captured.out[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const automation = parsed.checks.find((check) => check.id === 'automation.present');
+      assert.ok(automation);
+      assert.equal(automation.status, 'unknown');
+    } finally {
+      temp.remove();
+    }
+  });
 });
 
 describe('broker events', () => {
