@@ -1872,9 +1872,19 @@ what a page does for somebody who has never been there. A cap per list keeps bot
 The memory concern that would have argued for a single total is answered by six being small enough
 either way.
 
-#### Rows are created on first launch, not from configuration at startup
+#### Rows are created on first use, not from configuration at startup
 
-**A browser's row appears when that browser is first launched.** Nothing seeds rows from the
+> **Corrected 2026-08-31, before this shipped.** This section first said *on first launch*, which is
+> where the reasoning below lands if you follow it from the configuration end. It is not what the
+> code does, and it could not be: `claims.browser_id` carries a foreign key to `browsers (id)`, so a
+> claim naming a configured-but-never-launched browser fails as a raw constraint violation — invisible
+> under the default pair, and appearing the moment anybody configures a third. **The row is therefore
+> created at claim time, inside the arbitration transaction that is already open.** The argument below
+> is unchanged and still the reason; only the moment moved, from launch to the first use of either
+> kind. Recorded rather than quietly amended, because a ruling that describes an unbuilt mechanism is
+> worse than one that was never written down: the next reader consults it and finds it confirms them.
+
+**A browser's row appears when that browser is first used.** Nothing seeds rows from the
 configured lists.
 
 Seeding from configuration on the way in was considered, and it is wrong here for a reason worth
@@ -1885,7 +1895,10 @@ which is a fact both processes can agree about because it happened.
 
 **This needs no new arbitration.** §1.2a already resolves the launch race through the same
 transaction that arbitrates claims — *"one row, one winner"* — so row creation is serialised by a
-mechanism that exists.
+mechanism that exists. Creating the row at claim time sits **inside that same transaction**, which is
+why moving the moment costs nothing: the insert inherits the serialisation rather than needing its
+own, and the configured lists are validated before it, so a name nobody configured never reaches the
+insert at all.
 
 #### The browser list is not given the tab budget's stored-agreement row
 
