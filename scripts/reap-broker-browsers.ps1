@@ -22,9 +22,9 @@
 #
 # WHAT IT MATCHES, AND WHY THAT IS THE FAMILY RATHER THAN A LIST
 # It used to match ONLY 'broker-browser-', the prefix the test fixture uses.
-# On 2026-08-31 that turned out to be one of THIRTY-FIVE 'broker-*' temp
-# prefixes this repository can create, and the leak actually on the machine --
-# 22 orphaned root windows over one morning -- was under
+# That turned out to be one of THIRTY-FIVE 'broker-*' temp prefixes this
+# repository can create, and the leak actually on the machine -- tens of
+# orphaned root windows over a single morning -- was under
 # 'broker-operations-check-', from the `check:operations` build gate. The
 # sweeper could not see it. Neither could any of the audits, which all counted
 # processes matching 'broker-browser-' and correctly reported zero.

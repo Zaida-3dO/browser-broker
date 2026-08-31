@@ -764,24 +764,23 @@ export async function runOperationsCheck() {
  *
  * ── Why this is not just a close ────────────────────────────────────────
  *
- * It used to be. It read `DevToolsActivePort` out of each profile, connected
- * over the protocol, called `close()`, and swallowed every failure with a
- * comment saying that a failure meant the browser was "already gone, never
- * there, or the package is not installed". **That inference is false**, and it
- * is the whole defect: a close that does not take is indistinguishable, from
- * inside that `catch`, from a browser that was never there. The check went
- * green either way.
+ * A close alone cannot report whether it worked. Connecting over the protocol
+ * and calling `close()` fails identically whether the browser shut down, was
+ * never there, or is wedged and still holding its profile open — and a
+ * teardown that treats all three as success is **indistinguishable from one
+ * that works**, because the check goes green in every case.
  *
- * Measured on 2026-08-31: one green run of this check left **one root browser
- * and twelve child processes** alive, holding a profile directory open, which
- * is why `removeWhenReleased` below then exhausted its retries and left the
- * directory behind. Over one morning that reached 22 orphaned root windows,
- * 205 processes and 60 stale directories, on Ope's own desktop.
+ * Measured: with only the close, one green run of this check leaves **one root
+ * browser and twelve child processes** alive, holding a profile directory
+ * open, which is why `removeWhenReleased` below then exhausts its retries and
+ * leaves the directory behind. Sustained over a morning of ordinary use that
+ * reaches tens of orphaned windows and hundreds of processes, on the machine
+ * of whoever is running the gate.
  *
- * The close is kept, because a browser asked to shut itself down flushes its
- * state and releases its handles properly. What is added is the part that
- * makes the close *verifiable*: the identifier of the process, a bounded wait
- * for it to actually exit, and a kill if it does not.
+ * So the close stays — a browser asked to shut itself down flushes its state
+ * and releases its handles properly — and it is made *verifiable*: the
+ * identifier of the process, a bounded wait for it to actually exit, and a
+ * kill if it does not.
  *
  * ── Where the identifier comes from ─────────────────────────────────────
  *
@@ -795,9 +794,9 @@ export async function runOperationsCheck() {
  * signalled and never ended.
  *
  * That scoping is the entire safety argument, and it is why this reads a
- * store rather than looking for browsers by image name. Ope runs his own
- * Chrome and a separate Playwright pool on this machine; a name match takes
- * those out too.
+ * store rather than looking for browsers by image name. The machine running
+ * this check also runs the developer's own browser and, often, other suites'
+ * browsers concurrently; a name match takes all of them out too.
  *
  * Every failure is still ignored. On the ordinary path — a machine with no
  * browser installed — nothing was launched, no row exists, and this does
@@ -822,9 +821,10 @@ async function endBrowsersStartedBy(temporaryRoot, databasePath) {
         const connection = await chromium.connectOverCDP(endpoint);
         await connection.close();
       } catch {
-        // Unreachable, already gone, or the package is not installed. This is
-        // no longer load-bearing: the wait below decides what happened, and
-        // the kill after it is what makes ignoring this safe.
+        // Unreachable, already gone, or the package is not installed. Safe to
+        // ignore precisely because it is not the deciding step: the wait below
+        // establishes what actually happened, and the kill after it acts on
+        // the answer.
       }
     }
 
@@ -925,7 +925,8 @@ function launchedBrowsers(databasePath) {
       .filter((row) => Number.isInteger(row.pid) && row.pid > 0)
       .map((row) => ({
         pid: row.pid,
-        endpoint: typeof row.endpoint === 'string' && row.endpoint !== '' ? row.endpoint : undefined,
+        endpoint:
+          typeof row.endpoint === 'string' && row.endpoint !== '' ? row.endpoint : undefined,
       }));
   } catch {
     // No database, no `browsers` table, or an unreadable file. On a machine

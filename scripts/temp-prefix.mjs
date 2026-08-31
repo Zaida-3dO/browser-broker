@@ -3,24 +3,23 @@
  *
  * ── Why this file exists ────────────────────────────────────────────────
  *
- * Three separate browser-leak incidents were found by three separate people,
- * and all three were the same mistake wearing a different name. Each time,
- * something created scratch directories under a prefix of its own invention;
- * each time, the sweeper and the audits looked for **one** prefix — the test
- * fixture's `broker-browser-` — and each time they truthfully reported zero
- * while the machine filled up with browsers.
+ * Three separate browser-leak incidents turned out to be the same mistake
+ * wearing a different name. Each time, something created scratch directories
+ * under a prefix of its own invention; each time, the sweeper and the audits
+ * looked for **one** prefix — the test fixture's `broker-browser-` — and each
+ * time they truthfully reported zero while the machine filled up with
+ * browsers.
  *
- * The third one, on 2026-08-31, was found by Ope on his own desktop: 22
- * orphaned root Chrome windows and 205 processes accumulated over one
- * morning, all under `broker-operations-check-`, a prefix belonging to a
- * build gate that every crew and every reviewer runs on every pass. Two leak
- * fixes had already merged and been reported as closing the problem. They had
+ * The third was found by hand, on a developer's own desktop, as tens of
+ * orphaned browser windows and hundreds of processes accumulated over a single
+ * morning under `broker-operations-check-` — a prefix belonging to a build
+ * gate that runs on every pass, including in continuous integration. Two leak
+ * fixes had already landed and been reported as closing the problem. They had
  * closed it, for the prefix they searched.
  *
  * A survey of the repository at that point found **thirty-five** distinct
- * `broker-*` prefixes. The lesson this project keeps re-learning is stated in
- * that incident: *a check that cannot see a thing is indistinguishable from
- * the thing not being there.*
+ * `broker-*` prefixes. The lesson: *a check that cannot see a thing is
+ * indistinguishable from the thing not being there.*
  *
  * ── Why a stem, and not a registry of the thirty-five ───────────────────
  *
@@ -50,8 +49,8 @@
 /**
  * The stem every temporary directory this repository creates begins with.
  *
- * `scripts/reap-broker-browsers.ps1` matches on exactly this, so a directory
- * that does not begin with it is swept by nothing.
+ * The sweeper matches on exactly this, so a directory that does not begin with
+ * it is swept by nothing.
  */
 export const TEMP_PREFIX_STEM = 'broker-';
 
