@@ -535,11 +535,10 @@ export async function coldStartDetached(
           // indefinitely (`HasExited=False`, `Responding=True`) long after
           // this process is gone — a collision is the losing process handing
           // its address over, not the losing process ending. It opened no
-          // endpoint of its own, no row
-          // names it and the lazy global sweep reconciles claims and tabs
-          // rather than orphaned operating-system processes — so, exactly as
-          // on the readiness-timeout path below, if this function does not
-          // end it here nothing ever will.
+          // endpoint of its own, no row names it, and the lazy global sweep
+          // reconciles claims and tabs rather than orphaned operating-system
+          // processes — so, exactly as on the readiness-timeout path below,
+          // if this function does not end it here nothing ever will.
           //
           // So it is ended, **by the identifier the spawn returned and by
           // nothing else**. That is not the forbidden act: an implementation
