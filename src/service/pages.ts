@@ -297,9 +297,17 @@ export function validateAction(raw: unknown): ActionRequest {
       // the seam for why that shape is the one that carries meaning.
       const viewport = input.viewport;
       if (typeof viewport !== 'object' || viewport === null) {
+        // **The syntax, not only the semantics.** The previous wording said
+        // what a resize needs and never how to write it, so a caller who had
+        // supplied a width and a height in pixels — in one of five reasonable
+        // spellings — read a message telling them to supply a width and a
+        // height in pixels. There was no way to converge by guessing, and the
+        // session that hit it stopped after five attempts. An example ends
+        // that in one call.
         throw new PageRefusal(
           'act.viewport_bounded',
-          "A resize sets the tab's viewport, so it needs a width and a height in pixels.",
+          "A resize sets the tab's viewport, so it needs a width and a height in pixels: " +
+            '`--width 390 --height 844`, or `--value 390x844`.',
           { action },
         );
       }
@@ -320,9 +328,13 @@ export function validateAction(raw: unknown): ActionRequest {
       // refusal.
       const preferences = input.preferences;
       if (typeof preferences !== 'object' || preferences === null) {
+        // The names were always here, and they were the good half of this
+        // message. What was missing is how to write one — see the resize
+        // refusal above for the same fix and the same reason.
         throw new PageRefusal(
           'act.emulate_preference_named',
-          `An emulate sets media preferences, so it names at least one of: ${MEDIA_PREFERENCE_NAMES.join(', ')}.`,
+          `An emulate sets media preferences, so it names at least one of: ${MEDIA_PREFERENCE_NAMES.join(', ')}. ` +
+            'For example `--colour-scheme dark`.',
           { action, preferences: MEDIA_PREFERENCE_NAMES },
         );
       }
@@ -348,7 +360,8 @@ export function validateAction(raw: unknown): ActionRequest {
       if (Object.keys(validated).length === 0) {
         throw new PageRefusal(
           'act.emulate_preference_named',
-          `An emulate names at least one preference to set: ${MEDIA_PREFERENCE_NAMES.join(', ')}.`,
+          `An emulate names at least one preference to set: ${MEDIA_PREFERENCE_NAMES.join(', ')}. ` +
+            'For example `--colour-scheme dark`.',
           { action, preferences: MEDIA_PREFERENCE_NAMES },
         );
       }
