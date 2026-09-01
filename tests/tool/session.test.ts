@@ -95,6 +95,59 @@ function refusalName(response: Record<string, unknown> | undefined): string {
   return String(name);
 }
 
+/**
+ * Read a `tools/call` result, **asserting the wire shape on the way past.**
+ *
+ * ── Why every test that reads a result goes through here ────────────────
+ *
+ * The missing content array shipped because nothing looked at the bytes. The
+ * conformance matrix compared *outcomes* at the service layer, so both routes
+ * agreed and both were asked the wrong question; the handshake test called
+ * `initialize` and `tools/list`, which were correct throughout. A caller got
+ * an empty result for every call for as long as that arrangement held.
+ *
+ * So the shape is checked here rather than in one dedicated test that the
+ * rest of the file routes around. Every assertion below about an outcome now
+ * also asserts that the outcome arrived somewhere a client can find it, and
+ * deleting `content` from `handleRequest` fails all of them at once instead of
+ * none of them.
+ *
+ * Returns the structured half, which is what the callers of this helper go on
+ * to make their own assertions against.
+ */
+function callResult(response: Record<string, unknown> | undefined): Record<string, unknown> {
+  assert.ok(response !== undefined, 'there was no response to read a result from');
+  assert.equal(response['jsonrpc'], JSONRPC_VERSION, 'a response went out with no envelope');
+  assert.equal(response['error'], undefined, 'a tool call came back as a protocol error');
+
+  const result = response['result'] as Record<string, unknown> | undefined;
+  assert.ok(result !== undefined, 'the response carried no result');
+
+  // **`content` is required by the specification and is what a client
+  // renders.** Its absence is invisible to any assertion about `outcome`,
+  // which is exactly how this shipped.
+  const content = result['content'];
+  assert.ok(Array.isArray(content), 'the result carried no content array');
+  assert.ok(content.length > 0, 'the content array was empty, so a client renders nothing');
+  for (const block of content as Record<string, unknown>[]) {
+    assert.equal(block['type'], 'text', 'a content block was not a text block');
+    assert.equal(typeof block['text'], 'string', 'a text block carried no text');
+    assert.ok(String(block['text']).length > 0, 'a text block was empty');
+  }
+
+  const structured = result['structuredContent'];
+  assert.ok(
+    structured !== null && typeof structured === 'object',
+    'the result carried no structured content, so the taxonomy is unreadable',
+  );
+  return structured as Record<string, unknown>;
+}
+
+/** Whether a `tools/call` result flagged itself as an error. */
+function callIsError(response: Record<string, unknown> | undefined): unknown {
+  return (response?.['result'] as Record<string, unknown> | undefined)?.['isError'];
+}
+
 test('tools/list returns the twelve tools, NAMED', () => {
   // Named rather than counted: `MILESTONES.md` records a hollow test that
   // "iterated a list rather than naming its entries, so deleting an entry
@@ -204,10 +257,29 @@ test('A REFUSAL IS A SUCCESSFUL RESPONSE CARRYING A REFUSAL, not a protocol erro
 
   assert.ok(response !== undefined);
   assert.equal(response['error'], undefined, 'a refusal was reported as a protocol error');
-  const result = response['result'] as Record<string, unknown>;
+  const result = callResult(response);
   assert.equal(result['outcome'], 'refused');
   assert.equal(result['code'], 'unknown_browser');
   assert.equal(result['rule'], 'claim.browser_known');
+
+  // **The taxonomy survives the move into `structuredContent`.** The three
+  // fields above are the ones a caller branches on, and they are still three
+  // fields rather than a sentence — flattening them into prose would leave
+  // every caller matching on English, which is the regression this asserts
+  // against.
+  //
+  // And the refusal is marked as an error *inside* a successful result, which
+  // is what the specification asks for: a model that cannot see a refusal
+  // cannot self-correct from one.
+  assert.equal(callIsError(response), true, 'a refusal was not flagged as an error');
+
+  // The sentence a person reads is the refusal itself, not a serialised
+  // object — the message is the part that says what to do next.
+  const rendered = (
+    (response['result'] as Record<string, unknown>)['content'] as { text: string }[]
+  )[0]?.text;
+  assert.match(String(rendered), /claim\.browser_known/u);
+  assert.match(String(rendered), /There are two browsers\./u);
 });
 
 test('an unknown METHOD is a protocol error — and it says what this surface does answer', async () => {
@@ -284,8 +356,9 @@ test('one unexpected failure does not end the session — the caller could not r
   assert.equal(refusalName(responses[0]), 'unexpected_failure');
   const first = responses[0]?.['error'] as Record<string, unknown>;
   assert.match(String(first['message']), /came apart/u);
-  // The second call — the one that gives capacity back — still went through.
-  const second = responses[1]?.['result'] as Record<string, unknown>;
+  // The second call — the one that gives capacity back — still went through,
+  // and came back in a shape a client can actually render.
+  const second = callResult(responses[1]);
   assert.equal(second['outcome'], 'accepted');
 });
 
@@ -352,20 +425,14 @@ test('THE LEASE KEY IS NEVER RETURNED — except by the grant that issues it', a
     service,
     callTool('browser_claim', { session_id: 's', browser: 'regular', purpose: 'a test lease' }),
   );
-  const grantValue = (granted?.['result'] as Record<string, unknown>)['value'] as Record<
-    string,
-    unknown
-  >;
+  const grantValue = callResult(granted)['value'] as Record<string, unknown>;
   assert.equal(grantValue['lease_key'], 'the-issued-key', 'the grant withheld the key it issued');
 
   const [status] = await serve(
     service,
     callTool('browser_status', { lease_key: 'the-issued-key' }),
   );
-  const statusValue = (status?.['result'] as Record<string, unknown>)['value'] as Record<
-    string,
-    unknown
-  >;
+  const statusValue = callResult(status)['value'] as Record<string, unknown>;
   assert.equal(statusValue['lease_key'], undefined, 'a non-grant response carried the lease key');
   assert.equal(statusValue['state'], 'active', 'stripping the key took the rest of the value too');
 });

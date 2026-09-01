@@ -149,16 +149,27 @@ test('a spawned session answers several messages in order, one line each', async
   // asserting only `outcome: refused` would pass either way — but it would
   // refuse it by a different rule, because it has no store to have looked in.
   const call = JSON.parse(lines[1] ?? '') as {
-    result?: { outcome: string; rule: string };
+    result?: {
+      content?: { type: string; text: string }[];
+      structuredContent?: { outcome: string; rule: string };
+      isError?: boolean;
+    };
     error?: unknown;
   };
   assert.equal(call.error, undefined, 'a refusal came back as a protocol error');
-  assert.equal(call.result?.outcome, 'refused');
+  assert.equal(call.result?.structuredContent?.outcome, 'refused');
   assert.equal(
-    call.result?.rule,
+    call.result?.structuredContent?.rule,
     'key.valid',
     'the spawned shim did not reach the arbitration core',
   );
+  // The refusal is renderable by a client, over a real pipe — the property
+  // whose absence made every call arrive empty.
+  assert.ok(
+    Array.isArray(call.result?.content) && call.result.content.length > 0,
+    'a refusal crossed a real process boundary with no content for a client to show',
+  );
+  assert.equal(call.result?.isError, true, 'a refusal was not flagged as an error');
 
   // The last one is an unknown method, which IS a protocol error — carrying
   // JSON-RPC's integer for the transport and this surface's own name beside
@@ -269,10 +280,168 @@ test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () 
   // no lease in this spawn's fresh store, so a rule refuses it — and the rule
   // NAME is the assertion, because only the core can produce `key.valid`. A
   // shim serving a stand-in would refuse by some other rule.
-  const call = called?.['result'] as { outcome: string; rule: string };
+  const call = called?.['result'] as {
+    content?: { type: string; text: string }[];
+    structuredContent?: { outcome: string; rule: string };
+    isError?: boolean;
+  };
   assert.equal(called?.['error'], undefined, 'a refusal came back as a protocol error');
-  assert.equal(call.outcome, 'refused');
-  assert.equal(call.rule, 'key.valid', 'the handshaken session did not reach the arbitration core');
+  assert.equal(call.structuredContent?.outcome, 'refused');
+  assert.equal(
+    call.structuredContent?.rule,
+    'key.valid',
+    'the handshaken session did not reach the arbitration core',
+  );
+});
+
+test('EVERY tools/call REPLY CARRIES CONTENT A CLIENT CAN RENDER — a success and a refusal, on the real wire', async () => {
+  // ── The case this file exists for, and the one it did not have ─────────
+  //
+  // Every `tools/call` used to answer with the bare domain object and no
+  // `content` array, so a conforming client rendered nothing. The operation
+  // still happened: a caller claimed leases it never saw the keys for, and
+  // therefore could not release. The service, the store and the lease
+  // lifecycle were all correct — only the reply was invisible.
+  //
+  // It survived because `initialize` and `tools/list` were right all along,
+  // so a handshake probe passed and the surface looked healthy. The tests
+  // that did call a tool read `result.outcome` directly, which is not a place
+  // any client looks.
+  //
+  // **So this asserts the bytes, over a real pipe, for both halves of the
+  // taxonomy.** A refusal alone would not do: the two answers are built by
+  // two different branches of `handleRequest`, and the bug was in both.
+  //
+  // The single change that breaks this test: deleting `content` from either
+  // branch's result. Deleting `structuredContent` breaks it too, and so does
+  // dropping `isError` from the refusal.
+  const result = await spawnSession([
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'a-client', version: '1.0.0' },
+      },
+    }),
+    JSON.stringify({ jsonrpc: JSONRPC_VERSION, method: 'notifications/initialized' }),
+    // A SUCCESS. `feedback` needs no lease and reaches no browser, so it is
+    // the one operation that genuinely succeeds against a fresh store in a
+    // spawned process — which is what makes the accepted branch reachable
+    // here at all.
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'browser_feedback',
+        arguments: {
+          rating: 5,
+          category: 'worked-well',
+          note: 'Asserting that an accepted tool call comes back with content a client can render.',
+          session_id: 'spawned-content-test',
+        },
+      },
+    }),
+    // A REFUSAL, from the arbitration core: this key names no lease in this
+    // spawn's fresh store.
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'browser_status', arguments: { lease_key: 'a-key' } },
+    }),
+  ]);
+
+  assert.equal(result.code, 0, `the session did not exit cleanly: ${result.err}`);
+
+  const lines = result.out.trim().split('\n');
+  assert.equal(lines.length, 3, `expected three responses, got: ${result.out}`);
+
+  const [, accepted, refused] = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  /**
+   * Assert the shape the specification requires, against what actually came
+   * off the pipe.
+   *
+   * Read out of the parsed bytes rather than from any helper the source
+   * shares, deliberately: a test that imported the server's own shaping
+   * function would agree with it however wrong it was.
+   */
+  const contentOf = (response: Record<string, unknown> | undefined, what: string): string => {
+    assert.ok(response !== undefined, `${what}: there was no response`);
+    assert.equal(response['error'], undefined, `${what}: came back as a protocol error`);
+    const payload = response['result'] as Record<string, unknown> | undefined;
+    assert.ok(payload !== undefined, `${what}: carried no result`);
+
+    const content = payload['content'];
+    assert.ok(
+      Array.isArray(content),
+      `${what}: carried NO CONTENT ARRAY — a client renders nothing`,
+    );
+    assert.ok(content.length > 0, `${what}: carried an empty content array`);
+
+    const blocks = content as Record<string, unknown>[];
+    for (const block of blocks) {
+      assert.equal(block['type'], 'text', `${what}: a content block was not a text block`);
+      assert.equal(typeof block['text'], 'string', `${what}: a text block carried no text`);
+      assert.ok(String(block['text']).length > 0, `${what}: a text block was empty`);
+    }
+    return blocks.map((block) => String(block['text'])).join('\n');
+  };
+
+  // ── The success ────────────────────────────────────────────────────────
+  const acceptedText = contentOf(accepted, 'an accepted call');
+  const acceptedStructured = (accepted?.['result'] as Record<string, unknown>)[
+    'structuredContent'
+  ] as Record<string, unknown> | undefined;
+  assert.ok(acceptedStructured !== undefined, 'an accepted call carried no structured content');
+  assert.equal(acceptedStructured['outcome'], 'accepted');
+  // Not flagged as an error, and the specification's default is false — so a
+  // success either omits it or says so.
+  assert.notEqual(
+    (accepted?.['result'] as Record<string, unknown>)['isError'],
+    true,
+    'a success was flagged as an error',
+  );
+  // The text half carries the same answer the structured half does, which is
+  // the backwards-compatibility convention the specification asks for.
+  assert.match(acceptedText, /accepted/u);
+
+  // ── The refusal ────────────────────────────────────────────────────────
+  const refusedText = contentOf(refused, 'a refusal');
+  const refusedStructured = (refused?.['result'] as Record<string, unknown>)[
+    'structuredContent'
+  ] as Record<string, unknown> | undefined;
+  assert.ok(refusedStructured !== undefined, 'a refusal carried no structured content');
+
+  // **The taxonomy is still four machine-readable fields.** This is the thing
+  // the fix was most at risk of destroying: rendering a refusal as prose and
+  // calling it done would satisfy `content` and leave every caller matching
+  // on English.
+  assert.equal(refusedStructured['outcome'], 'refused');
+  assert.equal(refusedStructured['code'], 'unrecognised_key');
+  assert.equal(
+    refusedStructured['rule'],
+    'key.valid',
+    'the spawned session did not reach the arbitration core',
+  );
+  assert.equal(typeof refusedStructured['message'], 'string');
+
+  // A refusal is an error the caller can see and act on — a successful
+  // JSON-RPC result carrying `isError`, never a protocol error.
+  assert.equal(refused?.['error'], undefined, 'a refusal came back as a protocol error');
+  assert.equal(refused?.['result'] !== undefined, true);
+  assert.equal(
+    (refused?.['result'] as Record<string, unknown>)['isError'],
+    true,
+    'a refusal was not flagged as an error, so a model cannot self-correct from it',
+  );
+
+  // And what a person reads is the sentence, not a serialised object.
+  assert.match(refusedText, /key\.valid/u);
 });
 
 test('a client asking for an UNKNOWN protocol version is negotiated with, not dropped', async () => {
