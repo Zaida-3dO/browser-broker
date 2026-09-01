@@ -51,9 +51,10 @@ import {
  * **Measured, and it is the failure this command exists to prevent.** A
  * second browser launched against a profile directory already in use does not
  * report a lock error: it **hands its address to the browser already holding
- * the profile and exits zero**, with nothing on the error stream and no
- * endpoint of its own. A launcher waiting on its own endpoint therefore waits
- * for something that will never appear.
+ * the profile**, with nothing on the error stream and no endpoint of its own.
+ * A launcher waiting on its own endpoint therefore waits for something that
+ * will never appear. (The losing process does not exit on its own either;
+ * `launch.ts` ends it by the identifier it spawned.)
  *
  * And the obvious guard does not work: the single-instance lock file a POSIX
  * system leaves in a profile directory **does not exist on Windows**, so a

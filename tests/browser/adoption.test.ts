@@ -56,7 +56,7 @@ test('a caller that finds nothing running wins the race and is told to launch', 
 // callers arriving at an empty machine at the same instant must produce ONE
 // launch, not two. A second launch is two browsers against one profile
 // directory, which was measured to fail silently — the second hands its
-// address to the first and exits zero.
+// address to the first, opening no endpoint of its own.
 //
 // The mutation this catches: not writing `starting` inside the transaction,
 // or reading the state without writing it. Either makes both callers win.

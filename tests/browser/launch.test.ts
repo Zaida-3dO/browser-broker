@@ -132,7 +132,7 @@ test('an additive extra argument is allowed through to the command line', () => 
 });
 
 // The mutation this catches: removing the bound on how long a cold start
-// waits for its own endpoint. The measured silent-collision case — exit zero,
+// waits for its own endpoint. The measured silent-collision case — no endpoint,
 // no endpoint, ever — hangs forever without one rather than reporting.
 test('a cold start has a bound on waiting for its own endpoint', () => {
   assert.ok(READINESS_TIMEOUT_MS > 0);

@@ -7,11 +7,7 @@ import { portFilePath, readDiscoveryRecord } from '../../src/browser/discovery.t
 import { browserIsRunning, modeFor, RealBrowserDriver } from '../../src/browser/real.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 import { browserAvailable, browserExecutablePath, skipReason } from '../helpers/browser.ts';
-import {
-  reapProcessesUsingProfile,
-  teardownBrowser,
-  temporaryProfileRoot,
-} from '../helpers/browser-fixture.ts';
+import { teardownBrowser, temporaryProfileRoot } from '../helpers/browser-fixture.ts';
 
 /**
  * The real driver: attaching, cold-starting, and refusing.
@@ -263,9 +259,11 @@ test(
 );
 
 // The measured silent-collision case: a second browser against a profile
-// already in use hands its address to the first and EXITS ZERO, opening no
-// endpoint of its own. A launcher that inferred success from the command
-// returning would report a browser it never started.
+// already in use hands its address to the first, opening NO ENDPOINT of its
+// own. A launcher that inferred success from the command returning would
+// report a browser it never started. The losing process does not exit on its
+// own — `launch.ts` ends it, and this test asserts the browser that was
+// already there is untouched by that.
 test(
   'a second cold start against a profile already in use is REFUSED, not reported as a launch',
   { skip: available ? false : skipReason() },
@@ -291,15 +289,12 @@ test(
       // And the browser that was already there is untouched.
       assert.ok(await browserIsRunning(profileDirectory));
     } finally {
-      // `launch.ts` deliberately never kills the losing spawn on this path —
-      // its whole model of a collision is that the second process "hands its
-      // address to the first and exits zero" on its own, so `coldStartDetached`
-      // throws with no PID for anything to reap. Measured here: on Windows
-      // that spawn does NOT exit on its own, and nothing else in the
-      // production sweep reconciles orphaned OS processes — only claims and
-      // tabs. See `reapProcessesUsingProfile` for why this is scoped to this
-      // test's own directory rather than a change to `launch.ts`'s kill rule.
-      reapProcessesUsingProfile(profileDirectory);
+      // No test-side sweep here, deliberately. The losing spawn does not
+      // exit on its own, and `launch.ts` ends it by the identifier it
+      // spawned — so reaping it belongs to the code under test, not to this
+      // fixture. A sweep here would also have to match by profile directory,
+      // which on this path is held by the browser that must NOT be touched.
+      // Measured: this test leaks nothing across repeated runs.
       await teardownBrowser(first, root);
     }
   },

@@ -31,10 +31,18 @@ import type { BrowserMode, DiscoveryRecord } from './driver.ts';
  *
  * **Measured, and worse than a bad error message.** A second browser started
  * against a profile directory already in use does **not** report a lock
- * error. It hands its address to the browser already holding the profile and
- * **exits zero**, with nothing on the error stream and no debugging endpoint
- * opened. A launcher waiting on its own endpoint therefore waits for
+ * error. It hands its address to the browser already holding the profile,
+ * with nothing on the error stream and **no debugging endpoint of its own
+ * ever opened**. A launcher waiting on its own endpoint therefore waits for
  * something that will never appear.
+ *
+ * **What it does NOT do is exit.** This file asserted for some time that the
+ * losing process "exits zero on its own", and that claim was false on the
+ * platform this runs on: measured on Windows, the losing `chrome.exe` stays
+ * alive indefinitely — `HasExited=False`, `Responding=True`, long after the
+ * process that spawned it has gone. See the kill-condition table below for
+ * what is done about it, and §13k for why the correction did not reverse the
+ * rule it was attached to.
  *
  * And the obvious cross-platform check does not work: the single-instance
  * lock file a POSIX system leaves in a profile directory **does not exist on
@@ -76,7 +84,7 @@ import type { BrowserMode, DiscoveryRecord } from './driver.ts';
  * | Failure path | Kills? | Why |
  * |---|---|---|
  * | **No process identifier assigned** (the spawn was refused synchronously) | **No** | There is no process. Nothing was started, so there is nothing to end and no identifier to aim at |
- * | **Profile collision** — an endpoint answered and it is the *previous* record | **NEVER** | The process this call spawned **has already exited zero on its own** — that is what a collision *is*. The browser holding the profile belongs to **somebody else** and is quite possibly the signed-in one carrying the shared sign-in. Killing here destroys another caller's browser and the very thing the keeper tab exists to protect. This path is the reason the kill is aimed at a **specific identifier this call spawned** rather than at whatever is holding the profile |
+ * | **Profile collision** — an endpoint answered and it is the *previous* record | **Yes — the spawned identifier, and NEVER what holds the profile** | Two different processes, and the distinction is the whole of this row. The browser **behind the answering endpoint** belongs to **somebody else** and is quite possibly the signed-in one carrying the shared sign-in: killing *that* destroys another caller's browser and the very thing the keeper tab exists to protect, so it is never done, on any path. But the process **this call spawned** is not that browser — it lost the race, opened no endpoint, was adopted by nobody, and (measured on Windows) **does not exit on its own**. It is reached only through the identifier the spawn returned, so ending it is the same narrow act as the rows below, not the forbidden one |
  * | **Spawn failure reported *during* the readiness loop** (the early-report race) | **Yes** | Same process, same reasoning — it just leaves the function from the race rather than from a `throw`. Called out separately because it is the **fast** path: a machine whose browser binary is broken takes this one every time, so a version that only cleaned up the two written `throw`s would still leak on the most common failure |
  * | **Spawn failure reported after the readiness loop** | **Yes** | An identifier was assigned before the failure arrived, so a process may exist. The failure says the browser could not start, so whatever is under that identifier never became an adoptable browser |
  * | **Readiness timeout** — spawned, but no endpoint of its own ever answered | **Yes** | This is the path that produced the incident. The process is alive and is the one this call started, and it is reachable by nothing else |
@@ -85,6 +93,23 @@ import type { BrowserMode, DiscoveryRecord } from './driver.ts';
  * this call spawned, and (b) never became adoptable. It is aimed at the
  * identifier the spawn returned and never at a profile directory, a browser
  * that answered, or an image name.
+ *
+ * **That construction is what makes the collision row safe, and it is the
+ * only thing that does.** "Kill the browser on this profile" and "kill the
+ * identifier this call spawned" read as near-synonyms on the collision path
+ * and are opposite acts: on that path the profile is held by somebody else's
+ * browser, so the first is the exact damage the keeper tab exists to prevent.
+ * Measured: with the losing identifier signalled, the browser behind the
+ * answering endpoint keeps serving `/json/version`. An implementation that
+ * matched by profile directory or by image name would pass the same test
+ * suite and do that damage in production.
+ *
+ * **The residual risk, named rather than left implicit:** an identifier can in
+ * principle be reused by the operating system between the spawn and the
+ * signal, in which case this signals an unrelated process. That risk is real,
+ * is identical on all four killing rows, and is not specific to the collision
+ * path — it is the price of holding an identifier at all, and it is bounded by
+ * the swallow below.
  *
  * And it is **best effort**, because it is cleanup on a path that is already
  * reporting a refusal. An identifier that has already exited, one the
@@ -373,7 +398,7 @@ function defaultKill(pid: number): void {
  * is recorded as genuinely open. This number is the narrower one this row
  * cannot ship without: the process this call itself spawned either produces
  * an endpoint or it did not start, and without a bound the silent-collision
- * case — exit zero, no endpoint, ever — hangs forever rather than reporting.
+ * case — no endpoint, ever — hangs forever rather than reporting.
  */
 export const READINESS_TIMEOUT_MS = 30_000;
 export const POLL_INTERVAL_MS = 100;
@@ -488,35 +513,44 @@ export async function coldStartDetached(
           // is not simply "an endpoint answered, so we are done": the record
           // is the one that was already there, belonging to a browser this
           // call did not start. The spawned process handed its address to
-          // the browser already holding the profile and exited zero. Serving
-          // this would mean reporting a launch that did not happen and
-          // recording a process identifier that is not the browser's.
+          // the browser already holding the profile. Serving this would mean
+          // reporting a launch that did not happen and recording a process
+          // identifier that is not the browser's.
           //
-          // ── AND NOTHING IS KILLED HERE. THIS IS DELIBERATE ──────────────
+          // ── TWO PROCESSES HERE, AND ONLY ONE OF THEM MAY BE ENDED ───────
           //
-          // The other two failure paths below end the process this call
-          // spawned, because a browser that never answered was adopted by
-          // nobody and nothing else will ever reap it. **This path is the
-          // exception, and it is the one that matters most to get right.**
+          // **This path is the one that matters most to get right**, because
+          // the two processes involved are easy to conflate and the wrong
+          // one is somebody else's browser.
           //
-          // The process this call spawned has *already exited zero on its
-          // own* — handing its address to the browser already holding the
-          // profile is precisely what makes this a collision. So there is
-          // nothing of ours left to end. What *is* alive is the browser
-          // behind the endpoint that just answered, and that browser is
-          // **somebody else's**: another caller's adopted browser, quite
-          // possibly the signed-in one whose keeper tab exists to hold the
-          // shared sign-in open. Killing it would destroy another caller's
-          // work and the sign-in with it, in order to clean up a process
-          // that is not running.
+          // What is alive and **must never be touched** is the browser behind
+          // the endpoint that just answered: another caller's adopted
+          // browser, quite possibly the signed-in one whose keeper tab holds
+          // the shared sign-in open. Nothing on any path in this file signals
+          // it. It is reached only through the discovery record, and the
+          // record is read here, never acted on destructively.
           //
-          // This is why the cleanup below aims at the identifier the spawn
-          // returned rather than at whatever holds the profile directory: an
-          // implementation that killed "the browser on this profile" would
-          // read as symmetrical and would do exactly this damage.
+          // What is *also* alive is **the process this call spawned**. It
+          // does not exit on its own: measured on Windows it stays alive
+          // indefinitely (`HasExited=False`, `Responding=True`) long after
+          // this process is gone — a collision is the losing process handing
+          // its address over, not the losing process ending. It opened no
+          // endpoint of its own, no row
+          // names it and the lazy global sweep reconciles claims and tabs
+          // rather than orphaned operating-system processes — so, exactly as
+          // on the readiness-timeout path below, if this function does not
+          // end it here nothing ever will.
+          //
+          // So it is ended, **by the identifier the spawn returned and by
+          // nothing else**. That is not the forbidden act: an implementation
+          // that killed "the browser on this profile" would read as
+          // symmetrical and would destroy the sign-in. Measured: with this
+          // identifier signalled, the browser behind the answering endpoint
+          // keeps serving. See §13k.
+          killSpawnedProcess(pid, killImpl);
           throw new StartupRefusal(
             LAUNCH_RULES.explicitProfileDir,
-            'A browser is already running against this profile directory. The launch exited without opening its own endpoint and without reporting an error, which is what a profile collision looks like: the second process hands its address to the first and exits successfully. Attach to the running browser instead of starting a second one.',
+            'A browser is already running against this profile directory. The launch opened no endpoint of its own and reported no error, which is what a profile collision looks like: the second process hands its address to the first. That losing process has been ended; the browser already holding the profile was left untouched. Attach to the running browser instead of starting a second one.',
           );
         }
         return { pid, record: outcome.record };
@@ -570,6 +604,6 @@ export async function coldStartDetached(
   killSpawnedProcess(pid, killImpl);
   throw new StartupRefusal(
     LAUNCH_RULES.explicitProfileDir,
-    `The browser was spawned but no debugging endpoint of its own ever answered (${lastDetail}). A launch is never inferred from the command exiting: a browser started against a profile directory already in use exits zero, opens no endpoint, and reports nothing.`,
+    `The browser was spawned but no debugging endpoint of its own ever answered (${lastDetail}). A launch is never inferred from the command exiting: a browser started against a profile directory already in use opens no endpoint and reports nothing, whether or not its process is still alive.`,
   );
 }
