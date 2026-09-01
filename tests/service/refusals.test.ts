@@ -83,8 +83,14 @@ test('every code names a rule, a summary and a retry answer', () => {
   // shipped a check that iterated a list rather than naming its entries, so
   // deleting an entry stayed green. The count is asserted first, so removing
   // a code fails here even though the loop below would happily skip it.
-  assert.equal(REFUSAL_CODES.length, 12, 'a refusal code was added or removed without a test');
+  assert.equal(REFUSAL_CODES.length, 13, 'a refusal code was added or removed without a test');
   assert.deepEqual([...REFUSAL_CODES].sort(), [
+    // Added for the one disagreement `INSERT OR IGNORE` cannot itself detect
+    // (`DECISIONS.md` §13i): two processes on one machine may configure the
+    // same name under different kinds, and the insert is a no-op once
+    // either one's row exists. Checked by re-reading the row inside the same
+    // transaction, right after the insert.
+    'browser_kind_mismatch',
     'browser_unavailable',
     // Added with the sign-in path. It shares `browser.serving` with the code
     // above and differs on `retryable`, which is the field a caller acts on:

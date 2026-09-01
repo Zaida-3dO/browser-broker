@@ -161,6 +161,16 @@ test('a set-but-empty list is refused rather than falling back to the default', 
   assert.match(refusal.message, /BROKER_REGULAR_BROWSERS/);
 });
 
+test('a name longer than 32 characters is refused, naming the entry', () => {
+  // The name is also a profile DIRECTORY name (§ above), so an unbounded
+  // name is an unbounded path component. 33 characters is the boundary in
+  // the refusing direction — one past the cap.
+  const tooLong = 'a'.repeat(33);
+  const refusal = refusalFrom({ BROKER_REGULAR_BROWSERS: tooLong });
+  assert.match(refusal.message, new RegExp(tooLong));
+  assert.match(refusal.message, /32/);
+});
+
 test('a name that is not a usable word is refused, naming it', () => {
   // The name is a store key, a profile DIRECTORY name and the word a caller
   // types, so it has to be legal in all three. Refusing here, once, is the

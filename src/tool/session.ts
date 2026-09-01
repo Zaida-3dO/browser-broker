@@ -276,10 +276,14 @@ export async function serveSession(
     }
 
     if (decoded.kind === 'malformed') {
-      // A malformed line with no id has nobody to answer, so it is reported
-      // on the log stream rather than dropped in silence — a surface that
-      // ignored what it could not parse would leave a caller waiting forever
-      // for a response it was never going to get.
+      // `decoded.id === undefined` means the id KEY itself was absent — a
+      // notification-shaped line this surface could not otherwise read —
+      // so there is nobody to answer, and it is reported on the log stream
+      // rather than dropped in silence. `decoded.id === null` is different:
+      // the key was present but unusable (not a number or a string), which
+      // is a request with an id this surface cannot echo back — answered
+      // below with `id: null`, JSON-RPC's own way of saying so, rather than
+      // silently read as the notification it is not.
       if (decoded.id === undefined) {
         options.streams.log?.(`ignored a message that could not be answered: ${decoded.why}`);
         continue;

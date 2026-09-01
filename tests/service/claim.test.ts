@@ -218,6 +218,47 @@ test('an unknown browser is refused outright, and nothing is written', async () 
   });
 });
 
+test('a browser row of the wrong kind is refused by name, not silently adopted', async () => {
+  // `DECISIONS.md` §13i: two processes on one machine may hold different
+  // configurations for the same name. `INSERT OR IGNORE` at claim time is a
+  // no-op once a row with the name exists — whatever kind it was created
+  // with — which is what makes this the one disagreement it cannot itself
+  // detect. Simulated here as another process's row already on disk: this
+  // fixture configures `shared` as `regular` (the default list), and a row
+  // with the same name is pre-seeded as `private`, standing in for the
+  // other process that created it.
+  await withBroker(
+    async ({ broker, store, readCommitted }) => {
+      store.db
+        .prepare("INSERT INTO browsers (id, kind, state) VALUES ('shared', 'private', 'stopped')")
+        .run();
+
+      await assert.rejects(
+        () => broker.claim(claimInput({ browser: 'shared' })),
+        (error: unknown) => {
+          assert.ok(error instanceof CallRefusal);
+          assert.equal(error.code, 'browser_kind_mismatch');
+          assert.equal(error.rule, 'claim.browser_kind_agrees');
+          assert.equal(error.retryable, false);
+          assert.match(error.message, /shared/);
+          assert.match(error.message, /private/);
+          assert.match(error.message, /regular/);
+          return true;
+        },
+      );
+
+      // The side-effect assertion: the row keeps the kind it was created
+      // with, and no lease or tab was written for the mismatched claim.
+      const rows = readCommitted<{ kind: string }>("SELECT kind FROM browsers WHERE id = 'shared'");
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]?.kind, 'private', 'the mismatched claim silently adopted the row');
+      assert.equal(readCommitted('SELECT id FROM claims').length, 0);
+      assert.equal(readCommitted('SELECT id FROM tabs').length, 0);
+    },
+    { regularBrowsers: ['shared'] },
+  );
+});
+
 test('a refused request still leaves a ledger row, and it names the session', async () => {
   // §1.6: a refused request never becomes a lease, so without the
   // denormalised session column every refusal on the busiest rule is

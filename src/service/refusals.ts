@@ -116,6 +116,27 @@ export const REFUSALS = {
   },
 
   /**
+   * §7.1 `claim.browser_kind_agrees`. `DECISIONS.md` §13i names two
+   * processes on one machine holding **different configurations** as a real
+   * scenario, and rules that "every disagreement is a nameable refusal
+   * rather than a silently broken invariant" — this is that rule for the one
+   * disagreement `INSERT OR IGNORE` cannot detect on its own: the insert is a
+   * no-op when a row already exists, whatever kind it was created with, so a
+   * name configured `regular` on this process and `private` on the one that
+   * created the row would otherwise be handed a browser of the wrong kind in
+   * silence. Checked immediately after the insert, inside the same
+   * transaction, against the row as it now stands.
+   *
+   * Not retryable: the row's kind does not change by waiting, only by one of
+   * the two processes reconfiguring.
+   */
+  browser_kind_mismatch: {
+    rule: 'claim.browser_kind_agrees',
+    summary: "A browser's stored kind agrees with the kind this process configured it as.",
+    retryable: false,
+  },
+
+  /**
    * §7.1 `claim.purpose_bounded`. The bound §1.3 states — three to two
    * hundred characters, mandatory — checked before a row is written.
    *
