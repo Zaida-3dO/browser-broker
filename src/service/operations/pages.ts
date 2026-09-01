@@ -676,6 +676,47 @@ export interface ReadResult extends TabOperationResult {
    * is a read nobody can act on.
    */
   readonly artifacts: readonly ReadArtifact[];
+  /**
+   * Where each one was written, once the work has run.
+   *
+   * ── Why naming the artefact was not enough ──────────────────────────────
+   *
+   * Naming the artefact is not enough on its own. The driver's `read` returns
+   * an {@link ArtifactResult} per artefact, carrying a path, and a handler that
+   * reports only the names tells a caller *what* was collected and never
+   * *where* — while `capture` next door returns
+   * `"path": "claims/<id>/images/…"`. The natural inference from that, "the
+   * same place as my captures", is wrong: reads land in a sibling directory
+   * keyed by page and timestamp rather than under the claim.
+   *
+   * The cost was not merely a detour. `act` refuses a CSS selector and tells
+   * the caller to use a reference from a snapshot — correctly, and with a good
+   * message — so a caller who cannot find the snapshot cannot click anything.
+   * A field session concluded the read had silently failed, and only found the
+   * files by looking around the artefact root.
+   *
+   * **Absent when the page was not driven**, which is the discipline
+   * {@link CaptureResult.capture} and {@link EvaluateResult.result} both keep:
+   * a caller that reached no page should find no field rather than an empty
+   * list it has to tell apart from a read that genuinely collected nothing.
+   * `pageDriven` is the field that says which happened.
+   */
+  readonly collected?: readonly CollectedArtifact[];
+}
+
+/**
+ * One artefact a read wrote, and where.
+ *
+ * A narrowing of the seam's own {@link ArtifactResult}: `truncated` is not
+ * carried, because nothing in this service truncates yet and reporting a
+ * constant `false` to every caller would be inventing a policy the row that
+ * owns it has not argued for.
+ */
+export interface CollectedArtifact {
+  readonly artifact: ReadArtifact;
+  /** Where the file is, as a caller can open it. */
+  readonly path: string;
+  readonly bytes: number;
 }
 
 /**
@@ -699,15 +740,43 @@ export function decideRead(
     detail: { artifacts: [...artifacts] },
   });
 
+  // Set inside the after-commit closure and read by the getter below — the
+  // same arrangement `decideCapture` uses for `written`, and for the same
+  // reason: the paths do not exist until the work has run, so a value read
+  // eagerly here would always be empty.
+  let collected: readonly CollectedArtifact[] | undefined;
+
   const work = afterCommitWork(
     scope,
     input,
     tab,
-    (session, page) => session.read(page, artifacts),
+    async (session, page) => {
+      const results = await session.read(page, artifacts);
+      // **The return value is what carries the paths.** The driver knows them;
+      // a handler that ignores this leaves the caller unable to open anything
+      // it just collected.
+      collected = results.map((result) => ({
+        artifact: result.artifact,
+        path: result.path,
+        bytes: result.bytes,
+      }));
+    },
     lease.claimId,
   );
+
+  const value = withPageDriven(
+    { claimId: lease.claimId, tabId: tab.tabId, expiresAt, artifacts },
+    work,
+  );
+
   return {
-    value: withPageDriven({ claimId: lease.claimId, tabId: tab.tabId, expiresAt, artifacts }, work),
+    // Enumerable, deliberately: both surfaces serialise their result, and a
+    // getter that is not enumerable is invisible to `JSON.stringify` — present
+    // in process, absent on the wire.
+    value: Object.defineProperty(value, 'collected', {
+      get: () => collected,
+      enumerable: true,
+    }),
     afterCommit: work.afterCommit,
   };
 }

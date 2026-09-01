@@ -35,12 +35,25 @@ import { asyncLines } from '../helpers/async-lines.ts';
  *
  * ── In process, over the real session loop, with a fake browser ─────────
  *
+ * injected-test-ok: a granted lease whose key is then spent is unreachable
+ * through any shipped binary without launching a real browser, because the
+ * grant is what starts one — and continuous integration has no browser, so a
+ * spawn-driven version of this could not run in the one place it must. The
+ * faithful mutation it kills is rendering only the outcome into the text
+ * block, leaving the key in `structuredContent` alone: `check-operations.mjs`,
+ * `check-argument-refusals.mjs` and the spawned tests all still pass, because
+ * the key genuinely is in the reply and every one of them reads it
+ * structurally — and a client that renders `content`, which is what the caller
+ * in the field actually had, still shows a lease key nobody can read. This
+ * duplicates nothing `check-operations.mjs` owns: that gate proves a lease
+ * survives the process that made it, by reading the key out of the structured
+ * half, which is exactly the half this mutation leaves intact.
+ *
  * `makeServiceSubject` is the real service `createRuntime` builds for both
  * shipped binaries, with only the browser driver faked — so the claim, the
- * key, the lease and the release are all real, and no browser is launched. A
- * spawned variant would add a process boundary that `spawned.test.ts` already
- * proves and a real browser this assertion has no use for. Launching one per
- * run is also how browsers get leaked, which is the thing this file is about.
+ * key, the lease and the release are all real, and no browser is launched.
+ * Launching one per run is also how browsers get leaked, which is the thing
+ * this file is about.
  */
 
 /** Send one message through a real session and read the single reply back. */

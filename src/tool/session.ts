@@ -172,14 +172,13 @@ export interface TextContentBlock {
  *    to make unrepresentable ───────────────────────────────────────────────
  *
  * The specification's normative schema lists `content` in `required`, and a
- * conforming client renders that array and nothing else. This surface used to
- * answer with the bare domain object — `{outcome, value}` on a success,
- * `{outcome, code, rule, message}` on a refusal — which is a perfectly good
- * description of what happened that **no client can display**. Every call
- * arrived empty: the operation really ran, the lease was really granted, and
- * the caller saw nothing. A caller that cannot see the key it was issued
- * cannot release the lease it is holding, which is the worst property this
- * service can have.
+ * conforming client renders that array and nothing else. A bare domain object
+ * — `{outcome, value}` on a success, `{outcome, code, rule, message}` on a
+ * refusal — is a perfectly good description of what happened that **no client
+ * can display**: the call arrives empty even though the operation ran, the
+ * lease was granted and the store was written. A caller that cannot see the
+ * key it was issued cannot release the lease it is holding, which is the worst
+ * property this service can have.
  *
  * So `content` is non-optional *here*, in the type, rather than assembled
  * correctly by each of the two call sites below and by every one added later.

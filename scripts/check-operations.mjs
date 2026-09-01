@@ -174,6 +174,38 @@ export function parseMessages(stdout) {
     .map((line) => JSON.parse(line));
 }
 
+/**
+ * The outcome a `tools/call` reply carries, **and a check that a client could
+ * have rendered it.**
+ *
+ * A `tools/call` result is `{ content, structuredContent, isError }` — the
+ * specification's shape — so the domain outcome lives one level in. This
+ * unwraps it, and on the way past it returns `undefined` for a reply carrying
+ * no `content` array, so every assertion below fails if the shipped binary
+ * ever answers with something a client renders as nothing.
+ *
+ * **That is deliberate rather than incidental.** A surface answering with the
+ * bare domain object satisfies every assertion about an outcome while every
+ * call arrives empty at the caller, because the operations underneath succeed
+ * either way. A gate that unwrapped `structuredContent` without looking at
+ * `content` would pass straight through that.
+ */
+export function toolOutcome(message) {
+  const result = message?.result;
+  if (result === undefined || result === null) {
+    return undefined;
+  }
+  if (!Array.isArray(result.content) || result.content.length === 0) {
+    return undefined;
+  }
+  for (const block of result.content) {
+    if (block?.type !== 'text' || typeof block.text !== 'string' || block.text.length === 0) {
+      return undefined;
+    }
+  }
+  return result.structuredContent;
+}
+
 /** One tool call, as a protocol line. */
 export function callLine(id, name, args) {
   return `${JSON.stringify({ id, method: 'tools/call', params: { name, arguments: args } })}\n`;
@@ -505,7 +537,7 @@ export async function runOperationsCheck() {
     });
 
     const grantMessages = parseMessages(first.stdout);
-    const grant = grantMessages[0]?.result?.value;
+    const grant = toolOutcome(grantMessages[0])?.value;
 
     check(
       'the tool shim grants a lease and exits when its input ends',
@@ -541,7 +573,9 @@ export async function runOperationsCheck() {
       });
 
       const messages = parseMessages(second.stdout);
-      const [status, navigate, read, capture, replace] = messages.map((message) => message.result);
+      const [status, navigate, read, capture, replace] = messages.map((message) =>
+        toolOutcome(message),
+      );
 
       check(
         'a lease granted by one process is found by the next',
@@ -684,7 +718,7 @@ export async function runOperationsCheck() {
         env: environment,
         input: callLine(8, 'browser_release', { lease_key: grant.key }),
       });
-      const release = parseMessages(third.stdout)[0]?.result;
+      const release = toolOutcome(parseMessages(third.stdout)[0]);
 
       check(
         'release gives the tab back',
