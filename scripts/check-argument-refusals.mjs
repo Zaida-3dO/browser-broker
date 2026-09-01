@@ -390,9 +390,31 @@ export async function runArgumentRefusalCheck({ root = repositoryRoot } = {}) {
       // The shape assertion. A refusal is a *result* on this surface — the
       // operation was reached and said no — whereas `unexpected_failure` is
       // the session's last-resort catch, which is what the defect produced.
+      //
+      // The domain outcome sits in `structuredContent`, which is where the
+      // specification's `tools/call` result carries its machine-readable half.
+      // **`content` is asserted beside it** rather than taken on trust: a
+      // refusal a client cannot render is one the caller never receives, which
+      // is precisely the failure that made every call on this surface arrive
+      // empty while the operations underneath succeeded.
+      const renderable =
+        Array.isArray(response?.result?.content) &&
+        response.result.content.length > 0 &&
+        response.result.content.every(
+          (block) =>
+            block?.type === 'text' && typeof block.text === 'string' && block.text.length > 0,
+        );
+
       check(
         `tool surface: ${testCase.what} is a structured refusal, not unexpected_failure`,
-        response?.error?.code !== 'unexpected_failure' && response?.result?.outcome === 'refused',
+        response?.error?.code !== 'unexpected_failure' &&
+          response?.result?.structuredContent?.outcome === 'refused',
+        `answered: ${serialised.slice(0, 300)}`,
+      );
+
+      check(
+        `tool surface: ${testCase.what} comes back as content a client can render`,
+        renderable,
         `answered: ${serialised.slice(0, 300)}`,
       );
 

@@ -185,9 +185,18 @@ export function serviceFor(options: BridgeOptions): BrokerService {
 
     switch (operation) {
       case 'claim': {
+        // **Omitted, not empty.** `browser` is optional (§3.2): unstated
+        // resolves to the first signed-in browser, which the tool description
+        // promises is "what most work wants". Coercing an absent argument to
+        // `''` turned that documented default into `claim.browser_known`
+        // refusing a browser named `""` — on the very first call a new caller
+        // makes, and for an argument they were told they could leave out.
+        // Keeping absence absent is what makes the resolution the service
+        // already implements reachable.
+        const browser = asOptionalString(argument(args, 'browser'));
         const result = await broker.claim({
           sessionId: asString(argument(args, 'session_id', 'sessionId')),
-          browser: asString(argument(args, 'browser')),
+          ...(browser === undefined ? {} : { browser }),
           purpose: asString(argument(args, 'purpose')),
           ...(argument(args, 'storage_seed', 'storageSeed') === undefined
             ? {}
@@ -318,6 +327,28 @@ function asString(value: unknown): string {
 }
 
 /**
+ * An optional string argument: absent stays absent.
+ *
+ * The counterpart to {@link asString}, and the distinction is the whole
+ * point. Coercing a missing optional argument to `''` does not produce "no
+ * value" — it produces a value that happens to be empty, which every guard
+ * downstream then has to treat as a real answer. `claim.browser_known`
+ * correctly refused a browser named `""` for exactly that reason.
+ *
+ * An empty string from the caller is also read as absence. A shell cannot
+ * easily express the difference between `--browser ''` and no flag at all, and
+ * nothing in this service has a use for a browser whose name is empty, so
+ * treating the two alike is what makes the default reachable from both
+ * surfaces rather than only from the one that can omit a JSON key.
+ */
+function asOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value === '') {
+    return undefined;
+  }
+  return value;
+}
+
+/**
  * A duration in seconds, as each surface spells one.
  *
  * The command line has no types, so `--request-seconds=60` arrives as the two
@@ -384,8 +415,8 @@ function actionFrom(args: Readonly<Record<string, unknown>>): unknown {
   const ref = argument(args, 'ref', 'target');
   const value = argument(args, 'value');
   const targetRef = argument(args, 'target_ref', 'targetRef');
-  const viewport = argument(args, 'viewport');
-  const preferences = argument(args, 'preferences');
+  const viewport = viewportFrom(args);
+  const preferences = preferencesFrom(args);
   const response = argument(args, 'response');
   const fields = argument(args, 'fields');
 
@@ -399,6 +430,150 @@ function actionFrom(args: Readonly<Record<string, unknown>>): unknown {
     ...(response === undefined ? {} : { response }),
     ...(fields === undefined ? {} : { fields }),
   };
+}
+
+/**
+ * The viewport a `resize` sets, assembled from whatever the caller could
+ * express.
+ *
+ * ── Why this exists: the refusal was unsatisfiable ──────────────────────
+ *
+ * `validateAction` wants `viewport: { width, height }` — an object of two
+ * integers. The command line produces flat strings and nothing else, so there
+ * was **no argument a command-line caller could type that would ever parse**.
+ * A field session tried `--value 390x844`, `390,844`, `"390 844"`, the JSON
+ * object, and `--width 390 --height 844`, and got the identical refusal every
+ * time:
+ *
+ * > A resize sets the tab's viewport, so it needs a width and a height in
+ * > pixels.
+ *
+ * Every one of those *is* a width and a height in pixels. The message
+ * describes the semantics and never the syntax, so it reads as though the
+ * caller supplied the wrong kind of thing when they supplied the wrong shape
+ * of thing — and there was no shape that worked. Adding the syntax to the
+ * message would have been a fix for a different bug: the verb was
+ * **unreachable**, not merely undocumented, and mobile-breakpoint review was
+ * impossible on the only working client.
+ *
+ * ── What is accepted, and why more than one form ────────────────────────
+ *
+ * `--width 390 --height 844` is the documented pair, and `--value 390x844` is
+ * accepted because it is what a person reaches for first and because a
+ * viewport is conventionally written that way. Both arrive here as strings,
+ * so both are coerced to integers; the tool surface's own object is passed
+ * straight through, since a JSON caller can already say what it means.
+ *
+ * **Coercion only, never validation.** Whether a side is positive, whole and
+ * within the bound is `requireViewportSide`'s decision, inside the operation,
+ * on the ledger. A `NaN` from an unparseable word is handed on deliberately —
+ * it fails that guard and produces the refusal a caller should get, rather
+ * than a different one invented here.
+ */
+function viewportFrom(args: Readonly<Record<string, unknown>>): unknown {
+  const given = argument(args, 'viewport');
+  if (given !== undefined) {
+    return given;
+  }
+
+  const width = argument(args, 'width');
+  const height = argument(args, 'height');
+  if (width !== undefined || height !== undefined) {
+    return { width: asInteger(width), height: asInteger(height) };
+  }
+
+  // `--value 390x844`, and the two other separators a person reaches for.
+  const value = argument(args, 'value');
+  if (typeof value === 'string') {
+    const sides = value.split(/[x×,\s]+/u).filter((part) => part !== '');
+    if (sides.length === 2) {
+      return { width: asInteger(sides[0]), height: asInteger(sides[1]) };
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * The media preferences an `emulate` sets, assembled from flat flags.
+ *
+ * The same unreachability as {@link viewportFrom}, and it went unreported for
+ * longer because the refusal is otherwise a model of the kind this service is
+ * proud of — it names its three options exactly the way `claim.browser_known`
+ * names the browsers:
+ *
+ * > An emulate sets media preferences, so it names at least one of:
+ * > colourScheme, reducedMotion, forcedColours.
+ *
+ * A caller reading that types `--colour-scheme dark` and is refused
+ * identically, because the service wants them nested under `preferences` and
+ * `parseArguments` cannot nest. So a good message pointed at a door that was
+ * not there, and dark-mode review was as unreachable as the mobile breakpoint.
+ *
+ * The hyphenated spellings are what a terminal reads; `parseArguments`
+ * normalises `--colour-scheme` to `colour_scheme`, and the service's own
+ * camel-case names are accepted too so an in-process caller writing
+ * `colourScheme` is understood. **Which values are legal is not decided
+ * here** — the operation checks them against its table and refuses by name.
+ */
+function preferencesFrom(args: Readonly<Record<string, unknown>>): unknown {
+  const given = argument(args, 'preferences');
+  if (given !== undefined) {
+    return given;
+  }
+
+  const named: Record<string, unknown> = {};
+  for (const preference of MEDIA_PREFERENCE_SPELLINGS) {
+    const value = argument(args, ...preference.spellings);
+    if (value !== undefined) {
+      named[preference.name] = value;
+    }
+  }
+
+  return Object.keys(named).length === 0 ? undefined : named;
+}
+
+/**
+ * Each media preference, and every spelling a caller might arrive with.
+ *
+ * The service's name first, then the terminal's — `parseArguments` turns
+ * `--colour-scheme` into `colour_scheme`, so that is the spelling this file
+ * actually receives from the command line. Both British and American
+ * spellings of "colour" are read, because a caller who types the one this
+ * service does not use should get a dark theme rather than a refusal that
+ * looks like they named nothing at all.
+ */
+const MEDIA_PREFERENCE_SPELLINGS: readonly {
+  readonly name: string;
+  readonly spellings: readonly string[];
+}[] = [
+  {
+    name: 'colourScheme',
+    spellings: ['colourScheme', 'colour_scheme', 'colorScheme', 'color_scheme'],
+  },
+  { name: 'reducedMotion', spellings: ['reducedMotion', 'reduced_motion'] },
+  {
+    name: 'forcedColours',
+    spellings: ['forcedColours', 'forced_colours', 'forcedColors', 'forced_colors'],
+  },
+];
+
+/**
+ * A whole number, from whatever a surface could carry.
+ *
+ * The command line has only strings, so `--width 390` arrives as `"390"` and
+ * has to become `390` before the operation's guard can judge it. An
+ * unparseable word becomes `NaN`, which that guard refuses by name — which is
+ * the right refusal, and the reason nothing is validated here.
+ */
+function asInteger(value: unknown): unknown {
+  if (typeof value === 'number') {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    return Number(value);
+  }
+  return value;
 }
 
 /**

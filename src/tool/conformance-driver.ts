@@ -105,7 +105,24 @@ export function outcomeFrom(line: string | undefined): OperationOutcome {
   if (result === null || typeof result !== 'object') {
     throw new Error('the response carries no result');
   }
-  const record = result as Record<string, unknown>;
+
+  // The outcome is read out of `structuredContent`, which is where a
+  // `tools/call` result carries its machine-readable half. **This is not a
+  // second spelling of the domain object** — the result root holds `content`,
+  // `structuredContent` and `isError`, which is the specification's shape and
+  // the only shape a client can read.
+  //
+  // Reading it here does not make the wire shape *asserted*: this function
+  // normalises a route's answer back into a neutral outcome so the matrix can
+  // compare two routes, and it would go on doing that faithfully if `content`
+  // vanished tomorrow. That is exactly how the missing content array shipped
+  // — the suite compared outcomes at the service layer and both routes agreed.
+  // The shape itself is asserted by its own test, against the bytes.
+  const structured = (result as Record<string, unknown>)['structuredContent'];
+  if (structured === null || typeof structured !== 'object') {
+    throw new Error('the result carries no structured content');
+  }
+  const record = structured as Record<string, unknown>;
 
   if (record['outcome'] === 'accepted') {
     return { outcome: 'accepted', value: (record['value'] ?? {}) as Record<string, unknown> };

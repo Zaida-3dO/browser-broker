@@ -150,6 +150,125 @@ export function withoutSecrets(value: unknown): unknown {
 }
 
 /**
+ * One block of a `tools/call` result's content, as the specification shapes
+ * it.
+ *
+ * Only the text block is built here, because it is the only one this service
+ * has anything to put in. A capture returns a *path* rather than an image
+ * (§3.9), deliberately — a caller pays for the pictures it opens — so
+ * answering with an `image` block would undo that decision on this route
+ * alone and make a review's worth of screenshots arrive inline.
+ */
+export interface TextContentBlock {
+  readonly type: 'text';
+  readonly text: string;
+}
+
+/**
+ * What a `tools/call` answers with, per Model Context Protocol
+ * {@link PROTOCOL_VERSION}.
+ *
+ * ── `content` is required, and its absence is the defect this type exists
+ *    to make unrepresentable ───────────────────────────────────────────────
+ *
+ * The specification's normative schema lists `content` in `required`, and a
+ * conforming client renders that array and nothing else. A bare domain object
+ * — `{outcome, value}` on a success, `{outcome, code, rule, message}` on a
+ * refusal — is a perfectly good description of what happened that **no client
+ * can display**: the call arrives empty even though the operation ran, the
+ * lease was granted and the store was written. A caller that cannot see the
+ * key it was issued cannot release the lease it is holding, which is the worst
+ * property this service can have.
+ *
+ * So `content` is non-optional *here*, in the type, rather than assembled
+ * correctly by each of the two call sites below and by every one added later.
+ */
+export interface ToolCallResult {
+  readonly content: readonly TextContentBlock[];
+  readonly structuredContent?: Readonly<Record<string, unknown>>;
+  readonly isError?: boolean;
+}
+
+/**
+ * Render a value as the text a client shows, and carry it structured beside.
+ *
+ * ── Both, not either, and the specification asks for exactly that ───────
+ *
+ * "For backwards compatibility, a tool that returns structured content SHOULD
+ * also return the serialized JSON in a TextContent block." A client too old
+ * to know about `structuredContent` still has something to render, and one
+ * that does know reads the object without parsing the string back.
+ *
+ * **The structured half is what keeps the refusal taxonomy machine-readable.**
+ * `outcome`, `code` and `rule` are the fields a caller branches on — retry a
+ * capacity refusal, do not retry a typo — and flattening them into a sentence
+ * would leave every caller matching on English. That taxonomy is the best
+ * thing on this surface and it survives this change intact: the same four
+ * fields, in the same spellings, one level further in.
+ *
+ * Indented rather than dense, because the text block is the half a person
+ * reads.
+ */
+function asContent(value: unknown): readonly TextContentBlock[] {
+  return [{ type: 'text', text: JSON.stringify(value, null, 2) }];
+}
+
+/**
+ * A refusal, shaped for the wire.
+ *
+ * ── Why a refusal is `isError: true` and still a *result* ───────────────
+ *
+ * It stays a JSON-RPC result — that part is unchanged and the reasoning below
+ * it is unchanged. What is new is the flag, and the specification is explicit
+ * about which way it goes: "Any errors that originate from the tool SHOULD be
+ * reported inside the result object, with `isError` set to true, *not* as an
+ * MCP protocol-level error response. Otherwise, the LLM would not be able to
+ * see that an error occurred and self-correct."
+ *
+ * Self-correction is precisely what this service's refusals are for. They
+ * name a rule and say what to do instead — `act.ref_resolves` tells a caller
+ * to read the page again, `claim.browser_known` lists the browsers by name —
+ * and a caller that acts on one recovers in a single attempt. Marking them as
+ * errors is what puts them in front of the model rather than leaving them to
+ * be mistaken for success.
+ *
+ * **`isError` is not a demotion of the taxonomy.** It is one boolean added
+ * beside four fields that all survive; a caller reading `code` and `rule` out
+ * of `structuredContent` gets everything it got before.
+ *
+ * What does *not* become `isError` is a protocol failure — an unknown tool,
+ * an unknown method, a malformed call. The specification puts "errors in
+ * finding the tool" on the protocol side, and this surface already answered
+ * them there with its own name carried alongside the integer. That design is
+ * untouched.
+ */
+function refusalResult(refusal: {
+  readonly code: string;
+  readonly rule: string;
+  readonly message: string;
+  readonly details?: unknown;
+}): ToolCallResult {
+  const structured = {
+    outcome: 'refused' as const,
+    code: refusal.code,
+    rule: refusal.rule,
+    message: refusal.message,
+    ...(refusal.details === undefined ? {} : { details: withoutSecrets(refusal.details) }),
+  };
+
+  return {
+    // **The sentence alone, not the serialised object.** A refusal's message
+    // is written to be read — it says what was refused and what to do next —
+    // and wrapping it in JSON braces would bury the one part of this result a
+    // person or a model acts on. The machine-readable half is directly below
+    // it, so nothing is lost by rendering this half plainly.
+    content: [{ type: 'text', text: `refused (${refusal.rule}): ${refusal.message}` }],
+    structuredContent: structured,
+    isError: true,
+  };
+}
+
+/**
  * Answer one request.
  *
  * Exported so a test can drive a single exchange, and so the conformance
@@ -207,7 +326,17 @@ export async function handleRequest(
     // everything else is stripped. The exception is named rather than
     // implicit, so widening it is a visible change.
     const value = tool.operation === 'claim' ? outcome.value : withoutSecrets(outcome.value);
-    return { id: request.id, result: { outcome: 'accepted', value } };
+    const structured = { outcome: 'accepted' as const, value };
+    const result: ToolCallResult = {
+      // The whole outcome is serialised, `outcome` and `value` together,
+      // rather than the value alone. A client showing only the inner object
+      // would leave a caller unable to tell an acceptance from a refusal
+      // without reading `isError`, and the two spellings agreeing is what
+      // makes the text and the structure the same answer.
+      content: asContent(structured),
+      structuredContent: structured,
+    };
+    return { id: request.id, result };
   }
 
   // **A refusal is a successful response carrying a refusal, not a protocol
@@ -217,15 +346,17 @@ export async function handleRequest(
   // intelligently; it cannot retry a typo. Collapsing the two would take that
   // distinction away from every caller on this route and from nobody on the
   // other, which is the drift the parity claim exists to catch.
+  //
+  // It is marked `isError` so a model sees it and self-corrects — see
+  // {@link refusalResult}, which is also where the taxonomy is kept intact.
   return {
     id: request.id,
-    result: {
-      outcome: 'refused',
+    result: refusalResult({
       code: outcome.code,
       rule: outcome.rule,
       message: outcome.message,
-      ...(outcome.details === undefined ? {} : { details: withoutSecrets(outcome.details) }),
-    },
+      ...(outcome.details === undefined ? {} : { details: outcome.details }),
+    }),
   };
 }
 

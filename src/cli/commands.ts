@@ -1,4 +1,14 @@
+import { PAGE_ACTIONS } from '../browser/driver.ts';
 import type { OperationName } from '../adapter/operations.ts';
+
+/**
+ * The action verbs, for the help text.
+ *
+ * Read from the same list the service validates against, so a verb added
+ * there appears in `broker act --help` without anybody remembering to add it
+ * — the drift this table's own header warns about.
+ */
+const PAGE_ACTION_NAMES: readonly string[] = PAGE_ACTIONS;
 
 /**
  * The command table: `broker <noun> <verb>`, and the single-word commands.
@@ -88,6 +98,44 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
     words: ['act'],
     operation: 'act',
     summary: 'Click, type, fill, press, select, hover, check, scroll, resize, emulate, dialog.',
+    // **Undocumented options are unusable options**, and this command had
+    // none listed at all — so `broker act --help` printed `--json` and
+    // `--help` and nothing else, for the verb with the most arguments on the
+    // surface. A caller refused by `resize` had no second place to look, which
+    // is what turned one bad message into a dead end.
+    options: [
+      { flag: '--action <verb>', summary: `One of: ${PAGE_ACTION_NAMES.join(', ')}.` },
+      {
+        flag: '--target <ref>',
+        summary:
+          'The element, as a reference from the most recent snapshot. Needed by click, type, ' +
+          'fill, press, select, hover, check and drag.',
+      },
+      {
+        flag: '--value <text>',
+        summary: 'What to apply: the text to type or fill, the option to select, the key to press.',
+      },
+      {
+        flag: '--target-ref <ref>',
+        summary: 'The second element, for drag: where the dragged element is dropped.',
+      },
+      {
+        flag: '--width <n> --height <n>',
+        summary: 'For resize, the viewport in pixels. `--value 390x844` says the same thing.',
+      },
+      {
+        flag: '--colour-scheme <light|dark|no-preference>',
+        summary: 'For emulate. At least one preference is needed, and each is set independently.',
+      },
+      {
+        flag: '--reduced-motion <reduce|no-preference>',
+        summary: 'For emulate.',
+      },
+      {
+        flag: '--forced-colours <active|none>',
+        summary: 'For emulate.',
+      },
+    ],
   },
   {
     words: ['read'],
