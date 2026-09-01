@@ -91,6 +91,17 @@ test('a message with no id but a method is a NOTIFICATION, not a malformed messa
   assert.equal(decoded.notification.method, NOTIFICATIONS.initialized);
 });
 
+test('the id KEY being absent is what makes a notification, not merely an unusable value', () => {
+  // The distinction the fix for the sibling defect rests on: `record['id']`
+  // is `undefined` both when the key is missing and when it is `id: null`,
+  // so a decoder that read only the value could not tell them apart. This
+  // pins the true-absence case, so a future change collapsing the two
+  // checks back into one would be caught here rather than only by the
+  // present-but-unusable test beside it.
+  const decoded = decodeMessage(JSON.stringify({ method: METHODS.listTools }));
+  assert.equal(decoded.kind, 'notification', 'a truly absent id must still read as a notification');
+});
+
 test('a notification with malformed params has nobody to answer, so it stays malformed', () => {
   // No identifier means no way to report the problem to the sender. The loop
   // logs this rather than replying, which is the same rule as any other
@@ -120,16 +131,19 @@ test('a message with an id but no method is malformed, and KEEPS the id so it ca
 });
 
 test('an id that is neither a number nor a string is not accepted as an id', () => {
-  // With a method present and no usable identifier, the message reads as a
-  // notification — which is the correct reading and the safe one: the surface
-  // will not invent an identifier to answer to. What is asserted is the
-  // negative that matters, that no id was accepted.
+  // With a method present, an id KEY present, and no usable identifier value,
+  // the message is malformed rather than a request — the surface will not
+  // invent an identifier to answer to. It is also not read as a
+  // notification: the key is present, so there is somebody to answer, and
+  // `decoded.id` is `null` rather than `undefined` for exactly that reason
+  // — see the sibling test asserting a response is written for this case.
   for (const id of [null, true, { nested: 1 }, ['a']]) {
     const decoded = decodeMessage(JSON.stringify({ id, method: METHODS.listTools }));
-    assert.notEqual(decoded.kind, 'request', `${JSON.stringify(id)} was accepted as an id`);
-    if (decoded.kind === 'malformed') {
-      assert.equal(decoded.id, undefined);
+    assert.equal(decoded.kind, 'malformed', `${JSON.stringify(id)} was accepted as an id`);
+    if (decoded.kind !== 'malformed') {
+      continue;
     }
+    assert.equal(decoded.id, null, 'a present-but-unusable id must answer with id: null');
   }
 });
 

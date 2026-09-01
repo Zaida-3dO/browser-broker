@@ -551,12 +551,10 @@ export function decideClaim(
   // The kind is written from the list the name was found in, which is the
   // only place it is known — the name itself carries no kind once names are
   // configured, which is why the column exists (schema step nine).
+  const configuredKind = settings.privateBrowsers.includes(browserId) ? 'private' : 'regular';
   db.prepare<{ id: string; kind: string }>(
     "INSERT OR IGNORE INTO browsers (id, kind, state) VALUES (@id, @kind, 'stopped')",
-  ).run({
-    id: browserId,
-    kind: settings.privateBrowsers.includes(browserId) ? 'private' : 'regular',
-  });
+  ).run({ id: browserId, kind: configuredKind });
 
   // **A browser being signed into is not available, and this is what makes
   // that state mean anything** (§5.5.1 step 2: "From that moment, requests
@@ -583,8 +581,39 @@ export function decideClaim(
   // row and writes nothing, so §5.5.1's "queued callers keep their places and
   // their timers" holds by there being no code here that could take one.
   const browserState = db
-    .prepare<{ id: string }, { state: string }>('SELECT state FROM browsers WHERE id = @id')
+    .prepare<{ id: string }, { state: string; kind: string }>(
+      'SELECT state, kind FROM browsers WHERE id = @id',
+    )
     .get({ id: browserId });
+
+  // **§7.1 `claim.browser_kind_agrees`, and §13i's one nameable exception**
+  // (`DECISIONS.md` §13i: "every disagreement is a nameable refusal rather
+  // than a silently broken invariant"). `INSERT OR IGNORE` above is a no-op
+  // when a row for this name already exists, whatever kind it was created
+  // with — that is what makes it safe under the launch race (§1.2a), and
+  // also exactly what makes it unable to tell "the row I wanted already
+  // exists" from "a row with this name but a different kind already exists".
+  // A second process that configured this name under the other kind would
+  // otherwise be handed a browser whose profile persists (or does not) in a
+  // way its own configuration never asked for, in total silence. This reads
+  // the row back — inside the same transaction, so nothing can change it
+  // between the insert and this check — and refuses by name rather than
+  // adopting it.
+  if (browserState !== undefined && browserState.kind !== configuredKind) {
+    scope.recordRefusal({
+      kind: 'claim_requested',
+      outcome: 'deny',
+      guard: 'claim.browser_kind_agrees',
+      adapter,
+      sessionId: input.sessionId,
+      detail: { browser: browserId, storedKind: browserState.kind, configuredKind },
+    });
+    throw new CallRefusal(
+      'browser_kind_mismatch',
+      `The ${browserId} browser is recorded as ${browserState.kind} but this process has it configured as ${configuredKind}. Another process on this machine holds a different configuration for the same name; reconcile the two rather than retrying, because nothing here changes with time.`,
+      { detail: { browser: browserId, storedKind: browserState.kind, configuredKind } },
+    );
+  }
 
   if (browserState?.state === 'signing-in') {
     scope.recordRefusal({

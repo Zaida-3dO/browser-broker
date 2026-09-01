@@ -246,6 +246,26 @@ test('a malformed line WITH an id is answered, so no caller waits forever', asyn
   assert.equal(refusalName(response), 'malformed_message');
 });
 
+test('a request with a present-but-malformed id draws a response, not silence', async () => {
+  // §7.1: `id: null`, `id: true` and `id: {}` all carry the id KEY — there is
+  // somebody to answer — but no usable value. Before the fix these were read
+  // as notifications (the id-absence branch cannot tell "no key" from "an
+  // unusable value") and answered with nothing, which is indistinguishable
+  // from a hang to the caller. This is the positive the row asked for: a
+  // response IS written, carrying `id: null` per JSON-RPC 2.0.
+  for (const id of [null, true, { nested: 1 }]) {
+    const { service } = recordingService();
+    const [response] = await serve(
+      service,
+      JSON.stringify({ jsonrpc: JSONRPC_VERSION, id, method: 'tools/list' }),
+    );
+
+    assert.ok(response !== undefined, `${JSON.stringify(id)} drew no response`);
+    assert.equal(response['id'], null, `${JSON.stringify(id)} was not answered with id: null`);
+    assert.equal(refusalName(response), 'malformed_message');
+  }
+});
+
 test('a malformed line with NO id is logged rather than answered — there is nobody to answer', async () => {
   const { service } = recordingService();
   const written: string[] = [];

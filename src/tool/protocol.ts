@@ -109,9 +109,18 @@ export interface ProtocolNotification {
   readonly params?: Readonly<Record<string, unknown>>;
 }
 
-/** A response the surface writes back. */
+/**
+ * A response the surface writes back.
+ *
+ * `id` accepts `null` on top of {@link MessageId} for one reason only: a
+ * request whose id key was present but not a number or a string (`null`,
+ * `true`, an object) has no usable identifier to echo back, and JSON-RPC
+ * 2.0 answers exactly that case with `id: null` rather than staying silent.
+ * Every response that answers a genuine request still carries the caller's
+ * own id, unchanged.
+ */
 export interface ProtocolResponse {
-  readonly id: MessageId;
+  readonly id: MessageId | null;
   readonly result?: unknown;
   readonly error?: ProtocolError;
 }
@@ -283,11 +292,19 @@ function withEnvelope(
   return { jsonrpc: JSONRPC_VERSION, id: message.id, result: message.result };
 }
 
-/** What a line turned out to be. */
+/**
+ * What a line turned out to be.
+ *
+ * A `malformed` id is `MessageId | null | undefined`: `undefined` means the
+ * id key was absent from the message and there is nobody to answer;
+ * `null` means the key was present but carried something other than a
+ * number or a string, and JSON-RPC 2.0 answers that case with `id: null`
+ * rather than silence. See the id-key note in {@link decodeMessage}.
+ */
 export type DecodedMessage =
   | { readonly kind: 'request'; readonly request: ProtocolRequest }
   | { readonly kind: 'notification'; readonly notification: ProtocolNotification }
-  | { readonly kind: 'malformed'; readonly id: MessageId | undefined; readonly why: string };
+  | { readonly kind: 'malformed'; readonly id: MessageId | null | undefined; readonly why: string };
 
 /**
  * Read one line as a request.
@@ -298,6 +315,20 @@ export type DecodedMessage =
  * side that is indistinguishable from a hang. So this returns a description
  * of the problem, and the loop above answers with it where there is an
  * identifier to answer to.
+ *
+ * ── Why the id KEY's presence is checked separately from its value ───────
+ *
+ * `record['id']` on an object with no `id` property and `record['id']` on
+ * one with `id: null` are both `undefined` in JavaScript, so a check that
+ * reads only the value cannot tell "there is no id to answer to" from "there
+ * is an id, and it is unusable". Those are different situations: the first
+ * is a notification-shaped line with genuinely nobody to answer; the second
+ * is a request-shaped line whose id this surface cannot echo back, but can
+ * still answer with `id: null` — JSON-RPC's own way of saying "I received
+ * this, and could not identify it". Losing that distinction is what let a
+ * caller sending `id: null` or `id: true` — a malformed request, not a
+ * notification — be read as a notification and dropped, indistinguishable
+ * from a hang.
  */
 export function decodeMessage(line: string): DecodedMessage {
   let parsed: unknown;
@@ -312,18 +343,19 @@ export function decodeMessage(line: string): DecodedMessage {
   }
 
   const record = parsed as Record<string, unknown>;
+  const hasIdKey = 'id' in record;
   const rawId: unknown = record['id'];
   const id = typeof rawId === 'number' || typeof rawId === 'string' ? rawId : undefined;
   const method: unknown = record['method'];
   const params: unknown = record['params'];
   const paramsAreWrong = params !== undefined && (params === null || typeof params !== 'object');
 
-  // **A message with no identifier but a method is a NOTIFICATION, not a
+  // **A message with no id KEY at all but a method is a NOTIFICATION, not a
   // malformed message**, and reading it as the latter is how a surface ends
   // up either answering one or refusing the handshake that follows it. The
-  // identifier's absence is the signal, so it is tested before anything is
-  // concluded from it.
-  if (id === undefined && typeof method === 'string') {
+  // key's absence — not merely an unusable value — is the signal, so it is
+  // tested before anything is concluded from it.
+  if (!hasIdKey && typeof method === 'string') {
     if (paramsAreWrong) {
       // Nobody to answer — a notification has no identifier by construction —
       // so the loop above logs this rather than replying to it.
@@ -339,9 +371,15 @@ export function decodeMessage(line: string): DecodedMessage {
   }
 
   if (id === undefined) {
+    // The id key is present (checked above) but its value is neither a
+    // number nor a string — `null`, `true`, an object, an array. There is an
+    // id to answer to; this surface simply cannot echo the caller's own
+    // value back, so it answers with `id: null` rather than staying silent.
+    // Absent the id key entirely, this line would have taken the
+    // notification branch above and never reached here.
     return {
       kind: 'malformed',
-      id: undefined,
+      id: hasIdKey ? null : undefined,
       why: 'a message carries an id, which is a number or a string',
     };
   }
