@@ -154,7 +154,7 @@ test('a browser that IS running is attached to rather than started again', async
 
     assert.equal(driver.callsOf('attach').length, 1, 'it attached');
     // **The assertion that matters.** A second browser against one profile
-    // directory hands its address to the first and exits zero, opening no
+    // directory hands its address to the first, opening no
     // endpoint — so starting one here would fail silently rather than loudly.
     assert.equal(driver.callsOf('coldStart').length, 0, 'and started nothing');
   });

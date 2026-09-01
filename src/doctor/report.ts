@@ -1,6 +1,5 @@
 import type { Database } from 'better-sqlite3';
 
-import { DEFAULT_BROWSER_IDS } from '../browser/driver.ts';
 import { SIGNABLE_BROWSER } from '../service/operations/sign-in.ts';
 import type { Environment } from '../config/environment.ts';
 import { readTabBudget } from '../operations/status.ts';
@@ -123,13 +122,28 @@ export function runDoctor(
     ),
   ];
 
-  for (const browser of DEFAULT_BROWSER_IDS) {
+  // **Every configured browser, not the default pair.** `DEFAULT_BROWSER_IDS`
+  // is "the default set, never the permitted set" (see its own comment); an
+  // installation that names a third browser has three to report on, and a
+  // doctor that walked the constant would silently answer about two of them.
+  // A health report that is quietly partial is worse than one that is absent,
+  // because nothing in its output says which browsers it did not look at.
+  //
+  // Order is regular-then-private, each in configured order, which is the
+  // order `environment.ts` records and the order a person reading `.env`
+  // wrote them in.
+  const configuredBrowsers: readonly string[] = [
+    ...environment.regularBrowsers,
+    ...environment.privateBrowsers,
+  ];
+
+  for (const browser of configuredBrowsers) {
     checks.push(checkDiscoveryRecord(browser, probes.discovery?.[browser] ?? { recorded: false }));
   }
 
   checks.push(checkCaptureSurface(probes.captureSurface));
 
-  for (const browser of DEFAULT_BROWSER_IDS) {
+  for (const browser of configuredBrowsers) {
     checks.push(checkKeeperTab(browser, probes.keeperTabs?.[browser]));
   }
 

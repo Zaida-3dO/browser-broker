@@ -48,6 +48,83 @@ describe('the doctor report', () => {
     });
   });
 
+  // The mutation this catches: walking `DEFAULT_BROWSER_IDS` instead of the
+  // configured lists. That constant is the fixed pair, so a third configured
+  // browser vanishes from the report — silently, which is the whole defect:
+  // nothing in the output says a browser was not looked at.
+  //
+  // Named browsers allow up to three per kind, so five here is deliberately
+  // more than the default two and covers both kinds having extras.
+  it('reports on EVERY configured browser, not just the default pair', async () => {
+    await withSteppedStore(async (store) => {
+      const temp = makeTempStore({
+        regularBrowsers: ['regular', 'work', 'personal'],
+        privateBrowsers: ['private', 'scratch'],
+      });
+      try {
+        const report = runDoctor(temp.environment, store.db);
+        const ids = new Set(report.checks.map((check) => check.id));
+
+        for (const browser of ['regular', 'work', 'personal', 'private', 'scratch']) {
+          assert.ok(
+            ids.has(`browser.${browser}.discovery`),
+            `the ${browser} browser's discovery check is missing`,
+          );
+          assert.ok(
+            ids.has(`browser.${browser}.keeper_tab`),
+            `the ${browser} browser's keeper-tab check is missing`,
+          );
+        }
+
+        // And nothing is reported about a browser this installation does not
+        // have — a doctor that walked a union of configured-and-default would
+        // pass the loop above while inventing rows.
+        assert.ok(
+          !ids.has('browser.default.discovery'),
+          'no check may be reported for a browser that is not configured',
+        );
+      } finally {
+        temp.remove();
+      }
+      await Promise.resolve();
+    });
+  });
+
+  // The doctor's existing contract, asserted here because the loop above is
+  // what would break it: a keeper-tab check with no probe supplied is
+  // UNEVALUATED, and unevaluated must not move the exit code. A third browser
+  // must not be able to fail a run merely by existing.
+  it('leaves a third browser’s unprobed keeper tab unevaluated, and the exit code alone', async () => {
+    await withSteppedStore(async (store) => {
+      const pair = makeTempStore();
+      const trio = makeTempStore({
+        regularBrowsers: ['regular', 'work'],
+        privateBrowsers: ['private'],
+      });
+      try {
+        const withPair = runDoctor(pair.environment, store.db, { configuredTabBudget: 15 });
+        const withTrio = runDoctor(trio.environment, store.db, { configuredTabBudget: 15 });
+
+        const extra = withTrio.checks.find((check) => check.id === 'browser.work.keeper_tab');
+        assert.ok(extra, 'the third browser’s keeper-tab check must be present');
+        assert.equal(
+          extra.status,
+          'unknown',
+          'nobody probed it, so it is unevaluated rather than failing',
+        );
+        assert.equal(
+          withTrio.exitCode,
+          withPair.exitCode,
+          'an unevaluated check must not change the exit code',
+        );
+      } finally {
+        pair.remove();
+        trio.remove();
+      }
+      await Promise.resolve();
+    });
+  });
+
   it('changes nothing in the store', async () => {
     // The rule this command exists under: "what state is this installation
     // in" never requires running the thing that would change it.

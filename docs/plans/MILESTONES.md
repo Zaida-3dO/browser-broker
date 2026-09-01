@@ -367,8 +367,10 @@ concurrency tests below are green.
 >
 > **#20 must never infer that a launch worked.** A second browser started against a profile directory
 > already in use **does not report a lock error**: it hands its address to the browser already
-> holding the profile and **exits zero**, with nothing on the error stream and no debugging endpoint
-> opened. So success is *having an endpoint that answers*, asserted positively. And the obvious
+> holding the profile, with nothing on the error stream and no debugging endpoint opened. So success
+> is *having an endpoint that answers*, asserted positively. (This paragraph read "and **exits
+> zero**" until 2026-09-01; the losing process does not exit on its own — see `DECISIONS.md` §13k.)
+> And the obvious
 > cross-platform check does not work — the single-instance lock file a POSIX system leaves behind
 > **does not exist on Windows**, so a check looking for it always passes there, which is worse than
 > no check because it is trusted equally on both.

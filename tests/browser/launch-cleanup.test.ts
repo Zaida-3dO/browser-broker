@@ -111,12 +111,17 @@ test('a launch whose endpoint NEVER answers ends the process it spawned, rather 
   }
 });
 
-// The mutation this catches: "tidying" the collision branch to kill for
-// symmetry with the other failure paths — the single most damaging change
-// that could be made to this file. It would read as consistent, and it would
+// The mutation this catches: widening the collision branch's kill from the
+// identifier this call spawned to anything derived from the profile
+// directory or the answering record — the single most damaging change that
+// could be made to this file. It would read as equivalent, and it would
 // destroy another caller's browser: quite possibly the signed-in one whose
 // keeper tab exists to hold the shared sign-in open.
-test('the profile-collision refusal kills NOTHING — that browser belongs to somebody else', async () => {
+//
+// The two identifiers are deliberately different values here (4242 spawned,
+// 9222 answering), so a kill aimed at the wrong one is a failing assertion
+// rather than a coincidence that passes.
+test('the profile-collision refusal ends the SPAWNED process, and never the browser that answered', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-collision-'));
   const profile = path.join(root, 'regular');
   const killed: number[] = [];
@@ -174,14 +179,24 @@ test('the profile-collision refusal kills NOTHING — that browser belongs to so
       },
     );
 
-    // The whole point of the row. On this path the process this call spawned
-    // has already exited zero on its own — handing its address to the browser
-    // holding the profile is what a collision *is* — so there is nothing of
-    // ours left to end, and the only live process is another caller's.
+    // The whole point of the row, and it is two claims, not one.
+    //
+    // First: the process this call spawned IS ended. Measured on Windows it
+    // does not exit on its own, and nothing else reaps it — no row names it
+    // and the sweep reconciles claims and tabs rather than orphaned
+    // processes.
     assert.deepEqual(
       killed,
-      [],
-      'nothing may be killed on the collision path: the live browser is not ours to end',
+      [4242],
+      'the losing spawn must be ended, by the identifier this call spawned',
+    );
+
+    // Second, and this is the one that must never regress: the browser
+    // behind the answering endpoint is somebody else's, and nothing signals
+    // it. 9222 is that browser's port; it must appear nowhere in `killed`.
+    assert.ok(
+      !killed.includes(9222),
+      'the browser already holding the profile must never be signalled',
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

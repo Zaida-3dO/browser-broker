@@ -1063,6 +1063,12 @@ on the same requirement, which is the strongest position a requirement can be in
 
 ### A profile collision fails silently, so the launch needs a positive assertion
 
+> **Corrected 2026-09-01 (§13k): the losing process does NOT exit.** Everything below about the
+> silent failure and the need for a positive assertion is unchanged and still measured. The one
+> clause that was wrong is *"exits successfully — exit code zero"*: measured on Windows, the losing
+> process stays alive indefinitely, and that error propagated into a kill-condition table that
+> declined to reap it **because** it was believed already gone. §13k.
+
 **Measured, and it is worse than a bad error message.** A second browser launched against a profile
 directory already in use **does not report a lock error.** It hands its URL to the browser already
 holding the profile and **exits successfully** — exit code zero, nothing on the error stream, and
@@ -1982,6 +1988,19 @@ per-engine doctor checks. That work is separable from what is actually wanted, w
 addressable identities**, and building it now would be the surface-with-no-caller §6 correctly warns
 against.
 
+> **Per-*browser* doctor coverage is a different question, and it is built (2026-09-01).** The
+> paragraph above declines per-**engine** checks and that still stands. It should not be read as
+> also declining to report on every configured **browser**: this change shipped with `doctor`
+> iterating the fixed pair, so an installation naming a third browser got a health report that was
+> **silently** partial — no line said which browsers went unexamined. The doctor now walks
+> `regularBrowsers` then `privateBrowsers`, in configured order.
+>
+> **The cap a reader will actually meet is three per kind, six in total**, enforced by
+> `environment.ts` — which refuses at startup naming the variable, rather than truncating. The
+> doctor's contract is unchanged by this: several failures still report the **lowest** code, and a
+> browser nobody probed still reports unevaluated and **does not move the exit code**, so
+> configuring a browser can never fail a run merely by existing.
+
 ### Explicitly unchanged: the tab budget
 
 **One counter across all browsers, default 15.** Per-browser caps stay rejected — *"they look like
@@ -2156,6 +2175,115 @@ including the one this property was protecting.
 **And the tool surface is 20% larger, permanently.** §3.1's standing tax, paid on every turn of
 every session forever, for a capability most sessions never use. Named here rather than discovered
 later by somebody counting tokens and wondering what happened.
+
+---
+
+## 13k. The collision path's premise was false, and the rule built on it was right anyway (2026-09-01)
+
+A documentation-versus-reality gap in the one path in this codebase where getting it wrong destroys
+somebody else's signed-in browser. **The premise was false, the conclusion it supported was correct,
+and the fix is neither a reversal nor a no-op** — which is an awkward enough shape that it is worth
+writing down rather than quietly patching.
+
+### What was claimed, and what is actually true
+
+`launch.ts` stated in five places — most consequentially in its kill-condition table, and in the
+refusal a caller actually reads — that on a profile collision the process this call spawned **has
+already exited zero on its own**. The table then declined to reap it *because* it was already gone:
+
+> **Profile collision** … | **NEVER** | The process this call spawned **has already exited zero on
+> its own** — that is what a collision *is*.
+
+**Measured on Windows, in the production path, and it does not exit.** Instrumenting the collision
+branch itself:
+
+```
+COLLISION losingPid=61264 aliveAtRefusal=true
+COLLISION losingPid=61264 aliveAfter3s=true
+...long after the spawning process had exited:
+61264  HasExited=False  Responding=True
+```
+
+One leaked root browser — around eleven processes — on every collision. Nothing reaps it: no row
+names it, and the lazy global sweep reconciles claims and tabs rather than orphaned operating-system
+processes. It is the **same** unreachability the readiness-timeout row already kills for; it was
+simply believed not to apply here.
+
+### A note on how this was measured, because the instrument lied first
+
+The first three measurements said the losing process **did** exit, cleanly, five times out of five.
+They were wrong, and the reason is worth recording: they injected a tracing `spawnImpl` to capture
+the identifier. **Holding that extra reference changed the child's lifetime**, so the instrument
+manufactured the reassuring answer. Only in-place instrumentation of the real branch — no injection,
+no wrapper — reproduced what production does.
+
+That is the second measuring tool on this question to invent a result. The other counted
+`chrome.exe` without filtering `HasExited`, and reported a leak of processes that had already
+exited. **On this path, prefer the instrument that changes nothing**, and treat agreement between a
+convenient method and a convenient answer as a reason for suspicion rather than confidence.
+
+### The ruling: kill the identifier this call spawned; never what holds the profile
+
+> **What is corrected.** §6's *"exits successfully — exit code zero"*, and the `NEVER` in
+> `launch.ts`'s kill-condition table. The banner on §6 records the first; this section records the
+> second.
+
+**The `NEVER` is not reversed, because it was never one rule — it was two, welded together.**
+Separating them is the whole of the argument:
+
+| The rule as written | What it actually contained |
+|---|---|
+| *"Never kill on the collision path, because our process already exited."* | **Two claims.** One about *what may be killed* — never the browser holding the profile — which is correct, load-bearing, and unchanged. One about *what is left to kill* — nothing — which is false |
+| The reason given for the prohibition | **The false half.** A reader who checks the premise and finds it false has every reason to conclude the prohibition is also wrong, and to "tidy" the branch into killing whatever holds the profile. A prohibition resting on a false premise warns against precisely the mutation it supplies the argument for |
+
+So the collision branch now ends the process **by the identifier the spawn returned**, and by
+nothing else. What is forbidden stays exactly as forbidden as before:
+
+- **The browser behind the answering endpoint is never signalled, on any path.** It belongs to
+  somebody else and is quite possibly the signed-in one whose keeper tab holds the shared sign-in
+  open. It is reached only through the discovery record, which is read and never acted on
+  destructively.
+- **Nothing matches by profile directory or by image name.** Those read as equivalent to "the
+  identifier we spawned" and are the opposite act on precisely this path.
+
+**Measured, and this is the assertion the ruling stands on:** with the losing identifier signalled,
+the browser behind the answering endpoint keeps serving `/json/version`. Three runs, three times
+confirmed, no survivors.
+
+### What this is not
+
+**It is not a widening of what may be killed.** The kill was already aimed at "a process this call
+spawned that never became adoptable", on three rows. The collision path always satisfied that
+description; it was excluded by a factual error, not by a different principle. After this change all
+four killing rows share one construction, which is easier to defend than an exception justified by a
+claim that turned out to be untrue.
+
+### What is given up, and what is still unknown
+
+**The residual risk is identifier reuse.** An operating system may reuse a process identifier
+between the spawn and the signal, in which case this signals an unrelated process. That risk is
+real. It is also **identical on the three rows that already kill**, so this change does not
+introduce it — but it now applies on one more path, and it is named here rather than left for
+somebody to discover.
+
+**POSIX is unestablished, and is not being claimed either way.** Every measurement here is Windows.
+The build's Linux runners skip every browser suite — no display, no binary — so **continuous
+integration cannot answer this question, and a green pipeline is not evidence about it.** The
+previous crew recorded the same gap honestly and it is recorded again rather than quietly closed:
+the correction above is written as a fact about Windows, and the kill is safe on any platform
+regardless, because on a platform where the losing process really does exit on its own the signal
+simply finds nothing and is swallowed.
+
+### The test-side workaround this retires
+
+A helper existed in the browser fixture that swept a profile directory by command line, because the
+collision test leaked exactly this browser. It **matched by profile directory**, so it also killed
+the *winning* browser — the shape of thing this ruling forbids in production, living in the test
+suite as a workaround for the defect the production code was declining to fix.
+
+It is deleted. Verified rather than assumed: with the sweep removed and the production kill in
+place, the collision test goes from leaking twelve-to-fifteen processes per run to leaking none,
+measured across repeated runs from a verified-empty baseline.
 
 ---
 

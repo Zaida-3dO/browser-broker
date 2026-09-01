@@ -130,7 +130,7 @@ export const NO_BROWSER_NOTE =
  *
  * Measured, and the reason `coldStartDetached` asserts rather than infers: a
  * second browser started against a profile already in use **hands its address
- * to the first and exits zero**, opening no endpoint of its own. The launch
+ * to the first**, opening no endpoint of its own. The launch
  * refuses on that, and this is what the refusal is worth saying alongside it —
  * because the thing a person should do about it is not obvious from a message
  * about endpoints.

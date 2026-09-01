@@ -772,9 +772,11 @@ Two arguments converging on one requirement is the strongest position a requirem
 
 **A launch is never inferred to have worked.** A second browser started against a profile directory
 already in use **does not report a lock error**: it hands its address to the browser already holding
-the profile and exits successfully, with nothing on the error stream and no debugging endpoint opened.
-So success is *having an endpoint that answers*, asserted positively — not a launch command returning
-zero, which is the one signal a caller is most likely to trust and the one measured to be misleading.
+the profile, with nothing on the error stream and no debugging endpoint opened. So success is *having
+an endpoint that answers*, asserted positively — not a launch command returning zero, which is the one
+signal a caller is most likely to trust and the one measured to be misleading. (This paragraph said
+the losing process "exits successfully" until 2026-09-01; it does not exit on its own — `DECISIONS.md`
+§13k.)
 
 **Discovery is a port the browser chooses and records beside its own profile.** Nothing fixed, and
 nothing this service picks: a fixed port collides with whatever else on the host wanted it, and a

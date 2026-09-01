@@ -1010,8 +1010,10 @@ export interface BrowserDriver {
    * **Success is an endpoint that answers, asserted positively, never
    * inferred from the launch not failing.** A second browser started against a
    * profile directory already in use does not report a lock error: it hands
-   * its address to the browser already holding the profile and **exits zero**,
-   * with nothing on the error stream and no debugging endpoint opened. Row #20
+   * its address to the browser already holding the profile, with nothing on
+   * the error stream and **no debugging endpoint of its own ever opened**.
+   * (It does not exit on its own either — see `launch.ts`, whose
+   * kill-condition table ends that losing process.) Row #20
    * owes that assertion and row #55 owes the bound on how long to wait for it,
    * which `SCHEMA.md` §1.2b records as genuinely open rather than settled.
    */
