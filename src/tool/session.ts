@@ -65,15 +65,29 @@ export interface SessionOptions {
  *
  * Read once at module load rather than per handshake: it cannot change while
  * the process runs, and a session serves one client.
+ *
+ * ── Why the read is allowed to fail ─────────────────────────────────────
+ *
+ * A missing or unreadable manifest must not take the surface down with it.
+ * This module is imported by the executable a client spawns, so a throw here
+ * happens *before* anything can be served and before the protocol exists to
+ * describe it — the client sees the process exit, not an error it can act on.
+ * Weighed against that, the cost of not knowing the version is a cosmetic
+ * field in one handshake.
+ *
+ * The command line degrades this way already, and by accident rather than by
+ * design: it reads the manifest inside the function behind `--version`, so
+ * every other command keeps working when the file is gone. Matching that
+ * behaviour deliberately is the point of the `catch` — the fallback is the
+ * same literal this constant held before it read anything.
  */
-const manifest = await import('../../package.json', { with: { type: 'json' } });
+const manifest = await import('../../package.json', { with: { type: 'json' } }).catch(
+  () => undefined,
+);
 
 export const SERVER_INFO = {
   name: 'browser-broker',
-  version:
-    typeof (manifest.default as { version?: unknown }).version === 'string'
-      ? (manifest.default as { version: string }).version
-      : '0.0.0',
+  version: typeof manifest?.default?.version === 'string' ? manifest.default.version : '0.0.0',
 } as const;
 
 /**
