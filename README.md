@@ -68,8 +68,12 @@ You need **Node 22.18 or newer**.
 The package ships compiled JavaScript, so nothing is built on your machine:
 
 ```bash
-npx browser-broker doctor
+npx -p browser-broker broker doctor
 ```
+
+The package installs two executables — `broker`, the command line, and `broker-tool`, the surface a
+client spawns — and neither is named for the package, so `npx browser-broker` cannot tell which you
+meant and refuses. `-p` names the package and the word after it names the executable.
 
 A client that spawns the tool surface names the same package, and npm revalidates the version on
 every run — so a published release arrives without anything being pulled or rebuilt by hand:
@@ -77,7 +81,10 @@ every run — so a published release arrives without anything being pulled or re
 ```json
 {
   "mcpServers": {
-    "browser-broker": { "command": "npx", "args": ["-y", "browser-broker"] }
+    "browser-broker": {
+      "command": "npx",
+      "args": ["-y", "-p", "browser-broker", "broker-tool"]
+    }
   }
 }
 ```

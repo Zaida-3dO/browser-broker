@@ -34,8 +34,11 @@ runs the sources with no build. An installation that would rather not track a ch
 the package instead, and npm revalidates the version on every spawn:
 
 ```json
-{ "command": "npx", "args": ["-y", "browser-broker"] }
+{ "command": "npx", "args": ["-y", "-p", "browser-broker", "broker-tool"] }
 ```
+
+The `-p` is not decoration: the package ships two executables and neither is named for the package,
+so `npx browser-broker` cannot choose between them and refuses to run at all.
 
 **Worth weighing before switching:** `npx` performs a registry round-trip on every spawn, costing
 seconds where a path on disk costs a fraction of one. It buys an upgrade path, not speed.

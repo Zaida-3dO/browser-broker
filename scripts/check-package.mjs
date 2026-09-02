@@ -152,6 +152,42 @@ for (const unwanted of ['tests/', 'docs/', 'tsconfig.json']) {
 // packing sequence rather than asserted after it, and asserting it anyway
 // would produce a check that passes whatever anyone does to the tree.
 
+// ── 5. A documented npx invocation names an executable npx can resolve ──
+//
+// `npx <package>` runs the bin *named after the package*, and this package
+// ships `broker` and `broker-tool` — neither of which is `browser-broker`.
+// So the obvious-looking `npx browser-broker` does not start the service; it
+// fails with "could not determine executable to run", and it fails that way
+// only once it is published, which is after the documentation claiming it is
+// already public.
+//
+// The check is textual rather than a spawn: resolving for real would need a
+// published version to install, which is exactly the ordering that let the
+// wrong line ship in the first place.
+const binNames = new Set(bins.map(([name]) => name));
+const packageIsOwnBin = binNames.has(manifest.name);
+if (!packageIsOwnBin) {
+  for (const doc of ['README.md', 'RELEASES.md']) {
+    const text = readFileSync(path.join(root, doc), 'utf8');
+    // `npx <flags> <package>` with no executable after it. `-p`/`--package`
+    // is the form that names one, so a match carrying it is correct.
+    const pattern = new RegExp(
+      String.raw`npx(?:\s+-[-\w]+)*\s+` +
+        manifest.name +
+        String.raw`(?:@[\w.^~-]+)?(?=[\s"',\]}]|$)`,
+      'g',
+    );
+    for (const match of text.matchAll(pattern)) {
+      if (/\s(?:-p|--package)\s/.test(match[0])) continue;
+      fail(
+        'npx-invocation',
+        `${doc} documents \`${match[0].trim()}\`, which npx cannot resolve — ` +
+          `no bin is named ${manifest.name}. Use -p ${manifest.name} <${[...binNames][0]}>`,
+      );
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error('Packaging check failed:\n');
   for (const line of failures) console.error(`  - ${line}`);
