@@ -1,0 +1,40 @@
+{
+  // The publishing build, and the only configuration in this repository that
+  // emits anything.
+  //
+  // ── Why a build exists at all, when the design says it should not ───────
+  //
+  // The sources run under Node's native type stripping with no compiler, and
+  // `tsconfig.json` is the configuration for that: `noEmit`, with
+  // `erasableSyntaxOnly` keeping the sources inside the subset stripping can
+  // execute. That remains how this repository is developed and tested.
+  //
+  // It stops working at exactly one boundary. **Node refuses to strip types
+  // from any file under a `node_modules` path** and fails with
+  // `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`; no flag overrides it, and
+  // the request for one was closed as not planned. An installed package *is*
+  // a directory under `node_modules`, so a manifest whose `bin` names a `.ts`
+  // file installs cleanly and then cannot run — the failure lands on whoever
+  // installed it, not on whoever published it.
+  //
+  // So the compiler runs once per release, here, rather than on every machine
+  // that consumes the package. `erasableSyntaxOnly` stays on in the base
+  // configuration deliberately: it keeps the sources executable *without* this
+  // build, so the development path and the published artefact never diverge
+  // into two dialects.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": false
+  },
+  // Sources only. The tests import from `src/` and would otherwise pull the
+  // whole suite into the published tarball.
+  //
+  // `include` is set rather than extended because the base configuration lists
+  // `tests/**` and `eslint.config.js`, and a compiler option cannot subtract
+  // from an inherited `include`.
+  "include": ["src/**/*.ts"]
+}

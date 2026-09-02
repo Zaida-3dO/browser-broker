@@ -55,18 +55,25 @@ export interface SessionOptions {
 /**
  * What this surface calls itself during the handshake.
  *
- * The name is the package's, and the version is deliberately **not** read
- * from `package.json` at runtime: that file is `"version": "0.0.0"` and
- * `"private": true`, so reading it would report a version that means
- * "unset" as though it were a release. What a client does with `serverInfo`
- * is identify and log the thing it connected to, and a literal here says the
- * true thing — this is the surface, built from this tree — without implying a
- * published artefact that does not exist. The day the package is versioned
- * for real, this is the one line that has to agree with it.
+ * The version was a literal `0.0.0` for as long as the package was private
+ * and unversioned: reading a manifest that says "unset" would have reported
+ * that as though it were a release. **That reservation expired when the
+ * package was versioned and published**, which the comment here anticipated
+ * as the one line that would have to agree with it — so it now reads the
+ * manifest for the same reason the command line does, and the two cannot
+ * disagree because there is only one of them.
+ *
+ * Read once at module load rather than per handshake: it cannot change while
+ * the process runs, and a session serves one client.
  */
+const manifest = await import('../../package.json', { with: { type: 'json' } });
+
 export const SERVER_INFO = {
   name: 'browser-broker',
-  version: '0.0.0',
+  version:
+    typeof (manifest.default as { version?: unknown }).version === 'string'
+      ? (manifest.default as { version: string }).version
+      : '0.0.0',
 } as const;
 
 /**

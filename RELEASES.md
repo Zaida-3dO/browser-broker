@@ -16,6 +16,35 @@ happens if it does nothing.
 
 ## Unreleased
 
+### The package is published, and it ships compiled JavaScript
+
+**What moved.** The service is installable from the registry as `browser-broker`, so a caller can
+spawn it without a checkout. The manifest's `bin` entries now name emitted JavaScript under `dist/`
+rather than the TypeScript sources.
+
+**Why the build exists**, given that the development path deliberately has none: **Node refuses to
+strip types from any file under a `node_modules` path**, and an installed package is a directory
+under `node_modules`. A manifest whose `bin` named a `.ts` file would install cleanly and then fail
+on the machine of whoever installed it. There is no flag that changes this. The compiler therefore
+runs once per release rather than on every machine that consumes the package, and `erasableSyntaxOnly`
+stays on so the sources still run unbuilt — the two paths execute the same dialect.
+
+**What an installation has to do.** Nothing. A checkout is unaffected: `node src/bin/broker.ts` still
+runs the sources with no build. An installation that would rather not track a checkout can point at
+the package instead, and npm revalidates the version on every spawn:
+
+```json
+{ "command": "npx", "args": ["-y", "browser-broker"] }
+```
+
+**Worth weighing before switching:** `npx` performs a registry round-trip on every spawn, costing
+seconds where a path on disk costs a fraction of one. It buys an upgrade path, not speed.
+
+**One surface changes what it reports.** The tool handshake's `serverInfo.version` was the literal
+`0.0.0` while the package was unversioned, and now reads the manifest — so a client logging it sees
+the released version rather than a placeholder.
+
+
 ### ⚠ Behaviour change: the default browser engine is Edge
 
 **What moved.** A browser launched by this service uses **`msedge`** by default. The previous
