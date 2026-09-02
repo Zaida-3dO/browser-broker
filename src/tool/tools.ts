@@ -54,6 +54,58 @@ import { BROWSER_CHOICE_GUIDANCE } from '../browser/driver.ts';
  * and it should not be reintroduced.
  */
 
+/**
+ * What a capture can and cannot be trusted to show (§3.11).
+ *
+ * ── A picture is the one result a caller cannot check against itself ─────
+ *
+ * Every other operation here returns something self-describing: a claim
+ * returns a key, an evaluation returns a value, a refusal explains itself. A
+ * capture returns a path to an image, and **an image of a half-rendered page
+ * looks exactly like an image of a broken one.** There is no field in the
+ * result to distrust, so a caller has nothing to weigh the picture against —
+ * which makes a wrong conclusion from a capture both easy to reach and hard
+ * to notice.
+ *
+ * The consequence is not hypothetical, and it is what puts this text on the
+ * description rather than in a document: a field session captured a canvas
+ * before it had drawn, read the dark frame as the page's real appearance, and
+ * **reported a fault against an application that did not have one.** It was
+ * caught only because a second measurement happened to disagree — which is
+ * not a mechanism anything can rely on.
+ *
+ * ── Why settling does not already cover this ─────────────────────────────
+ *
+ * Every capture settles the page first, and settling is worth exactly what
+ * §3.11 claims: it stops animations and transitions, hides the caret, and
+ * waits for web fonts, so the same page yields the same pixels run to run.
+ * **That is repeatability, not completeness.** It makes a moving page hold
+ * still; it cannot make an unfinished page finish. A canvas that has not
+ * drawn its first frame is not moving — it is absent — and holding it still
+ * is not the same as waiting for it.
+ *
+ * ── Why this names a check rather than a duration ────────────────────────
+ *
+ * The tempting sentence is *"allow the page to settle first"*, and it is
+ * advice a caller cannot act on: **the right wait is a property of the page,
+ * not of this service**, and a caller that has never seen the page rendered
+ * has no way to pick a number. Any figure written here would be wrong for
+ * some page and would be trusted anyway, which is worse than saying nothing.
+ *
+ * So the guidance is a **check** instead — capture twice and compare, which
+ * this tool can already express through `compare_to`. A caller can act on it
+ * without knowing anything about the page in advance, and it answers the
+ * question actually being asked, which is not *"has enough time passed"* but
+ * *"has this stopped changing"*. Two identical frames are evidence; one frame
+ * and a duration are an assumption.
+ */
+const CAPTURE_SETTLE_CAVEAT =
+  'Captures are settled — animations stopped, fonts waited for — so a page yields the same ' +
+  'pixels twice; that steadies a moving page but does not wait for one still drawing. A canvas ' +
+  'or a deferred region can be captured before it has rendered, and the picture will look like a ' +
+  'broken page rather than an early one. When a frame looks wrong, capture again with compare_to ' +
+  'and check it against the first: no difference means you are seeing the page, not a moment of it.';
+
 /** One argument a tool takes. */
 export interface ToolArgument {
   readonly name: string;
@@ -189,7 +241,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         name: 'wait_ms',
         type: 'integer',
         required: false,
-        description: 'How long to wait for the page, in milliseconds.',
+        description:
+          'How long to wait for the page, in milliseconds. Bounds the load; it does not wait for ' +
+          'work the page starts afterwards, so a canvas or a lazily-loaded region can still be ' +
+          'unfinished when this returns. See browser_capture on how to tell.',
       },
     ],
   },
@@ -261,7 +316,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description:
       'Take a picture of the page — and, if you name an earlier capture, what changed since it. ' +
       'Returns paths, never the image itself. A selector and a full page cannot both be asked ' +
-      'for. Never refused for cost.',
+      'for. Never refused for cost. ' +
+      CAPTURE_SETTLE_CAVEAT,
     arguments: [
       LEASE_KEY,
       {
