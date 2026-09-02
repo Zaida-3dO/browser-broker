@@ -49,6 +49,11 @@ import type { BrokerService } from '../../src/adapter/service-seam.ts';
 async function withLease(
   body: (
     act: (argv: readonly string[]) => Promise<Awaited<ReturnType<BrokerService['perform']>>>,
+    // What the driver was actually told. A test that can only see the
+    // outcome can say a call was not refused; it cannot say what the call
+    // did, and for an answer whose two values are opposites that is the
+    // whole of the behaviour.
+    driverCalls: () => readonly { name: string; detail?: unknown }[],
   ) => Promise<void>,
 ): Promise<void> {
   const subject = await makeServiceSubject();
@@ -66,12 +71,14 @@ async function withLease(
     assert.equal(claimed.outcome, 'accepted', 'the lease this test needs was not granted');
     const key = String((claimed as { value: Record<string, unknown> }).value['key']);
 
-    await body((argv) =>
-      subject.service.perform({
-        operation: 'act',
-        adapter: 'cli',
-        arguments: parseArguments([...argv, '--lease-key', key]),
-      }),
+    await body(
+      (argv) =>
+        subject.service.perform({
+          operation: 'act',
+          adapter: 'cli',
+          arguments: parseArguments([...argv, '--lease-key', key]),
+        }),
+      () => subject.driverCalls(),
     );
   } finally {
     await subject.dispose?.();
@@ -259,30 +266,68 @@ test('the verbs that always worked still work — the assembly did not capture a
   });
 });
 
-test('ACT DIALOG IS REACHABLE FROM THE COMMAND LINE — accept, dismiss, and a prompt answer', async () => {
+test('ACT DIALOG IS REACHABLE, AND SAYS THE ANSWER THE CALLER MEANT', async () => {
   // Left unreachable by the pull request that fixed resize and emulate, and
   // recorded there as "known and deliberately not fixed here". The operation
   // wants `response: { accept: boolean }`; a command line produces strings,
   // so --response accept, --value accept and --accept true were all refused
   // identically with a message describing what the caller had just said.
   //
-  // The single change that breaks this test: returning argument(args,
-  // 'response') alone from responseFrom, which is what it did before.
-  await withLease(async (act) => {
-    for (const argv of [
-      ['--action', 'dialog', '--accept'],
-      ['--action', 'dialog', '--dismiss'],
-      ['--action', 'dialog', '--value', 'accept'],
-      ['--action', 'dialog', '--value', 'dismiss'],
-      ['--action', 'dialog', '--accept', '--prompt-text', 'typed before accepting'],
-    ]) {
+  // **Asserted on the driver's call log, not on the outcome.** An earlier
+  // version of this test checked only that the call was not refused, and a
+  // mutation inverting the dismiss branch — so `--value dismiss` ACCEPTS —
+  // passed all sixteen cases in this file and the whole suite besides. The
+  // two answers are opposites, and a test that cannot tell them apart is
+  // defending nothing: an agent answering "Delete these rows?" would have
+  // clicked OK and been told it succeeded.
+  await withLease(async (act, driverCalls) => {
+    const answers: readonly (readonly [readonly string[], boolean])[] = [
+      [['--action', 'dialog', '--accept'], true],
+      [['--action', 'dialog', '--value', 'accept'], true],
+      [['--action', 'dialog', '--response', 'accept'], true],
+      [['--action', 'dialog', '--dismiss'], false],
+      [['--action', 'dialog', '--value', 'dismiss'], false],
+      [['--action', 'dialog', '--response', 'dismiss'], false],
+    ];
+
+    for (const [argv, expected] of answers) {
+      const before = driverCalls().length;
       const outcome = await act(argv);
-      assert.notEqual(
-        (outcome as { rule?: string }).rule,
-        'act.dialog_answer_named',
-        `${argv.join(' ')} still cannot say what answer it means: ${JSON.stringify(outcome)}`,
+      assert.equal(outcome.outcome, 'accepted', `${argv.join(' ')}: ${JSON.stringify(outcome)}`);
+
+      const call = driverCalls()
+        .slice(before)
+        .find((entry) => entry.name === 'act');
+      assert.ok(call !== undefined, `${argv.join(' ')} never reached the driver`);
+      const detail = call.detail as { response?: { accept?: unknown } };
+      assert.equal(
+        detail.response?.accept,
+        expected,
+        `${argv.join(' ')} answered the dialog the wrong way round`,
       );
     }
+  });
+});
+
+test('a dialog accepted WITH PROMPT TEXT carries the text to the driver', async () => {
+  await withLease(async (act, driverCalls) => {
+    const before = driverCalls().length;
+    const outcome = await act([
+      '--action',
+      'dialog',
+      '--accept',
+      '--prompt-text',
+      'typed before accepting',
+    ]);
+
+    assert.equal(outcome.outcome, 'accepted', JSON.stringify(outcome));
+    const call = driverCalls()
+      .slice(before)
+      .find((entry) => entry.name === 'act');
+    assert.deepEqual((call?.detail as { response?: unknown }).response, {
+      accept: true,
+      promptText: 'typed before accepting',
+    });
   });
 });
 
