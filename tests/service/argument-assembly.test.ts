@@ -258,3 +258,150 @@ test('the verbs that always worked still work — the assembly did not capture a
     assert.equal(pressed.outcome, 'accepted', JSON.stringify(pressed));
   });
 });
+
+test('ACT DIALOG IS REACHABLE FROM THE COMMAND LINE — accept, dismiss, and a prompt answer', async () => {
+  // Left unreachable by the pull request that fixed resize and emulate, and
+  // recorded there as "known and deliberately not fixed here". The operation
+  // wants `response: { accept: boolean }`; a command line produces strings,
+  // so --response accept, --value accept and --accept true were all refused
+  // identically with a message describing what the caller had just said.
+  //
+  // The single change that breaks this test: returning argument(args,
+  // 'response') alone from responseFrom, which is what it did before.
+  await withLease(async (act) => {
+    for (const argv of [
+      ['--action', 'dialog', '--accept'],
+      ['--action', 'dialog', '--dismiss'],
+      ['--action', 'dialog', '--value', 'accept'],
+      ['--action', 'dialog', '--value', 'dismiss'],
+      ['--action', 'dialog', '--accept', '--prompt-text', 'typed before accepting'],
+    ]) {
+      const outcome = await act(argv);
+      assert.notEqual(
+        (outcome as { rule?: string }).rule,
+        'act.dialog_answer_named',
+        `${argv.join(' ')} still cannot say what answer it means: ${JSON.stringify(outcome)}`,
+      );
+    }
+  });
+});
+
+test('a dialog answer that names neither acceptance nor dismissal is still refused', async () => {
+  // The negative control. Without it, "dialog is reachable" would also pass
+  // against a bridge that fabricated an answer whenever one was missing —
+  // which is the worst possible fix, since it would decide on the caller's
+  // behalf whether to accept something they never saw.
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'dialog', '--value', 'perhaps']);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.dialog_answer_named');
+  });
+});
+
+test('prompt text with a dismissal is still refused — the operation decides, not the bridge', async () => {
+  // Assembly is coercion only. This rule lives in the operation, on the
+  // ledger, and the bridge must not start enforcing a second copy of it:
+  // two places deciding the same thing is how they come to disagree.
+  await withLease(async (act) => {
+    const outcome = await act([
+      '--action',
+      'dialog',
+      '--dismiss',
+      '--prompt-text',
+      'text that cannot accompany a dismissal',
+    ]);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.dialog_answer_named');
+  });
+});
+
+test('ACT FILL_FORM IS REACHABLE FROM THE COMMAND LINE — one --field per field', async () => {
+  // The other half of the same gap: the operation wants an array of objects
+  // and a command line has only strings, so the batch verb measured at 78
+  // calls across 35 sessions could not be called at all from the only client
+  // that was working at the time.
+  await withLease(async (act) => {
+    const outcome = await act([
+      '--action',
+      'fill_form',
+      '--field',
+      'e1=alice',
+      '--field',
+      'e2=bob@example.com',
+    ]);
+
+    assert.notEqual(
+      (outcome as { rule?: string }).rule,
+      'act.form_fields_bounded',
+      `a batch of two fields did not arrive as fields: ${JSON.stringify(outcome)}`,
+    );
+  });
+});
+
+test('a field value may contain an equals sign — only the first one separates', async () => {
+  // A password, a base64 fragment or a query string all carry one. Splitting
+  // on every = would silently truncate the value, which is the kind of defect
+  // that surfaces as "the form was filled but the login failed".
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'fill_form', '--field', 'e1=a=b=c']);
+
+    assert.equal(outcome.outcome, 'accepted', JSON.stringify(outcome));
+  });
+});
+
+test('splitting on the LAST separator would name a different field — it splits on the first', async () => {
+  // The equals-sign case above proves a value carrying one is accepted; it
+  // cannot prove *where* the split happened, because an accepted batch fill
+  // echoes no fields back. This can: a field whose text contains a separator
+  // is paired with one that has none, and the operation refuses a field with
+  // no value **by index**. Splitting anywhere but the first separator moves
+  // which index is bad, so the index in the refusal is the evidence.
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'fill_form', '--field', 'e1=a=b', '--field', 'e2']);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.value_required');
+    // Field 1, never field 0: the first field split correctly and is fine.
+    assert.match(
+      (outcome as { message: string }).message,
+      /Field 1/u,
+      'the wrong field was blamed, so the pair did not split where it should',
+    );
+  });
+});
+
+test('a batch fill with no fields is still refused', async () => {
+  // The negative control for the two above.
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'fill_form']);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.form_fields_bounded');
+  });
+});
+
+test('A REPEATED --field ACCUMULATES; every other repeated option still keeps the last word', () => {
+  // The parser assigned unconditionally, so a repeated option kept only its
+  // last occurrence. For `--value` that is right. For `--field` it was
+  // silent data loss of exactly the kind a batch verb cannot tolerate:
+  // `--field a=1 --field b=2` filled ONE field and reported success, which
+  // is worse than the refusal it replaced, because a refusal is visible.
+  //
+  // Asserted on the parser directly rather than through an outcome, because
+  // an accepted batch fill echoes no fields back — there is nothing
+  // downstream that can show how many arrived.
+  assert.deepEqual(parseArguments(['--field', 'e1=a', '--field', 'e2=b'])['field'], [
+    'e1=a',
+    'e2=b',
+  ]);
+
+  // One occurrence is still a list, so the shape does not depend on how many
+  // the caller happened to pass.
+  assert.deepEqual(parseArguments(['--field', 'e1=a'])['field'], ['e1=a']);
+
+  // The narrowness is the point: making every option accumulate would turn a
+  // twice-typed --value into a shape no operation expects.
+  assert.equal(parseArguments(['--value', 'first', '--value', 'second'])['value'], 'second');
+});
