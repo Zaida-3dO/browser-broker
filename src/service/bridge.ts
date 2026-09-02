@@ -417,8 +417,8 @@ function actionFrom(args: Readonly<Record<string, unknown>>): unknown {
   const targetRef = argument(args, 'target_ref', 'targetRef');
   const viewport = viewportFrom(args);
   const preferences = preferencesFrom(args);
-  const response = argument(args, 'response');
-  const fields = argument(args, 'fields');
+  const response = responseFrom(args);
+  const fields = fieldsFrom(args);
 
   return {
     action,
@@ -492,6 +492,111 @@ function viewportFrom(args: Readonly<Record<string, unknown>>): unknown {
   }
 
   return undefined;
+}
+
+/**
+ * The answer a `dialog` gives, assembled from flat flags.
+ *
+ * The same unreachability {@link viewportFrom} exists for, and it survived the
+ * pull request that fixed that one — recorded there as "known and deliberately
+ * not fixed here", which is a reasonable thing to write once and a poor thing
+ * to leave true.
+ *
+ * `validateAction` wants `response: { accept, promptText? }`, an object whose
+ * first member is a **boolean**. A command line produces flat strings, so
+ * `--response accept`, `--value accept` and `--accept true` all arrived as
+ * something that is not an object and drew the identical refusal:
+ *
+ * > Answering a dialog says whether to accept it or dismiss it.
+ *
+ * Which is what the caller was trying to say. As with a resize, the message
+ * describes the semantics and never the syntax, and no syntax existed.
+ *
+ * `--accept` and `--dismiss` are the two things a caller means, written as
+ * the two words the refusal itself uses. `--prompt-text` carries what to type
+ * before accepting. **Coercion only** — that text may not accompany a
+ * dismissal, and that stays the operation's decision, on the ledger, rather
+ * than being re-decided here.
+ */
+function responseFrom(args: Readonly<Record<string, unknown>>): unknown {
+  const given = argument(args, 'response');
+  if (given !== undefined && typeof given === 'object') {
+    return given;
+  }
+
+  const promptText = argument(args, 'prompt_text', 'promptText');
+  const accept = acceptFrom(args, given);
+  if (accept === undefined) {
+    return given;
+  }
+
+  return {
+    accept,
+    ...(typeof promptText === 'string' ? { promptText } : {}),
+  };
+}
+
+/**
+ * Whether the caller said accept or dismiss, across the spellings a person
+ * reaches for. Anything else is left alone so the operation refuses it.
+ */
+function acceptFrom(args: Readonly<Record<string, unknown>>, given: unknown): boolean | undefined {
+  if (argument(args, 'accept') !== undefined) {
+    const flag = argument(args, 'accept');
+    return flag === '' || flag === true || flag === 'true' ? true : undefined;
+  }
+  if (argument(args, 'dismiss') !== undefined) {
+    const flag = argument(args, 'dismiss');
+    return flag === '' || flag === true || flag === 'true' ? false : undefined;
+  }
+  const word = typeof given === 'string' ? given : argument(args, 'value');
+  if (word === 'accept') return true;
+  if (word === 'dismiss') return false;
+  return undefined;
+}
+
+/**
+ * The fields a `fill_form` fills, assembled from repeated flat pairs.
+ *
+ * Unreachable for the same reason and fixed the same way: the operation wants
+ * an **array of objects**, and a command line has only strings.
+ *
+ * `--field ref=value` is the form, repeated once per field, because that is
+ * what the operation is — a list of pairs — and because a caller already types
+ * `--target` and `--value` for the single-field verbs. Only the first `=`
+ * separates, so a value may contain one.
+ *
+ * **Coercion only.** The bound on how many fields a batch carries, and whether
+ * a reference is a reference, stay inside the operation.
+ */
+function fieldsFrom(args: Readonly<Record<string, unknown>>): unknown {
+  const given = argument(args, 'fields');
+  if (given !== undefined && Array.isArray(given)) {
+    return given;
+  }
+
+  const pairs = argument(args, 'field');
+  const list: readonly unknown[] = Array.isArray(pairs)
+    ? (pairs as readonly unknown[])
+    : pairs === undefined
+      ? []
+      : [pairs];
+  if (list.length === 0) {
+    return given;
+  }
+
+  return list.map((pair) => {
+    if (typeof pair !== 'string') {
+      return pair;
+    }
+    const split = pair.indexOf('=');
+    if (split < 0) {
+      // No separator is not a pair. Handed on so the operation refuses it
+      // and names which field, rather than being silently dropped here.
+      return { ref: pair };
+    }
+    return { ref: pair.slice(0, split), value: pair.slice(split + 1) };
+  });
 }
 
 /**

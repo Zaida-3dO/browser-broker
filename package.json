@@ -1,12 +1,12 @@
 {
   "name": "browser-broker",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "license": "MIT",
   "description": "Leases over tabs in a fixed set of browsers: bounded capacity, a queue, reclamation, and an enforced capture policy.",
   "type": "module",
   "bin": {
-    "broker": "src/bin/broker.ts"
+    "broker": "dist/src/bin/broker.js",
+    "broker-tool": "dist/src/bin/broker-tool.js"
   },
   "engines": {
     "node": ">=22.18"
@@ -24,9 +24,12 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test \"tests/**/*.test.mjs\" \"tests/**/*.test.ts\"",
-    "check": "npm run check:external-refs && npm run check:doc-links && npm run check:arbitration && npm run check:capture-isolation && npm run check:artifact-path && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install && npm run check:operations && npm run check:argument-refusals && npm run check:injected-tests",
+    "check": "npm run check:external-refs && npm run check:doc-links && npm run check:arbitration && npm run check:capture-isolation && npm run check:artifact-path && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install && npm run check:operations && npm run check:argument-refusals && npm run check:injected-tests && npm run check:package",
     "check:arbitration": "node scripts/check-arbitration.mjs",
-    "check:artifact-path": "node scripts/check-artifact-path.mjs"
+    "check:artifact-path": "node scripts/check-artifact-path.mjs",
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "npm run build",
+    "check:package": "node scripts/check-package.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -44,5 +47,12 @@
     "prettier": "^3.6.2",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.68.0"
-  }
+  },
+  "files": [
+    "dist/",
+    ".env.example",
+    "README.md",
+    "RELEASES.md",
+    "LICENSE"
+  ]
 }

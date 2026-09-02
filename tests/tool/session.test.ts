@@ -528,7 +528,11 @@ test('INITIALIZE is answered with a negotiated version, capabilities and serverI
   // menu that answers `method_not_found` when chosen.
   assert.deepEqual(Object.keys(result.capabilities), ['tools']);
   assert.equal(result.serverInfo.name, 'browser-broker');
-  assert.equal(typeof result.serverInfo.version, 'string');
+  // The MANIFEST'S version, not merely a string. Asserting the type alone
+  // passed against a surface that reported the placeholder `0.0.0` forever,
+  // which is the whole thing reading the manifest was meant to stop.
+  const manifest = await import('../../package.json', { with: { type: 'json' } });
+  assert.equal(result.serverInfo.version, manifest.default.version);
 
   // The handshake is answered by the surface itself and never reaches the
   // arbitration core — there is no lease involved in saying hello.

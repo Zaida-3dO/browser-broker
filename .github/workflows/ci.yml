@@ -225,6 +225,27 @@ jobs:
       - run: npm ci
       - run: npm run check:injected-tests
 
+  # The packaging check: prove the tarball a stranger installs actually runs.
+  #
+  # `install` above proves a *checkout* installs and spawns, which is the
+  # development path and runs the sources under native type stripping. The
+  # published artefact is a different thing — emitted JavaScript, unpacked
+  # under `node_modules` — and the one property that differs is the one that
+  # breaks: Node refuses to strip types under `node_modules`, so a manifest
+  # whose `bin` names a `.ts` file passes every other job here, publishes,
+  # installs, and then fails on the machine of whoever installed it.
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      - run: npm run check:package
+
   # Windows earns a job because the network-location refusal has a
   # platform-specific path that would otherwise never execute in continuous
   # integration at all. A hosted runner has nothing mapped, so this proves the

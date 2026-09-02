@@ -43,6 +43,18 @@ Thumbs.db
 .vscode/
 *.swp
 
+# Test fixture trees. One case nests a temporary tree inside the repository
+# because Node resolves a runtime dependency by walking up to a node_modules,
+# and a tree in the system temporary directory has none above it. The case
+# removes its own directory; this covers a run that died before it could.
+.broker-nomanifest-*/
+
+# The packaging gate's self-test copies the tree once per seeded violation,
+# because the gate runs a real `npm pack` and there is no honest way to seed
+# one without a real tree. Each seed removes its own directory; this covers a
+# run that died before it could.
+.check-package-seed-*/
+
 # Local tool caches
 .cache/
 .tmp/
