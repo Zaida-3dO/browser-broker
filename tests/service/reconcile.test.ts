@@ -5,6 +5,7 @@ import {
   applyReconciliation,
   decideReconciliation,
   readRecordedTabs,
+  settleStrandedTabs,
   VANISHED_TAB_REASON,
   type LivePage,
   type RecordedTab,
@@ -306,5 +307,66 @@ test('an opening row reaches the decider as a null driver name, from a real stor
       'the page this lease is about to be handed must not be closed under it',
     );
     assert.deepEqual(plan.skippedOpening, [openingTab]);
+  });
+});
+
+test('A ROW STRANDED AT closing BY AN ENDED LEASE IS SETTLED when the browser does not have its page', async () => {
+  // The population that strands, and the reason nothing could reach it:
+  // `readRecordedTabs` requires `claims.state = 'active'`, correctly, because
+  // a lapsed lease's rows are the sweep's business. So a tab moved to
+  // `closing` whose answer is never written back belongs to a lease in a
+  // final state, and every later reconciliation looks straight past it.
+  //
+  // A real store was found holding 22 of these, the oldest two days old,
+  // every one with `close_attempts = 0`.
+  await withSteppedStore(({ db }) => {
+    const claim = seedClaim(db, { state: 'released' });
+    const tabId = reserveTab(db, claim.claimId, 'regular');
+    recordTabOpened(db, tabId, 'page-that-is-gone');
+    db.prepare("UPDATE tabs SET state = 'closing' WHERE id = ?").run(tabId);
+
+    // The browser lists nothing: the page is gone.
+    const settled = settleStrandedTabs(db, 'regular', [], new Date().toISOString());
+
+    assert.equal(settled, 1);
+    const tab = readTab(db, tabId);
+    assert.equal(tab.state, 'closed', 'the row is still waiting for an answer nobody will give');
+  });
+});
+
+test('a stranded row whose page the browser STILL HAS is left alone', async () => {
+  // The negative control, and the one that matters: settling a row whose page
+  // exists would claim an answer nobody has given, and would free a slot in
+  // the partial unique index while the page it names is still open.
+  await withSteppedStore(({ db }) => {
+    const claim = seedClaim(db, { state: 'released' });
+    const tabId = reserveTab(db, claim.claimId, 'regular');
+    recordTabOpened(db, tabId, 'page-still-open');
+    db.prepare("UPDATE tabs SET state = 'closing' WHERE id = ?").run(tabId);
+
+    const settled = settleStrandedTabs(
+      db,
+      'regular',
+      ['page-still-open'],
+      new Date().toISOString(),
+    );
+
+    assert.equal(settled, 0);
+    assert.equal(readTab(db, tabId).state, 'closing');
+  });
+});
+
+test('a stranded row belonging to a LIVE lease is left to the ordinary path', async () => {
+  // An active lease's tabs are reconciled by the vanished-page path, which
+  // also ends the lease. Settling the row here would leave that lease active
+  // and owning nothing, which is capacity pinned by no page at all.
+  await withSteppedStore(({ db }) => {
+    const claim = seedClaim(db, { state: 'active' });
+    const tabId = reserveTab(db, claim.claimId, 'regular');
+    recordTabOpened(db, tabId, 'page-that-is-gone');
+    db.prepare("UPDATE tabs SET state = 'closing' WHERE id = ?").run(tabId);
+
+    assert.equal(settleStrandedTabs(db, 'regular', [], new Date().toISOString()), 0);
+    assert.equal(readTab(db, tabId).state, 'closing');
   });
 });

@@ -293,6 +293,56 @@ export function checkSchemaVersion(found: number | null): GroupedCheck {
 }
 
 /**
+ * That no tab has been waiting on a close nobody is coming to answer.
+ *
+ * ── The report that said nothing ────────────────────────────────────────
+ *
+ * `closing` means the tool was asked and has not answered. That is a
+ * transient state measured in a round trip, so a row sitting in it for hours
+ * is not slow — it is waiting for an answer that will never arrive, because
+ * the process that would have written it exited long ago.
+ *
+ * This check exists because a store was found holding 22 such rows while
+ * `broker doctor` reported **exit code 0**. Eight real pages were open on
+ * the operator's browser, owned by no lease, and the only reason anybody
+ * noticed was that a person looked at his own browser and thought there were
+ * too many tabs. A report that is clean while that is true is not reporting.
+ *
+ * ── Why the threshold is a lease's own lifetime ─────────────────────────
+ *
+ * The number has to separate "a close is in flight" from "a close is never
+ * happening", and the honest boundary is the one the system already uses to
+ * decide a caller is gone: if a lease may be declared lapsed after this long
+ * without contact, a round trip outstanding for longer is not pending.
+ * Taking the threshold from configuration rather than writing one down keeps
+ * the two from drifting apart.
+ */
+export function checkStrandedTabs(stranded: number, thresholdSeconds: number): GroupedCheck {
+  if (stranded === 0) {
+    return {
+      group: 'store',
+      id: 'store.stranded_tabs',
+      title: 'No tab is waiting on a close that will not come',
+      status: 'ok',
+      detail: 'Every tab has either been closed or is still within a close round trip.',
+    };
+  }
+  return {
+    group: 'store',
+    id: 'store.stranded_tabs',
+    title: 'No tab is waiting on a close that will not come',
+    status: 'failed',
+    detail:
+      `${String(stranded)} tab(s) have been waiting on a close for longer than ` +
+      `${String(thresholdSeconds)} seconds, which is how long a lease may go without contact ` +
+      'before it is declared lapsed. A close outstanding for longer is not in flight.',
+    remedy:
+      'Run `broker reconcile` against each browser. It asks what the browser actually has open, ' +
+      'closes pages no live lease owns, and settles the records whose page is gone.',
+  };
+}
+
+/**
  * That the automation tool is present, and what version it is.
  *
  * `present` follows the same `boolean | undefined` convention as

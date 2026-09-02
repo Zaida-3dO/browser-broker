@@ -733,6 +733,73 @@ export function updateSweptTabs(
 }
 
 /**
+ * Record how a close went, after the browser has answered.
+ *
+ * ── The half of the lifecycle that was never written ────────────────────
+ *
+ * `updateSweptTabs` moves a tab to `closing`, and the schema says what that
+ * means: *"the tool was asked and has not answered"*. Something has to write
+ * the answer down, and nothing did — so a tab that closed perfectly well sat
+ * at `closing` for the life of the store, with `close_attempts` at zero
+ * because no code path had ever incremented it.
+ *
+ * The cost was not cosmetic. `closing` is one of the states the partial
+ * unique index on `(browser_id, driver_tab_id)` covers, so every stranded
+ * row kept holding its slot; and a state meaning "asked, no answer" that is
+ * never resolved makes the ledger disagree with the browser permanently,
+ * which is worse than either being wrong on its own — the ledger is what
+ * every guard reads.
+ *
+ * ── Why the attempt is counted even when it succeeds ────────────────────
+ *
+ * `close_attempts` is what distinguishes *tried and failed* from *never
+ * tried*, and that distinction is the whole diagnostic value of the column.
+ * A field investigation found 22 stranded rows and could say with certainty
+ * that the close had never been attempted, rather than having to guess
+ * whether the browser was refusing — because the counter was zero rather
+ * than absent.
+ *
+ * ── Why a failure is not an error the caller sees ───────────────────────
+ *
+ * `SCHEMA.md` §2.4b: **a leaked tab is not a leaked lease.** The capacity is
+ * already back; what is left is a page. Turning that into a thrown error
+ * would fail a release that actually succeeded at the thing releases are for.
+ * So a failure is recorded as `close_failed` on a row that stays `closing`
+ * — visible, selectable, and reclaimable by reconciliation — rather than
+ * raised.
+ */
+export function recordTabClosed(db: Database, tabId: string, at: string): void {
+  db.prepare(
+    `UPDATE tabs
+        SET state = 'closed',
+            closed_at = ?,
+            close_failed = 0,
+            close_attempts = close_attempts + 1,
+            updated_at = ?
+      WHERE id = ?
+        AND state = 'closing'`,
+  ).run(at, at, tabId);
+}
+
+/**
+ * Record that a close was attempted and the browser did not do it.
+ *
+ * The row stays `closing`, which is the honest state: the page may well
+ * still be there. What changes is that it is now *known* to have been tried,
+ * which is what `close_failed` is for and what reconciliation selects on.
+ */
+export function recordTabCloseFailed(db: Database, tabId: string, at: string): void {
+  db.prepare(
+    `UPDATE tabs
+        SET close_failed = 1,
+            close_attempts = close_attempts + 1,
+            updated_at = ?
+      WHERE id = ?
+        AND state = 'closing'`,
+  ).run(at, tabId);
+}
+
+/**
  * Record what the sweep did, on the call that performed it.
  *
  * §1.6's `internal` adapter, and the reason it exists: "that last one is not a

@@ -11,6 +11,8 @@ import {
   type ArbitrationOperation,
   type ArbitrationScope,
   type OrphanedTab,
+  recordTabClosed,
+  recordTabCloseFailed,
 } from '../../src/service/arbitration.ts';
 import { readSince } from '../../src/service/events.ts';
 import { CallRefusal } from '../../src/service/refusals.ts';
@@ -788,5 +790,78 @@ test('one lapsed never-opened lease does not wedge later calls, or a later spawn
 
     assert.equal(stateOf(store, 'claim-a'), 'expired');
     assert.equal(stateOf(store, 'claim-healthy'), 'active', 'an unrelated lease was disturbed');
+  });
+});
+
+test('A CLOSE THAT SUCCEEDS IS WRITTEN DOWN — the state a tab was left in for two days', async () => {
+  // `closing` means "the tool was asked and has not answered". Nothing ever
+  // wrote the answer, so a tab that closed perfectly well stayed in that
+  // state for the life of the store — holding its slot in the partial unique
+  // index on (browser_id, driver_tab_id), and making the ledger disagree
+  // with the browser permanently. A real store was found with 22 such rows.
+  await withSteppedStore(({ db }) => {
+    seedClaim(db, { id: 'claim-closed', expiresAt: '2020-01-01T00:00:00.000Z' });
+    seedTab(db, { id: 'tab-closed', claimId: 'claim-closed', opened: true });
+    // Ended the way the schema insists on: its CHECK ties a final state to
+    // an end time, so seeding one without the other is a shape the product
+    // cannot produce.
+    db.prepare("UPDATE claims SET state = 'released', ended_at = ? WHERE id = ?").run(
+      '2020-01-01T00:05:00.000Z',
+      'claim-closed',
+    );
+    db.prepare("UPDATE tabs SET state = 'closing' WHERE id = ?").run('tab-closed');
+
+    recordTabClosed(db, 'tab-closed', '2020-01-01T00:10:00.000Z');
+
+    const tab = db
+      .prepare(
+        `SELECT state, closed_at AS closedAt, close_failed AS closeFailed,
+                close_attempts AS closeAttempts
+           FROM tabs WHERE id = ?`,
+      )
+      .get('tab-closed') as {
+      state: string;
+      closedAt: string | null;
+      closeFailed: number;
+      closeAttempts: number;
+    };
+
+    assert.equal(tab.state, 'closed');
+    assert.equal(tab.closedAt, '2020-01-01T00:10:00.000Z');
+    // Counted even on success: this column is what distinguishes "tried and
+    // failed" from "never tried", and an investigation could say with
+    // certainty which it faced only because the count was zero, not absent.
+    assert.equal(tab.closeAttempts, 1);
+    assert.equal(tab.closeFailed, 0);
+  });
+});
+
+test('a close the browser REFUSES is recorded, and the row stays closing', async () => {
+  // 2.4b: a leaked tab is not a leaked lease. The capacity is already back
+  // and a page is what is left, so the failure is recorded rather than
+  // raised — throwing would fail a release that succeeded at the thing
+  // releases are for. The row stays `closing`, which is honest: the page may
+  // well still be there.
+  await withSteppedStore(({ db }) => {
+    seedClaim(db, { id: 'claim-stuck', expiresAt: '2020-01-01T00:00:00.000Z' });
+    seedTab(db, { id: 'tab-stuck', claimId: 'claim-stuck', opened: true });
+    db.prepare("UPDATE claims SET state = 'released', ended_at = ? WHERE id = ?").run(
+      '2020-01-01T00:05:00.000Z',
+      'claim-stuck',
+    );
+    db.prepare("UPDATE tabs SET state = 'closing' WHERE id = ?").run('tab-stuck');
+
+    recordTabCloseFailed(db, 'tab-stuck', '2020-01-01T00:10:00.000Z');
+
+    const tab = db
+      .prepare(
+        `SELECT state, close_failed AS closeFailed, close_attempts AS closeAttempts
+           FROM tabs WHERE id = ?`,
+      )
+      .get('tab-stuck') as { state: string; closeFailed: number; closeAttempts: number };
+
+    assert.equal(tab.state, 'closing', 'a refused close must not read as closed');
+    assert.equal(tab.closeFailed, 1);
+    assert.equal(tab.closeAttempts, 1);
   });
 });

@@ -1,3 +1,4 @@
+import { recordTabCloseFailed, recordTabClosed } from './arbitration.ts';
 import type { BrokerService } from '../adapter/service-seam.ts';
 import type { EventAdapter } from './events.ts';
 import { readEnvironment, type Environment } from '../config/environment.ts';
@@ -185,8 +186,23 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     closeTab: async (tab) => {
       const session = await browsers.session(tab.browserId);
       const opened = await resolveDriverTab(store.db, tab.tabId);
-      if (opened !== undefined) {
+      if (opened === undefined) {
+        return;
+      }
+      // **The answer is written down either way.** `closing` means "the tool
+      // was asked and has not answered", so a close that returns and is never
+      // recorded leaves a row saying that forever — which is what happened,
+      // 22 rows deep, until a person noticed his browser had filled with
+      // pages no lease owned.
+      //
+      // A failure is recorded rather than thrown: §2.4b's "a leaked tab is
+      // not a leaked lease" means the capacity is already back, and failing
+      // the release over the page would fail a call that did its job.
+      try {
         await session.closeTab({ browser: tab.browserId, driverTabId: opened });
+        recordTabClosed(store.db, tab.tabId, new Date().toISOString());
+      } catch {
+        recordTabCloseFailed(store.db, tab.tabId, new Date().toISOString());
       }
     },
   });

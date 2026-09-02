@@ -17,6 +17,7 @@ import {
   DOCTOR_EXIT,
   exitCodeFor,
   type GroupedCheck,
+  checkStrandedTabs,
 } from '../../src/doctor/checks.ts';
 import { EXPECTED_VERSION } from '../../src/store/schema/steps.ts';
 import { checksReporting, localDrivePath, sharePath } from '../helpers/paths.ts';
@@ -489,5 +490,33 @@ describe('the abandoned sign-in check', () => {
   it('a browser that is not signing in reports OK', () => {
     const check = checkAbandonedSignIn('regular', { kind: 'not-signing-in' });
     assert.equal(check.status, 'ok');
+  });
+});
+
+describe('checkStrandedTabs', () => {
+  it('FAILS THE REPORT — the condition that exited 0 while eight pages leaked', () => {
+    // `broker doctor` reported exit code 0 against a store holding 22 tabs
+    // waiting on a close nobody was coming to answer, while eight real pages
+    // sat open on the operator's browser owned by no lease. The only reason
+    // anybody noticed was a person looking at his own browser and thinking
+    // there were too many tabs. A report that is clean while that is true is
+    // not reporting.
+    const result = checkStrandedTabs(22, 600);
+
+    assert.equal(result.status, 'failed');
+    assert.match(result.detail, /22 tab/u);
+    // A failure owes a remedy: a check that says something is wrong and not
+    // what to do about it has moved the work rather than done it.
+    assert.ok(result.remedy !== undefined, 'a failure with no remedy');
+    assert.match(result.remedy, /reconcile/u);
+  });
+
+  it('reports no stranded tab as ok, never as unknown', () => {
+    // The negative control. `unknown` would be the wrong answer: nothing was
+    // unexaminable here — the count was taken, and it was zero.
+    const result = checkStrandedTabs(0, 600);
+
+    assert.equal(result.status, 'ok');
+    assert.equal(result.remedy, undefined, 'a passing check owes no remedy');
   });
 });
