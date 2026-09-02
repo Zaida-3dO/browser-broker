@@ -617,8 +617,22 @@ export class FakeBrowserDriver implements BrowserDriver {
         return Promise.resolve();
       },
 
-      navigate: (tab: TabHandle, url: string): Promise<NavigationResult> => {
-        const failure = this.#enter({ name: 'navigate', browser, tab, detail: { url } });
+      navigate: (tab: TabHandle, url: string, waitMs?: number): Promise<NavigationResult> => {
+        // The wait is recorded even though nothing here waits, because what a
+        // test needs to assert is that the service *asked* for it. An argument
+        // that is accepted and dropped between the caller and the driver looks
+        // identical from the outside to one that was honoured, and the only
+        // place that difference is observable is this log.
+        //
+        // Recorded as an absent key when the caller omitted it, rather than as
+        // an explicit undefined, so a test can tell "asked for no wait" from
+        // "asked for a wait of nothing".
+        const failure = this.#enter({
+          name: 'navigate',
+          browser,
+          tab,
+          detail: { url, ...(waitMs === undefined ? {} : { waitMs }) },
+        });
         if (failure) return Promise.reject(failure);
         return Promise.resolve({ url, title: `fake page at ${url}`, status: 200 });
       },

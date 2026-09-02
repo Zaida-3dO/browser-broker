@@ -189,7 +189,14 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         name: 'wait_ms',
         type: 'integer',
         required: false,
-        description: 'How long to wait for the page, in milliseconds.',
+        description:
+          'How long the navigation may take before it is abandoned, in whole milliseconds. ' +
+          'A bound, not a pause: the call returns as soon as the page is there, so a larger ' +
+          'value costs nothing on a page that loads quickly and two calls differing only in ' +
+          'this argument tell you nothing about how long the page was given to settle. ' +
+          'At most the lease lifetime, because a wait outliving the lease would hold the tab ' +
+          'past the point it becomes reclaimable; the refusal names the accepted range. ' +
+          'Omit it to leave the browser default in force.',
       },
     ],
   },

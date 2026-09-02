@@ -656,9 +656,17 @@ class RealBrowserSession implements BrowserSession {
    * The address after redirects rather than the one asked for, because those
    * differ constantly and the caller needs the one it got.
    */
-  async navigate(tab: TabHandle, url: string): Promise<NavigationResult> {
+  async navigate(tab: TabHandle, url: string, waitMs?: number): Promise<NavigationResult> {
     const page = await this.#page(tab);
-    const response = await page.goto(url);
+    // Passed as the navigation's own timeout rather than as a pause taken
+    // afterwards, so a page that arrives early returns early and the argument
+    // only ever costs what the page costs.
+    //
+    // Absent means the library's configured default applies. Spread rather
+    // than passed as `{ timeout: undefined }`, because an explicit undefined
+    // and an omitted key are the same to this library only by convention, and
+    // relying on that convention would make the default this service's to own.
+    const response = await page.goto(url, ...(waitMs === undefined ? [] : [{ timeout: waitMs }]));
     return {
       url: page.url(),
       title: await page.title(),

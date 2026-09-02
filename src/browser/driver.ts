@@ -764,8 +764,24 @@ export interface TabOperations {
    */
   readonly closeTab: (tab: TabHandle) => Promise<void>;
 
-  /** Point a tab at an address, and report where it actually ended up. */
-  readonly navigate: (tab: TabHandle, url: string) => Promise<NavigationResult>;
+  /**
+   * Point a tab at an address, and report where it actually ended up.
+   *
+   * `waitMs` is how long the navigation may take before it is abandoned. It
+   * is optional because the sensible default belongs to the browser library
+   * rather than to this service: a caller that has no opinion about how slow
+   * a page is should not have to invent a number, and a number invented here
+   * would be one this seam had no basis for.
+   *
+   * **It is a bound on the navigation, not a pause after it.** An
+   * implementation waits *up to* this long for the page and returns as soon
+   * as the page is there, so a larger value costs nothing on a page that
+   * loads quickly. That distinction is worth keeping in front of whoever
+   * reads a transcript: two calls differing only in this argument are not an
+   * experiment in how long a page was given to settle, because neither call
+   * waited any longer than the page took.
+   */
+  readonly navigate: (tab: TabHandle, url: string, waitMs?: number) => Promise<NavigationResult>;
 
   /**
    * Write storage entries into their origins **before this tab's first

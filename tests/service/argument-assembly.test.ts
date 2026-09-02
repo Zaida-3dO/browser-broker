@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { makeServiceSubject } from '../../src/adapter/conformance/service-subject.ts';
 import { parseArguments } from '../../src/cli/adapter.ts';
+import { createRuntime } from '../../src/service/runtime.ts';
+import { FakeBrowserDriver } from '../../src/browser/fake.ts';
 import type { BrokerService } from '../../src/adapter/service-seam.ts';
 
 /**
@@ -242,6 +248,136 @@ test('an emulate naming no preference at all is refused, and the message now car
       /--colour-scheme/u,
       'the refusal names its options but still not how to write one',
     );
+  });
+});
+
+/**
+ * A subject whose driver log is readable **with its arguments**, which the
+ * shared conformance subject deliberately narrows away.
+ *
+ * `ConformanceSubject` exposes calls as `{ name }` because every case it
+ * serves asks *"was the browser touched"* and nothing finer. The wait is the
+ * opposite question: the call is made either way and only its arguments
+ * differ, so the name alone cannot tell a wait that was carried from one that
+ * was dropped. Rather than widen a shared interface for one file, this builds
+ * the same two pieces — the real service over the fake driver — and keeps the
+ * whole log.
+ */
+async function withNavigateSubject(
+  body: (
+    navigate: (argv: readonly string[]) => Promise<Awaited<ReturnType<BrokerService['perform']>>>,
+    driverCalls: () => readonly {
+      readonly name: string;
+      readonly detail?: Readonly<Record<string, unknown>>;
+    }[],
+  ) => Promise<void>,
+): Promise<void> {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-wait-'));
+  const driver = new FakeBrowserDriver();
+  const runtime = await createRuntime({
+    adapter: 'cli',
+    driver,
+    env: {
+      BROKER_DB: path.join(directory, 'broker.db'),
+      BROKER_ARTIFACTS_ROOT: path.join(directory, 'artefacts'),
+      BROKER_PROFILE_ROOT: path.join(directory, 'profiles'),
+    },
+  });
+
+  try {
+    const claimed = await runtime.service.perform({
+      operation: 'claim',
+      adapter: 'cli',
+      arguments: parseArguments([
+        '--session-id',
+        'navigate-wait',
+        '--purpose',
+        'Proving a typed --wait-ms reaches the browser rather than being dropped in transit.',
+      ]),
+    });
+    assert.equal(claimed.outcome, 'accepted', 'the lease this test needs was not granted');
+    const key = String((claimed as { value: Record<string, unknown> }).value['key']);
+
+    await body(
+      (argv) =>
+        runtime.service.perform({
+          operation: 'navigate',
+          adapter: 'cli',
+          arguments: parseArguments([...argv, '--lease-key', key]),
+        }),
+      () => driver.calls,
+    );
+  } finally {
+    runtime.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** The navigations in a driver log, which is the only place the wait shows. */
+function navigations(
+  calls: readonly { readonly name: string; readonly detail?: Readonly<Record<string, unknown>> }[],
+): readonly Readonly<Record<string, unknown>>[] {
+  return calls.filter((call) => call.name === 'navigate').map((call) => call.detail ?? {});
+}
+
+test('NAVIGATE --wait-ms IS REACHABLE FROM THE COMMAND LINE, and reaches the browser', async () => {
+  // The argument is declared on the tool surface, so a caller reading the
+  // description supplies it and has no way to see whether anything received
+  // it: the response is byte-for-byte what a navigate with no wait returns.
+  //
+  // That is worse than an argument that does nothing, because it manufactures
+  // evidence — two calls differing only in this value look like a controlled
+  // experiment in how long the page was given, and if the value is discarded
+  // they differ in nothing but the wall-clock gap between them.
+  //
+  // A command line delivers `5000` as the string "5000", so this also pins the
+  // coercion: without it the value arrives as text and is refused by the
+  // integer guard, however correctly the caller typed it.
+  //
+  // The single change that breaks this test: dropping `waitMs` from the
+  // navigate branch of the bridge, or from the driver call in the operation.
+  await withNavigateSubject(async (navigate, driverCalls) => {
+    const outcome = await navigate(['--url', 'https://example.com/slow', '--wait-ms', '5000']);
+
+    assert.equal(outcome.outcome, 'accepted', `--wait-ms was refused: ${JSON.stringify(outcome)}`);
+    assert.deepEqual(
+      navigations(driverCalls()).map((detail) => detail['waitMs']),
+      [5000],
+      'the typed wait never reached the browser, so the argument is advertised and inert',
+    );
+  });
+});
+
+test('a navigate with no --wait-ms asks the browser for no wait at all', async () => {
+  // The negative control for the test above. Without it, "the wait arrives"
+  // would also pass against a build that sent some fixed number every time —
+  // which would be this service inventing a default the browser library owns.
+  await withNavigateSubject(async (navigate, driverCalls) => {
+    const outcome = await navigate(['--url', 'https://example.com/page']);
+
+    assert.equal(outcome.outcome, 'accepted');
+    assert.deepEqual(
+      navigations(driverCalls()).map((detail) => detail['waitMs']),
+      [undefined],
+    );
+  });
+});
+
+test('a --wait-ms that is not a usable number is refused BY NAME — the bridge coerces, it does not validate', async () => {
+  // The same split every other argument here keeps: unparseable text becomes
+  // `NaN` on the way through and is refused *by the operation*, on the ledger,
+  // with the rule that owns the bound — not silently dropped by the bridge,
+  // and not refused by some other rule that would send the caller looking in
+  // the wrong place.
+  await withNavigateSubject(async (navigate, driverCalls) => {
+    const outcome = await navigate(['--url', 'https://example.com/page', '--wait-ms', 'soon']);
+
+    assert.equal(outcome.outcome, 'refused', `"soon" was accepted: ${JSON.stringify(outcome)}`);
+    assert.equal((outcome as { rule: string }).rule, 'navigate.wait_bounded');
+    // The accepted range is in the sentence, because a refusal that leaves the
+    // caller guessing is the failure this whole file was written for.
+    assert.match(String((outcome as { message?: string }).message ?? ''), /1 to \d+/u);
+    assert.deepEqual(navigations(driverCalls()), [], 'the page was driven despite the refusal');
   });
 });
 
