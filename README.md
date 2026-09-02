@@ -171,6 +171,24 @@ it is rarely the checkout. Nothing else is required: there is no port to configu
 issue, and no process to have started first — the client starts it, and it exits when the client
 closes the pipe.
 
+**If that configuration file is itself synchronised between machines, an absolute path is the one
+thing in it that cannot travel.** A home directory differs per machine and often per user, so one
+entry naming a checkout is correct on the machine it was written on and names nothing on the other
+— where it fails as a connection that closes immediately, which reads as a broken service rather
+than as a path that does not exist. Give each machine its own entry under its own server name, or
+point the shared entry at the published package, which carries no machine's path:
+
+```json
+{
+  "mcpServers": {
+    "browser-broker": {
+      "command": "npx",
+      "args": ["-y", "-p", "browser-broker", "broker-tool"]
+    }
+  }
+}
+```
+
 To point it at a store other than the default, add the environment to the same block:
 
 ```json
