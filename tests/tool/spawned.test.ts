@@ -265,7 +265,15 @@ test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () 
   assert.equal(handshake.protocolVersion, PROTOCOL_VERSION);
   assert.ok(handshake.capabilities.tools !== undefined, 'the server announced no tools capability');
   assert.equal(handshake.serverInfo.name, 'browser-broker');
-  assert.equal(typeof handshake.serverInfo.version, 'string');
+  // The MANIFEST'S version, and this is the route where that matters most:
+  // the shim runs as its own process, so the version it reports is whatever
+  // the manifest resolves to *from where the shim sits*. Asserting the type
+  // alone passes against a surface reporting a placeholder forever, and it
+  // passes just as happily against a build whose manifest copy never landed
+  // beside the code — a divergence only a spawn can expose, because in
+  // process the test and the surface resolve the same file by construction.
+  const manifest = await import('../../package.json', { with: { type: 'json' } });
+  assert.equal(handshake.serverInfo.version, manifest.default.version);
 
   // `tools/list` after the handshake: the ten, reached the way a client
   // reaches them.

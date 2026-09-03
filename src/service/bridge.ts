@@ -541,13 +541,30 @@ function responseFrom(args: Readonly<Record<string, unknown>>): unknown {
  * reaches for. Anything else is left alone so the operation refuses it.
  */
 function acceptFrom(args: Readonly<Record<string, unknown>>, given: unknown): boolean | undefined {
-  if (argument(args, 'accept') !== undefined) {
-    const flag = argument(args, 'accept');
-    return flag === '' || flag === true || flag === 'true' ? true : undefined;
+  const acceptFlag = argument(args, 'accept');
+  const dismissFlag = argument(args, 'dismiss');
+
+  // Both flags names opposite intentions, so neither is the answer. Resolving
+  // them by which was read first hands the caller a decision it never made,
+  // and about the one thing a dialog answer decides — the same reasoning that
+  // refuses prompt text alongside a dismissal rather than picking one.
+  //
+  // **Nothing is refused here, deliberately.** This function coerces; the
+  // operation decides. Yielding `undefined` for an unanswerable pair leaves
+  // the assembled response without an `accept`, which the dialog operation
+  // already refuses by name — so the rule stays spelled in one place and
+  // arrives identically whichever route a caller came in on. Inventing a
+  // second rule at this layer would make the same mistake refuse differently
+  // depending on the transport.
+  if (acceptFlag !== undefined && dismissFlag !== undefined) {
+    return undefined;
   }
-  if (argument(args, 'dismiss') !== undefined) {
-    const flag = argument(args, 'dismiss');
-    return flag === '' || flag === true || flag === 'true' ? false : undefined;
+
+  if (acceptFlag !== undefined) {
+    return acceptFlag === '' || acceptFlag === true || acceptFlag === 'true' ? true : undefined;
+  }
+  if (dismissFlag !== undefined) {
+    return dismissFlag === '' || dismissFlag === true || dismissFlag === 'true' ? false : undefined;
   }
   const word = typeof given === 'string' ? given : argument(args, 'value');
   if (word === 'accept') return true;
