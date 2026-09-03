@@ -61,11 +61,13 @@ hanging the report.
 service to keep running: the process is started by whatever calls it and exits with it. So getting it
 working is an install and one more fetch below — there is no step after that.
 
-You need **Node 22.18 or newer**.
+You need **Node 22.18 or newer**. Either path below also needs a browser binary, which is a separate
+fetch from either install step — see [Browser binary](#browser-binary) once you've picked a path.
 
 ### From the registry
 
-The package ships compiled JavaScript, so nothing is built on your machine:
+The package ships compiled JavaScript, so nothing is built on your machine — but a browser binary
+still is; see [Browser binary](#browser-binary) below before your first `broker doctor`.
 
 ```bash
 npx -p browser-broker broker doctor
@@ -104,20 +106,8 @@ cd browser-broker
 npm install
 ```
 
-That compiles the one runtime dependency's native binding, which is *not* the only part of the install
-that does real work: this repository depends on `playwright-core`, not the full `playwright`
-distribution, precisely because the browser binary is spawned by this service, detached and by path,
-rather than downloaded and managed by the package. `playwright-core` does not fetch a browser on
-install, so a checkout that has never had one fetched by some other tooling has none, and `broker
-doctor`'s automation check will genuinely fail with exit code 11 until you run:
-
-```bash
-npx playwright-core install chromium
-```
-
-Run this once per machine, before the first `broker doctor`. It is the same install mechanism the
-full `playwright` package would run automatically on `npm install`; `playwright-core` just does not
-run it for you. Then run the broker itself:
+That compiles the one runtime dependency's native binding. It does not fetch a browser binary — see
+[Browser binary](#browser-binary) below before your first `broker doctor`. Then run the broker itself:
 
 ```bash
 node src/bin/broker.ts
@@ -140,6 +130,23 @@ To get the command on your path as `broker`, link the package from the checkout:
 ```bash
 npm link          # then: broker --help
 ```
+
+### Browser binary
+
+**Neither install path above fetches a browser.** This repository depends on `playwright-core`, not
+the full `playwright` distribution, precisely because the browser binary is spawned by this service,
+detached and by path, rather than downloaded and managed by the package. `playwright-core` does not
+fetch a browser on install, so a machine that has never had one fetched by some other tooling has
+none, and `broker doctor`'s automation check will genuinely fail with exit code 11 until you run:
+
+```bash
+npx playwright-core install chromium
+```
+
+Run this once per machine, before the first `broker doctor` — it applies whether you installed from
+the registry or from a checkout, because it is a fetch neither install step performs. It is the same
+install mechanism the full `playwright` package would run automatically on `npm install`;
+`playwright-core` just does not run it for you.
 
 ### Configuring it
 
