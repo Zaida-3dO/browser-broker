@@ -1018,6 +1018,27 @@ export interface CaptureResult extends TabOperationResult {
     readonly width: number;
     readonly height: number;
     readonly bytes: number;
+    /**
+     * How to diff a later capture against this one, spelled out rather than
+     * left to be inferred from `compare_to` existing as an argument.
+     *
+     * **Why this exists at all.** An audit of 18 hours of agent transcripts
+     * found `compare_to` used once against eighty `Read` calls that opened a
+     * screenshot back into context instead — roughly 90,000 tokens each,
+     * against roughly 350 for the diff `compare_to` returns. The id needed to
+     * use it was sitting in the response the whole time and nothing said so.
+     * Nothing else on this surface can reach a caller here: not the tool
+     * description, which a compacted context has already dropped, and not a
+     * later lesson learned, because there is no later call this could attach
+     * to. This field appears exactly when the caller is holding the id it
+     * would need — this call's own response — which needs no memory of
+     * anything read earlier.
+     *
+     * Always present alongside `captureId`, including on a call that itself
+     * used `compare_to` — the next capture is a future `compare_to` target
+     * regardless of whether this one was.
+     */
+    readonly compareHint: string;
   };
   /**
    * What the diff produced, present only when `compareTo` was supplied.
@@ -1138,6 +1159,7 @@ export function decideCapture(
         width: taken.width,
         height: taken.height,
         bytes: taken.bytes,
+        compareHint: `to diff a later capture against this one, pass compare_to: ${taken.captureId}`,
       };
 
       // ── The diff, when one was asked for (§3.11, §1.9) ──────────────────
