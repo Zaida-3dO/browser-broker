@@ -106,6 +106,37 @@ const CAPTURE_SETTLE_CAVEAT =
   'broken page rather than an early one. When a frame looks wrong, capture again with compare_to ' +
   'and check it against the first: no difference means you are seeing the page, not a moment of it.';
 
+/**
+ * What this tool's unit is wrong for, so a caller with the other job does not
+ * reach for it anyway.
+ *
+ * ── The distinction this exists to draw ──────────────────────────────────
+ *
+ * `compare_to` answers *"did this page change since a moment ago, on this
+ * same tab"* — a before-and-after over time, one lease, one running build.
+ * That is a different question from *"how do these two builds differ"*,
+ * where the two things being compared are not two moments of one tab but two
+ * separate runs, often of separate processes. This surface's unit is one
+ * lease holding one tab, which is the right shape for the first question and
+ * the wrong one for the second: a two-build comparison wants something that
+ * reads the scene or the DOM directly, not pixels from whichever tab happened
+ * to be open.
+ *
+ * ── Why this is worth a sentence rather than leaving it to be inferred ────
+ *
+ * A caller framing its task as "compare two builds" will reach for whatever
+ * on this surface has the word "compare" in it, and `compare_to` is the only
+ * candidate. Nothing here refuses that call — a diff still runs and still
+ * answers a real question about the two pixels it was given — so the caller
+ * gets an answer that looks like the one it asked for while measuring
+ * something else. A routing hint at the point of the call is the only thing
+ * that can catch this before the wrong tool is already in use; there is no
+ * refusal to word better; the call succeeds.
+ */
+const CAPTURE_BUILD_COMPARISON_CAVEAT =
+  'For comparing two builds — not two moments of the one tab you hold — a tool reading the scene ' +
+  'or DOM directly beats this one: this surface is one lease, one tab, pixels.';
+
 /** One argument a tool takes. */
 export interface ToolArgument {
   readonly name: string;
@@ -317,7 +348,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       'Take a picture of the page — and, if you name an earlier capture, what changed since it. ' +
       'Returns paths, never the image itself. A selector and a full page cannot both be asked ' +
       'for. Never refused for cost. ' +
-      CAPTURE_SETTLE_CAVEAT,
+      CAPTURE_SETTLE_CAVEAT +
+      ' ' +
+      CAPTURE_BUILD_COMPARISON_CAVEAT,
     arguments: [
       LEASE_KEY,
       {
