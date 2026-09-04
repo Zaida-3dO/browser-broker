@@ -66,8 +66,9 @@ fetch from either install step — see [Browser binary](#browser-binary) once yo
 
 ### From the registry
 
-The package ships compiled JavaScript, so nothing is built on your machine — but a browser binary
-still is; see [Browser binary](#browser-binary) below before your first `broker doctor`.
+The package ships compiled JavaScript, so **nothing is compiled** on your machine. That is not the
+same as nothing to set up: a browser binary is still owed, and this path does not fetch it — see
+[Browser binary](#browser-binary) below before your first `broker doctor`.
 
 ```bash
 npx -p browser-broker broker doctor

@@ -69,12 +69,22 @@ browser fetch:
 
 ```bash
 BROKER_REGULAR_BROWSER_ENGINE=chrome     # chrome | brave | msedge — has no effect on which binary launches
-BROKER_PRIVATE_BROWSER_ENGINE=chrome     # may differ from the line above
+BROKER_PRIVATE_BROWSER_ENGINE=chrome     # accepted and validated, and read by nothing — see below
 ```
 
+Both are parsed and validated, and an unaccepted value is refused at startup and named — that much is
+finished. **The private variable goes one step less far than the regular one:** one driver serves
+every browser in a process, and only the regular engine is handed to it, so the private value is
+validated and then never read by anything at all. It is not merely ineffective downstream; it has no
+downstream.
+
 **If it does nothing:** browsers keep launching under whichever Chromium build `playwright-core`
-resolves, same as before this change. The per-engine profile and sign-in consequences described in
-`DECISIONS.md` §13i apply once resolution is wired, not yet.
+resolves, same as before this change. **No profile is signed out by setting an engine**, which an
+earlier note claimed would happen: a profile directory is named for its *browser*, not for an engine,
+so there is no engine-keyed profile to move between and nothing to sign in again.
+`setup.profile_never_destroyed` holds, as it did before. The per-engine profile and sign-in
+consequences described in `DECISIONS.md` §13i are what would follow once resolution is wired, and
+describe nothing that happens now.
 
 ### Browsers are a configured list, and `browser` on a claim is optional
 
