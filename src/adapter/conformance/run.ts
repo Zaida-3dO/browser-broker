@@ -1,7 +1,7 @@
 import { ADAPTER_IDS, type AdapterId } from '../contract.ts';
 import { isWriteOperation, OPERATION_NAMES, type OperationName } from '../operations.ts';
 import type { BrokerService, RuleRegistry } from '../service-seam.ts';
-import type { ConformanceCase } from './case.ts';
+import type { ConformanceCase, ObservedDriverCall } from './case.ts';
 import type { ConformanceDrivers } from './driver.ts';
 
 /**
@@ -56,7 +56,7 @@ export interface Finding {
 /** One isolated service under test, with the two physical readings. */
 export interface ConformanceSubject {
   readonly service: BrokerService;
-  readonly driverCalls: () => readonly { readonly name: string }[];
+  readonly driverCalls: () => readonly ObservedDriverCall[];
   readonly liveClaimCount: () => number;
   readonly dispose?: () => Promise<void> | void;
 }

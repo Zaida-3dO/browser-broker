@@ -396,16 +396,23 @@ export function settleStrandedTabs(
  * | `updateSweptTabs` | The lease ended; is there a page to close? | `closing` — the tool is about to be asked |
  * | this | The page is already gone | `closed` — there is nothing to ask |
  *
- * **`closing` is settled here too, and that is the point rather than an
- * edge case.** A row in that state is waiting for an answer about a page;
- * once the browser has been asked what it has open and that page is not in
- * the list, the answer has arrived and it is *gone*. Leaving such a row
- * `closing` waits forever for a round trip whose subject is gone —
- * and it is reachable by nothing afterwards, because every later
- * reconciliation works from what the browser lists, and the browser lists
- * nothing. That is how a store came to hold 22 permanently stranded rows,
- * each still occupying its slot in the partial unique index on
- * `(browser_id, driver_tab_id)`.
+ * **`closing` appears in the predicate, and no row reaches it in that
+ * state.** The rows here come from {@link readRecordedTabs} by way of
+ * {@link decideReconciliation}, and that read requires `tabs.state IN
+ * ('opening', 'open')` — so the third value in the predicate below matches
+ * nothing this caller can supply. It is kept as a bound on what the write is
+ * permitted to touch rather than as a population it serves: the statement
+ * says which states this function may move a row out of, and a future caller
+ * that widens its own read cannot silently reopen a `closed` row through it.
+ *
+ * **The stranded-`closing` population is {@link settleStrandedTabs}'s**, not
+ * this function's, and the distinction is load-bearing. Those rows belong to
+ * leases that have already ended, which is precisely why `readRecordedTabs`
+ * (`claims.state = 'active'`) cannot see them and why they need their own
+ * pass. A store was found holding 22 of them, each still occupying its slot
+ * in the partial unique index on `(browser_id, driver_tab_id)`. Reading that
+ * story as this function's would leave the impression the gap is covered
+ * here, and it is not.
  *
  * A vanished page has no round trip outstanding, so `closing` would assert
  * one that is not, and the row would wait forever for an answer nobody is

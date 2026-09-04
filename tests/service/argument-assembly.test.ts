@@ -362,6 +362,44 @@ test('prompt text with a dismissal is still refused — the operation decides, n
   });
 });
 
+test('--accept AND --dismiss together is refused, in both orders, and touches no browser', async () => {
+  // Two flags naming opposite intentions. Resolving them by which the parser
+  // happened to read first decides the one thing a dialog answer decides,
+  // and hands the caller a result they can neither predict nor see: the same
+  // reasoning that refuses prompt text alongside a dismissal.
+  //
+  // **Both orders, because order is the failure mode.** A bridge that reads
+  // `accept` first yields accept for both spellings, so a test that typed
+  // only one of them would agree with the defect exactly half the time and
+  // still be green.
+  //
+  // **And the driver log, not just the outcome.** A refusal delivered after
+  // the page was already told to accept is worse than no refusal, because
+  // everything downstream believes the dialog was thrown away.
+  //
+  // The single change that breaks this test: deleting the conflict branch in
+  // the bridge's `acceptFrom`, which restores the resolve-by-order reading.
+  await withLease(async (act, driverCalls) => {
+    for (const argv of [
+      ['--action', 'dialog', '--accept', '--dismiss'],
+      ['--action', 'dialog', '--dismiss', '--accept'],
+    ]) {
+      const before = driverCalls().length;
+      const outcome = await act(argv);
+
+      assert.equal(outcome.outcome, 'refused', `${argv.join(' ')}: ${JSON.stringify(outcome)}`);
+      assert.equal((outcome as { rule: string }).rule, 'act.dialog_answer_named');
+      assert.deepEqual(
+        driverCalls()
+          .slice(before)
+          .map((entry) => entry.name),
+        [],
+        `${argv.join(' ')} reached the browser before being refused`,
+      );
+    }
+  });
+});
+
 test('ACT FILL_FORM IS REACHABLE FROM THE COMMAND LINE — one --field per field', async () => {
   // The other half of the same gap: the operation wants an array of objects
   // and a command line has only strings, so the batch verb measured at 78

@@ -1,6 +1,6 @@
 import type { Adapter, AdapterId } from '../contract.ts';
 import type { BrokerService } from '../service-seam.ts';
-import type { ConformanceCase, CaseObservation } from './case.ts';
+import type { ConformanceCase, CaseObservation, ObservedDriverCall } from './case.ts';
 
 /**
  * How the suite drives one route, and the map that makes registering
@@ -50,8 +50,8 @@ export interface ConformanceDriver {
  * is between two different measurements rather than between two routes.
  */
 export interface Observation {
-  /** Every browser call so far, from the fake driver's own log. */
-  readonly driverCalls: () => readonly { readonly name: string }[];
+  /** Every browser call so far, from the fake driver's own log, arguments included. */
+  readonly driverCalls: () => readonly ObservedDriverCall[];
   /** Live claims, from the same predicate the capacity check uses. */
   readonly liveClaimCount: () => number;
 }
