@@ -574,10 +574,26 @@ test('the same call inside an after-commit closure does not fire, so the rule is
   // correct code as loudly as the incorrect code. What is being checked is
   // *where* the call sits, so a seed in the permitted position must stay
   // silent.
+  //
+  // **The anchor is the closure's head, deliberately, and stops before the
+  // argument list.** An argument list is the part of a call that churns: a
+  // seed spelling out `session.navigate(page, url)` in full matches nothing
+  // the moment `navigate` takes another argument, and a seed that matches
+  // nothing leaves this guarantee untested while the suite stays green.
+  // `seededOperation` is what stops that being silent, and anchoring on the
+  // part that does not churn — a closure taking `(session, page)` and calling
+  // a method on the session it was handed — is what stops it happening.
+  //
+  // **What is seeded is still a real second browser call in the permitted
+  // position** — `session.describe()`, a method scan B looks for by name,
+  // written inside the after-commit closure. `?? ` rather than a comma
+  // expression so that every bracket in the injected text closes: the region
+  // finder counts brackets, and an unbalanced seed would drop the enclosing
+  // region and make this control pass for the wrong reason.
   const sources = seededOperation('src/service/operations/pages.ts', (source) =>
     source.replace(
-      '(session, page) => session.navigate(page, url)',
-      '(session, page) => session.navigate(page, url + String(session.describe()))',
+      '(session, page) => session.',
+      '(session, page) => (session.describe() as unknown) ?? session.',
     ),
   );
   assert.deepEqual(
