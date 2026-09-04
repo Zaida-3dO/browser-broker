@@ -630,15 +630,21 @@ test('a refused wait renews nothing, so a rejected call cannot extend a lease', 
     const before = readCount();
 
     // A wait longer than the lease can live: refused by `validateNavigationWait`
-    // after the operation has already renewed.
+    // after the operation has already renewed. **Derived from the lease this
+    // test holds**, not written as a literal — a configuration free to lengthen
+    // the lease would leave a hardcoded number under the ceiling, and this case
+    // would then pass while asserting nothing at all.
     await assert.rejects(
       fixture.broker.navigate({
         key: lease.key,
         tabId: lease.tabId,
         url: 'https://example.com/',
-        waitMs: 60 * 60 * 1000,
+        waitMs: lease.leaseSeconds * 1000 + 1,
         session: () => driver.session,
       }),
+      // Named, because a bare `rejects` accepts a failure for any reason —
+      // including one that never reached the wait and so never renewed.
+      (error: unknown) => (error as CallRefusal).rule === 'navigate.wait_bounded',
     );
 
     assert.equal(
