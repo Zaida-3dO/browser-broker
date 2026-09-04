@@ -16,6 +16,63 @@ happens if it does nothing.
 
 ## Unreleased
 
+### ⚠ Behaviour change: `wait_ms` on a navigate is now honoured
+
+**What moved.** `browser_navigate` has advertised a `wait_ms` argument for some time, typed,
+documented and accepted without complaint. **Nothing read it.** It now reaches the browser as the
+navigation's timeout, and it is bounded by the lease: a wait longer than the lease can live is
+refused, and the refusal names the accepted range rather than quietly clamping the value.
+
+**Why this is a behaviour change and not a new feature.** An installation that has set nothing is
+unaffected — but a *caller* that was already passing `wait_ms`, exactly as the schema invited, was
+having it discarded and now is not. Nothing about that caller's code changes and its behaviour does.
+
+**What an installation has to do.** Nothing. A caller passing no wait is unaffected: the argument is
+omitted rather than defaulted, so the browser's own default still applies, and this service does not
+invent a number the browser library owns.
+
+**Worth knowing before relying on it:** the wait bounds the **load**, and does not cover work the
+page starts afterwards. A canvas or a lazily-loaded region can still be unfinished when the call
+returns, so two captures differing only in this argument tell you nothing about how long the page
+was given to settle — see `browser_capture` on how to tell. An inert argument is worse than a
+missing one precisely because a caller draws conclusions from it, and that is the conclusion most
+easily drawn here.
+
+### Dialog and form-filling become reachable from the command line, and a contradictory answer is refused
+
+**What moved.** Two things a command-line caller had no way to do at all:
+
+- `act dialog` and `act fill_form` take nested arguments that the flat command-line parser could not
+  produce, so **no argument a person could type would ever parse**. They now assemble from ordinary
+  flags — `--accept` / `--dismiss`, `--prompt-text`, and a repeatable `--field`.
+- **A contradictory dialog answer is now refused instead of resolved silently.** Asking to accept
+  and dismiss the same dialog used to take whichever the code read first. A caller answering a
+  destructive `confirm()` deserves a refusal rather than a coin flip, and now gets one.
+
+**What an installation has to do.** Nothing. Callers already sending a single, coherent answer — by
+either surface — are unaffected.
+
+### Capture responses point at `compare_to`
+
+**What moved.** A capture response now carries a hint naming the comparison it could have made. The
+comparison itself already existed and is roughly two orders of magnitude cheaper than reading a
+screenshot back to answer *did this change* — and in all recorded history it had been used once,
+because nothing pointed at it.
+
+**What an installation has to do.** Nothing; the hint is additive. It is listed here because the
+cheapest path through this service was, in practice, unreachable, and a caller that never learned
+the verb existed was not making an informed choice.
+
+### Closing a tab is recorded, and the doctor counts what was left behind
+
+**What moved.** Tab closes now write their outcome, rows nothing could reach are settled, and
+`broker doctor` reports tabs stranded in `closing`. Without that, a released lease can leave its tab
+open with the record stuck mid-close and **nothing anywhere says so** — a state reachable only by
+looking at the browser.
+
+**What an installation has to do.** Nothing. **If it does nothing:** `broker doctor` may now report
+stranded tabs that no check could see before. That is the check working, not a new fault appearing.
+
 ### The package is published, and it ships compiled JavaScript
 
 **What moved.** The service is installable from the registry as `browser-broker`, so a caller can
