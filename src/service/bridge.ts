@@ -218,6 +218,19 @@ export function serviceFor(options: BridgeOptions): BrokerService {
             key,
             tabId: tabForKey(db, key),
             url: argument(args, 'url'),
+            // **Coercion only, never validation** — the same split
+            // `viewportFrom` documents at length, and here for the same
+            // reason. A command line produces flat strings and nothing else,
+            // so a wait that was never coerced would be a number no
+            // command-line caller could type: it would reach the integer guard
+            // as text and be refused however correctly it was written.
+            //
+            // Whether the number is whole, positive and within the lease is
+            // the operation's decision, on the ledger. Unparseable text
+            // becomes `NaN` and is handed on deliberately, so it fails that
+            // guard and produces the refusal naming the range rather than a
+            // different one invented here.
+            waitMs: asInteger(argument(args, 'wait_ms', 'waitMs')),
           })),
         };
       }

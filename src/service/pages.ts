@@ -128,6 +128,71 @@ export function validateNavigationTarget(url: unknown): string {
   return candidate;
 }
 
+/**
+ * Check how long a navigation may take, before anything navigates.
+ *
+ * Returns the wait in milliseconds, or `undefined` when the caller expressed
+ * no opinion and the browser library's own default should apply.
+ *
+ * ── Why the lease is the ceiling, rather than a number somebody picked ──
+ *
+ * `ttlSeconds` is the lifetime this particular lease was promised, converted
+ * to milliseconds. It is the number the bound is *about*: a lease is a tab
+ * (§2.3) and capacity is a fixed total across the browsers (§6.2), so a caller
+ * permitted to wait longer than its own lease lives would sit inside a single
+ * call while the tab it is holding becomes reclaimable — which is the one
+ * thing an expiry exists to make impossible, and it would be reached without
+ * the caller doing anything wrong.
+ *
+ * Any other ceiling would be a literal, and a literal is wrong in both
+ * directions at once: too low and it refuses a slow page an installation with
+ * long leases can perfectly well afford, too high and it reintroduces the
+ * overrun. Derived from the lease, it moves with the configuration that sets
+ * lease lifetimes and needs no separate setting of its own.
+ *
+ * **The lease's row rather than the environment**, which is the discipline
+ * every duration these operations report already keeps: the call carrying the
+ * wait renews the lease by the duration that lease was granted for, so a
+ * ceiling read from the environment could name a lifetime the caller is not
+ * actually holding.
+ *
+ * A wait exactly equal to the lease is allowed rather than refused. The call
+ * carrying it renews the lease first, so both are measured from that instant
+ * and equality is the exact edge rather than an overrun.
+ */
+export function validateNavigationWait(waitMs: unknown, ttlSeconds: number): number | undefined {
+  if (waitMs === undefined || waitMs === null) return undefined;
+
+  const maximumMs = ttlSeconds * 1000;
+
+  // The syntax as well as the semantics, which is the lesson the viewport and
+  // emulate refusals below were both rewritten for: a caller that cannot see
+  // the accepted range from the message has no way to converge except by
+  // guessing, and a refusal that leaves it guessing costs more than the
+  // argument saves.
+  if (typeof waitMs !== 'number' || !Number.isInteger(waitMs) || waitMs <= 0) {
+    throw new PageRefusal(
+      'navigate.wait_bounded',
+      `How long to wait for a page is a whole number of milliseconds from 1 to ${String(maximumMs)}, for example \`--wait-ms 5000\`.`,
+      { waitMs, minimumMs: 1, maximumMs },
+    );
+  }
+
+  if (waitMs > maximumMs) {
+    // Named separately from the shape refusal above because the caller's
+    // mistake is a different one: the value is well formed and simply asks for
+    // more than a lease lasts, so the sentence says what the ceiling is and
+    // where it comes from rather than how to write a number.
+    throw new PageRefusal(
+      'navigate.wait_bounded',
+      `A wait of ${String(waitMs)}ms is longer than a lease lives (${String(maximumMs)}ms), so the tab would be reclaimable before the navigation returned. Ask for at most ${String(maximumMs)}ms.`,
+      { waitMs, minimumMs: 1, maximumMs },
+    );
+  }
+
+  return waitMs;
+}
+
 /* ───────────────────────── act (#22, #61–#64) ───────────────────────── */
 
 /**

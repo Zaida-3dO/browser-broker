@@ -87,8 +87,11 @@ function recordingSession(): DriverLog {
       calls.push(`closeTab:${tab.driverTabId}`);
       await Promise.resolve();
     },
-    navigate: async (tab: TabHandle, url: string) => {
-      calls.push(`navigate:${url}`);
+    // The wait is part of what the driver was asked for, so it is part of what
+    // the log records. Without it a call that dropped the argument on the way
+    // through would be indistinguishable here from one that carried it.
+    navigate: async (tab: TabHandle, url: string, waitMs?: number) => {
+      calls.push(waitMs === undefined ? `navigate:${url}` : `navigate:${url}:wait=${waitMs}`);
       return await Promise.resolve({ url, title: 'a title', status: 200 });
     },
     act: async (tab: TabHandle, request: ActionRequest) => {
@@ -142,11 +145,19 @@ function recordingSession(): DriverLog {
 /** A lease with a tab, taken the way a caller takes one. */
 async function grantedLease(
   fixture: BrokerFixture,
-): Promise<{ key: string; tabId: string; claimId: string }> {
+): Promise<{ key: string; tabId: string; claimId: string; leaseSeconds: number }> {
   const granted = await fixture.broker.claim(claimInput());
   assert.equal(granted.outcome, 'granted', 'the fixture needs a granted lease to address a tab');
   if (granted.outcome !== 'granted') throw new Error('unreachable');
-  return { key: granted.key, tabId: granted.tabId, claimId: granted.claimId };
+  // The lifetime comes back with the grant, so a test asserting the wait's
+  // ceiling derives it from the lease it actually holds rather than repeating
+  // a number the configuration is free to change.
+  return {
+    key: granted.key,
+    tabId: granted.tabId,
+    claimId: granted.claimId,
+    leaseSeconds: granted.leaseSeconds,
+  };
 }
 
 /**
@@ -228,6 +239,157 @@ test('a refused scheme never reaches the driver, and never writes an allow row',
     // The guard that returns "denied" *after* the page has already been driven
     // is worse than no guard, so the physical side-effect is the assertion.
     assert.deepEqual(driver.calls, [], 'the driver was asked to navigate despite the refusal');
+  });
+});
+
+/**
+ * The wait, which is the argument whose whole failure mode is being accepted
+ * and then discarded.
+ *
+ * ── Why the assertion is on the driver's log and not on the response ────
+ *
+ * A navigate that ignored the wait entirely would return exactly the response
+ * a navigate that honoured it returns: the same address, the same title, the
+ * same status. There is no observable difference on the way out, which is
+ * what makes this argument able to look like it works while doing nothing —
+ * and it is why an assertion that the call merely succeeded would pass
+ * against a build that dropped the value between the caller and the browser.
+ *
+ * So what is asserted is that the driver was **handed the number**. That is
+ * the only place the difference exists.
+ */
+test('a navigate hands its wait to the driver', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession();
+
+    await fixture.broker.navigate({
+      key: lease.key,
+      tabId: lease.tabId,
+      url: 'https://example.com/slow',
+      waitMs: 5000,
+      session: () => driver.session,
+    });
+
+    assert.deepEqual(
+      driver.calls,
+      ['openTab', 'navigate:https://example.com/slow:wait=5000'],
+      'the wait did not reach the driver, so the argument is accepted and discarded',
+    );
+  });
+});
+
+test('a navigate with no wait asks the driver for none', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession();
+
+    await fixture.broker.navigate({
+      key: lease.key,
+      tabId: lease.tabId,
+      url: 'https://example.com/page',
+      session: () => driver.session,
+    });
+
+    // Absent rather than zero or any other stand-in: the browser library's own
+    // default applies, and a number invented here would be this service
+    // quietly deciding one.
+    assert.deepEqual(driver.calls, ['openTab', 'navigate:https://example.com/page']);
+  });
+});
+
+/**
+ * The refusals, asserted **by rule name**, and each with the physical
+ * side-effect the house rule requires: a refusal that arrives after the page
+ * has already been driven is worse than no refusal.
+ *
+ * The message is asserted to carry the accepted range, because a refusal that
+ * leaves the caller guessing is this repository's most expensive defect class
+ * — the resize refusal that named the semantics and never the syntax cost a
+ * session five attempts and never converged.
+ */
+test('a wait that is not a whole positive number is refused, naming the range', async () => {
+  const badWaits: readonly unknown[] = [0, -1, 1.5, 'soon', Number.NaN];
+
+  for (const waitMs of badWaits) {
+    await withBroker(async (fixture) => {
+      const lease = await grantedLease(fixture);
+      const driver = recordingSession();
+
+      await assert.rejects(
+        fixture.broker.navigate({
+          key: lease.key,
+          tabId: lease.tabId,
+          url: 'https://example.com/page',
+          waitMs,
+          session: () => driver.session,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error, `${String(waitMs)} produced no error`);
+          assert.equal(
+            (error as { rule?: string }).rule,
+            'navigate.wait_bounded',
+            `${String(waitMs)} was refused by some other rule than the wait's own`,
+          );
+          // The upper end of the range is in the sentence, so the caller can
+          // see what would have been accepted without reading the source.
+          assert.match(error.message, /1 to \d+/u, error.message);
+          return true;
+        },
+      );
+
+      assert.deepEqual(
+        driver.calls,
+        [],
+        `the driver was asked to navigate despite refusing ${String(waitMs)}`,
+      );
+    });
+  }
+});
+
+test('a wait longer than the lease is refused, and the ceiling is the lease', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession();
+    const ceilingMs = lease.leaseSeconds * 1000;
+
+    // Exactly the lease is the edge and is allowed: the call renews the lease
+    // before the wait is checked, so both are measured from the same instant.
+    await fixture.broker.navigate({
+      key: lease.key,
+      tabId: lease.tabId,
+      url: 'https://example.com/edge',
+      waitMs: ceilingMs,
+      session: () => driver.session,
+    });
+    assert.deepEqual(driver.calls, [
+      'openTab',
+      `navigate:https://example.com/edge:wait=${ceilingMs}`,
+    ]);
+
+    await assert.rejects(
+      fixture.broker.navigate({
+        key: lease.key,
+        tabId: lease.tabId,
+        url: 'https://example.com/over',
+        waitMs: ceilingMs + 1,
+        session: () => driver.session,
+      }),
+      (error: unknown) => {
+        assert.equal((error as { rule?: string }).rule, 'navigate.wait_bounded');
+        // The ceiling itself, so the refusal is actionable rather than a
+        // statement that the number was too big.
+        assert.match((error as Error).message, new RegExp(String(ceilingMs), 'u'));
+        return true;
+      },
+    );
+
+    // One millisecond over, and nothing more was driven than the allowed call
+    // above — the refusal happened before the page was touched.
+    assert.deepEqual(driver.calls, [
+      'openTab',
+      `navigate:https://example.com/edge:wait=${ceilingMs}`,
+    ]);
   });
 });
 

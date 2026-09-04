@@ -18,6 +18,7 @@ import {
   validateAction,
   validateExpression,
   validateNavigationTarget,
+  validateNavigationWait,
 } from '../pages.ts';
 import { recordTabOpened, reserveTab } from '../tabs.ts';
 import type { PendingSeeds } from '../pending-seeds.ts';
@@ -572,6 +573,16 @@ function withPageDriven<T>(
 
 export interface NavigateInput extends TabOperationInput {
   readonly url: unknown;
+  /**
+   * How long the navigation may take, in milliseconds. Optional; omitting it
+   * leaves the browser library's own default in force.
+   *
+   * `unknown` for the same reason `url` is: the adapters coerce, and every
+   * rule that decides whether a value is acceptable lives here, so a shape
+   * this operation would refuse cannot be smuggled past it by a transport
+   * that types the field more narrowly than it can prove.
+   */
+  readonly waitMs?: unknown;
 }
 
 export interface NavigateResult extends TabOperationResult {
@@ -584,6 +595,11 @@ export interface NavigateResult extends TabOperationResult {
  *
  * The address is checked against the scheme allowlist before anything is
  * written, so a refused scheme leaves no trace but the refusal row.
+ *
+ * The wait is checked after the lease has been resolved rather than before,
+ * because what bounds it is that lease's own promised lifetime. It leaves the
+ * same absence behind: a refusal rolls the transaction back, taking the
+ * renewal with it, so the tab is never asked to go anywhere.
  */
 export function decideNavigate(
   scope: ArbitrationScope,
@@ -591,6 +607,13 @@ export function decideNavigate(
 ): ArbitrationOutcome<NavigateResult> {
   const url = validateNavigationTarget(input.url);
   const { lease, tab, expiresAt } = admit(scope, input, 'navigate');
+  // Bounded by **this lease's own promised lifetime**, read off the row
+  // `admit` just renewed rather than from a settings snapshot. That is the
+  // same source every duration these handlers report comes from, and for the
+  // same reason: a renewal extends by the duration the caller was already
+  // told about, so a ceiling taken from the environment could differ from the
+  // lease the caller is actually holding.
+  const waitMs = validateNavigationWait(input.waitMs, lease.ttlSeconds);
 
   append(scope.db, {
     kind: 'navigate',
@@ -600,14 +623,18 @@ export function decideNavigate(
     tabId: tab.tabId,
     sessionId: lease.sessionId,
     browserId: tab.browserId,
-    detail: { url },
+    // The wait is on the row when the caller asked for one, because the ledger
+    // is what answers *"what was this call actually given"* long after the
+    // call — and an argument that is invisible in the record is one nobody can
+    // check was honoured.
+    detail: { url, ...(waitMs === undefined ? {} : { waitMs }) },
   });
 
   const work = afterCommitWork(
     scope,
     input,
     tab,
-    (session, page) => session.navigate(page, url),
+    (session, page) => session.navigate(page, url, waitMs),
     lease.claimId,
   );
   return {

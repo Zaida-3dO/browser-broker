@@ -273,9 +273,16 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         type: 'integer',
         required: false,
         description:
-          'How long to wait for the page, in milliseconds. Bounds the load; it does not wait for ' +
-          'work the page starts afterwards, so a canvas or a lazily-loaded region can still be ' +
-          'unfinished when this returns. See browser_capture on how to tell.',
+          'How long the navigation may take before it is abandoned, in whole milliseconds. ' +
+          'A bound, not a pause: the call returns as soon as the page is there, so a larger ' +
+          'value costs nothing on a page that loads quickly and two calls differing only in ' +
+          'this argument tell you nothing about how long the page was given to settle. ' +
+          'It bounds the load only, and does not wait for work the page starts afterwards, so ' +
+          'a canvas or a lazily-loaded region can still be unfinished when this returns; see ' +
+          'browser_capture on how to tell. ' +
+          'At most the lease lifetime, because a wait outliving the lease would hold the tab ' +
+          'past the point it becomes reclaimable; the refusal names the accepted range. ' +
+          'Omit it to leave the browser default in force.',
       },
     ],
   },
