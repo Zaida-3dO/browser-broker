@@ -171,8 +171,15 @@ called, and a caller that names no browser gets the first signed-in one:
 BROKER_REGULAR_BROWSERS=regular,checkout      # persistent, signed in, at most 3
 BROKER_PRIVATE_BROWSERS=private               # ephemeral, at most 3
 BROKER_REGULAR_BROWSER_ENGINE=msedge          # chrome | brave | msedge
-BROKER_PRIVATE_BROWSER_ENGINE=msedge          # may differ from the line above
+BROKER_PRIVATE_BROWSER_ENGINE=msedge          # accepted and validated, and read by nothing
 ```
+
+**Neither engine variable changes which binary launches.** Resolving an engine name to an executable
+is deliberately not built, so every browser launches the automation library's own Chromium whichever
+engine is named, and a machine still has to fetch that Chromium once. The private variable goes one
+step less far than the regular one: a single driver serves every browser in the process and only the
+regular engine is handed to it, so the private value is validated at startup and then read by nothing
+at all. `RELEASES.md` has the fuller account.
 
 Two signed-in browsers is how two identities are exercised at once: tabs within one browser share
 its cookie jar, so they are isolated from other browsers and not from each other. **Note that each
