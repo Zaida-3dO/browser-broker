@@ -1975,10 +1975,14 @@ that the other failure is worse, and the measurement says it is also commoner.
 **`msedge` is the default engine.** It is present on every Windows machine, so a fresh install runs
 with nothing set, which is §6.1's *"a fresh install runs with nothing set."*
 
-**This is a behaviour change**, not a new setting with a neutral default: it changes which binary
-launches on an installation that sets nothing. §6.3's last row puts a changed default in **release
-notes** rather than a quiet edit, so it is written there. No third-party installation exists, so it
-is as cheap now as it will ever be.
+**The default names an engine; it does not choose a binary.** Per-engine executable resolution is
+not built — see *"What is built is the hook and the validation, and nothing else"* below — so on an
+installation that sets nothing the launch falls through to the automation library's own Chromium
+whatever the name says. §6.3's last row puts a changed default in **release notes** rather than a
+quiet edit, so it is written there, along with the fact that naming Edge has no observable effect
+yet: `RELEASES.md`, *"The default browser engine is named Edge, but resolving it is not built yet"*,
+is the fuller account. What is being recorded here is the choice of name, not a change in what runs,
+and no third-party installation exists, so fixing the name is as cheap now as it will ever be.
 
 **What is built is the hook and the validation, and nothing else.** Chrome, Brave and Edge are all
 Chromium over the same remote-debugging protocol, so choosing between them is choosing a binary path
@@ -1987,6 +1991,23 @@ deliberately not built:** executable resolution per engine, per-engine discovery
 per-engine doctor checks. That work is separable from what is actually wanted, which is **more
 addressable identities**, and building it now would be the surface-with-no-caller §6 correctly warns
 against.
+
+> **Revisited 2026-09-04, and deliberately still not built.** The want that would have justified
+> resolution — more addressable identities — shipped instead as the configured browser **lists**,
+> which are keyed on browser names and not on engines, and no caller has since asked to name an
+> engine. The reason above therefore holds harder than when it was written, not less.
+>
+> **What it would actually cost is worth recording, because it is not the cheap half it looks.**
+> `RealBrowserDriver` takes `engine` as a **constructor** option and one driver is built per
+> process, while the executable is resolved per launch — so honouring the signed-in and clean-room
+> engines separately needs either a driver per kind or `engine` moved to launch time. Wiring only
+> the clean-room half is *more* expensive than the signed-in one, not less.
+>
+> **One caveat that is NOT a reason, and has been wrong twice:** changing the engine cannot sign
+> anyone out or move a profile. Discovery joins the profile root to the **browser name**
+> (`src/browser/discovery.ts`), never the engine. If resolution is ever built, the real question is
+> whether a profile written by one Chromium build is readable by another — a different question,
+> and one that only arises once resolution exists.
 
 > **Per-*browser* doctor coverage is a different question, and it is built (2026-09-01).** The
 > paragraph above declines per-**engine** checks and that still stands. It should not be read as
