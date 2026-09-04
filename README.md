@@ -59,10 +59,46 @@ hanging the report.
 
 **Installation is the whole of deployment.** There is no image to pull, no daemon to register and no
 service to keep running: the process is started by whatever calls it and exits with it. So getting it
-working is a clone, an install and one more fetch below — there is no step after that.
+working is an install and one more fetch below — there is no step after that.
 
-You need **Node 22.18 or newer**. The sources are TypeScript and run through the runtime's own type
-stripping, so there is no build step to perform.
+You need **Node 22.18 or newer**. Either path below also needs a browser binary, which is a separate
+fetch from either install step — see [Browser binary](#browser-binary) once you've picked a path.
+
+### From the registry
+
+The package ships compiled JavaScript, so nothing is built on your machine — but a browser binary
+still is; see [Browser binary](#browser-binary) below before your first `broker doctor`.
+
+```bash
+npx -p browser-broker broker doctor
+```
+
+The package installs two executables — `broker`, the command line, and `broker-tool`, the surface a
+client spawns — and neither is named for the package, so `npx browser-broker` cannot tell which you
+meant and refuses. `-p` names the package and the word after it names the executable.
+
+A client that spawns the tool surface names the same package, and npm revalidates the version on
+every run — so a published release arrives without anything being pulled or rebuilt by hand:
+
+```json
+{
+  "mcpServers": {
+    "browser-broker": {
+      "command": "npx",
+      "args": ["-y", "-p", "browser-broker", "broker-tool"]
+    }
+  }
+}
+```
+
+Weigh that against spawning a checkout directly: `npx` costs a registry round-trip on every spawn,
+which is several seconds against a fraction of one for a path on disk. A machine that develops this
+service is better off pointing at its own tree; a machine that only *uses* it is better off here.
+
+### From a checkout
+
+For working on the service itself. The sources are TypeScript and run through the runtime's own type
+stripping, so there is no build step in the development path:
 
 ```bash
 git clone https://github.com/Zaida-3dO/browser-broker.git
@@ -70,20 +106,8 @@ cd browser-broker
 npm install
 ```
 
-That compiles the one runtime dependency's native binding, which is *not* the only part of the install
-that does real work: this repository depends on `playwright-core`, not the full `playwright`
-distribution, precisely because the browser binary is spawned by this service, detached and by path,
-rather than downloaded and managed by the package. `playwright-core` does not fetch a browser on
-install, so a checkout that has never had one fetched by some other tooling has none, and `broker
-doctor`'s automation check will genuinely fail with exit code 11 until you run:
-
-```bash
-npx playwright-core install chromium
-```
-
-Run this once per machine, before the first `broker doctor`. It is the same install mechanism the
-full `playwright` package would run automatically on `npm install`; `playwright-core` just does not
-run it for you. Then run the broker itself:
+That compiles the one runtime dependency's native binding. It does not fetch a browser binary — see
+[Browser binary](#browser-binary) below before your first `broker doctor`. Then run the broker itself:
 
 ```bash
 node src/bin/broker.ts
@@ -106,6 +130,23 @@ To get the command on your path as `broker`, link the package from the checkout:
 ```bash
 npm link          # then: broker --help
 ```
+
+### Browser binary
+
+**Neither install path above fetches a browser.** This repository depends on `playwright-core`, not
+the full `playwright` distribution, precisely because the browser binary is spawned by this service,
+detached and by path, rather than downloaded and managed by the package. `playwright-core` does not
+fetch a browser on install, so a machine that has never had one fetched by some other tooling has
+none, and `broker doctor`'s automation check will genuinely fail with exit code 11 until you run:
+
+```bash
+npx playwright-core install chromium
+```
+
+Run this once per machine, before the first `broker doctor` — it applies whether you installed from
+the registry or from a checkout, because it is a fetch neither install step performs. It is the same
+install mechanism the full `playwright` package would run automatically on `npm install`;
+`playwright-core` just does not run it for you.
 
 ### Configuring it
 
@@ -170,6 +211,24 @@ own configuration:
 it is rarely the checkout. Nothing else is required: there is no port to configure, no token to
 issue, and no process to have started first — the client starts it, and it exits when the client
 closes the pipe.
+
+**If that configuration file is itself synchronised between machines, an absolute path is the one
+thing in it that cannot travel.** A home directory differs per machine and often per user, so one
+entry naming a checkout is correct on the machine it was written on and names nothing on the other
+— where it fails as a connection that closes immediately, which reads as a broken service rather
+than as a path that does not exist. Give each machine its own entry under its own server name, or
+point the shared entry at the published package, which carries no machine's path:
+
+```json
+{
+  "mcpServers": {
+    "browser-broker": {
+      "command": "npx",
+      "args": ["-y", "-p", "browser-broker", "broker-tool"]
+    }
+  }
+}
+```
 
 To point it at a store other than the default, add the environment to the same block:
 
@@ -317,6 +376,28 @@ never leaves traffic unarbitrated, [`docs/plans/PLAN.md`](docs/plans/PLAN.md) fo
 [`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue, and
 [`RELEASES.md`](RELEASES.md) for what changes between versions — in particular for defaults that
 move, which change an installation that has taken no action.
+
+## Releasing
+
+The development path runs the TypeScript sources directly; the published package cannot, because
+**Node refuses to strip types from any file under a `node_modules` path** and an installed package is
+exactly that. No flag overrides it. So a release compiles to `dist/` and the manifest's `bin` entries
+name the emitted JavaScript.
+
+`prepack` runs the build, so `npm publish` and `npm pack` compile on their own — there is no way to
+publish a stale `dist/`, and no build step to remember.
+
+```bash
+npm version patch      # or minor / major — writes the tag and the commit
+npm publish            # prepack builds, then the tarball goes up
+git push --follow-tags
+```
+
+`npm run check:package` asserts what a published tarball owes: every `bin` target is emitted
+JavaScript rather than a TypeScript source, the whole built tree is included, and the tarball carries
+no tests or plans. It runs in CI. Worth knowing if you touch the `files` field: **npm ships `bin`
+targets whatever `files` says**, so a tarball can contain both executables and none of the modules
+they import — which installs cleanly and dies on first run. That is the case the check exists for.
 
 ## Licence
 

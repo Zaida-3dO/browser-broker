@@ -133,21 +133,57 @@ export function parseArguments(rest: readonly string[]): Readonly<Record<string,
     const body = word.slice(2);
     const equals = body.indexOf('=');
     if (equals !== -1) {
-      parsed[normaliseKey(body.slice(0, equals))] = body.slice(equals + 1);
+      record(parsed, normaliseKey(body.slice(0, equals)), body.slice(equals + 1));
       continue;
     }
 
     const next = rest[index + 1];
     if (next === undefined || looksLikeFlag(next)) {
-      parsed[normaliseKey(body)] = true;
+      record(parsed, normaliseKey(body), true);
       continue;
     }
-    parsed[normaliseKey(body)] = next;
+    record(parsed, normaliseKey(body), next);
     index += 1;
   }
 
   return parsed;
 }
+
+/**
+ * Write an option, accumulating the ones that may legitimately repeat.
+ *
+ * Assignment was unconditional, so a repeated option kept only its **last**
+ * occurrence. For every option that names one thing that is the right
+ * behaviour and the last word plainly wins. For an option that names *one of
+ * many* it is silent data loss: `--field a=1 --field b=2` filled one field
+ * and reported success, which is worse than the refusal it replaced, because
+ * a refusal is visible.
+ *
+ * Only the options in {@link REPEATABLE} accumulate. Making every option an
+ * array on its second appearance would change the type a reader gets for
+ * `--value` typed twice by accident, and turn a typo into a shape no
+ * operation expects.
+ */
+function record(parsed: Record<string, unknown>, key: string, value: unknown): void {
+  if (!REPEATABLE.has(key)) {
+    parsed[key] = value;
+    return;
+  }
+  const existing = parsed[key];
+  if (existing === undefined) {
+    parsed[key] = [value];
+    return;
+  }
+  (existing as unknown[]).push(value);
+}
+
+/**
+ * The options that name one of many rather than one thing.
+ *
+ * Keyed by their normalised names. Deliberately a short list: an option
+ * belongs here only when the operation behind it takes a collection.
+ */
+const REPEATABLE = new Set(['field']);
 
 function normaliseKey(key: string): string {
   return key.replaceAll('-', '_');

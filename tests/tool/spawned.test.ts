@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -265,7 +265,15 @@ test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () 
   assert.equal(handshake.protocolVersion, PROTOCOL_VERSION);
   assert.ok(handshake.capabilities.tools !== undefined, 'the server announced no tools capability');
   assert.equal(handshake.serverInfo.name, 'browser-broker');
-  assert.equal(typeof handshake.serverInfo.version, 'string');
+  // The MANIFEST'S version, and this is the route where that matters most:
+  // the shim runs as its own process, so the version it reports is whatever
+  // the manifest resolves to *from where the shim sits*. Asserting the type
+  // alone passes against a surface reporting a placeholder forever, and it
+  // passes just as happily against a build whose manifest copy never landed
+  // beside the code — a divergence only a spawn can expose, because in
+  // process the test and the surface resolve the same file by construction.
+  const manifest = await import('../../package.json', { with: { type: 'json' } });
+  assert.equal(handshake.serverInfo.version, manifest.default.version);
 
   // `tools/list` after the handshake: the ten, reached the way a client
   // reaches them.
@@ -464,4 +472,93 @@ test('a client asking for an UNKNOWN protocol version is negotiated with, not dr
   };
   assert.equal(response.error, undefined, 'an unfamiliar version was refused rather than met');
   assert.equal(response.result?.protocolVersion, PROTOCOL_VERSION);
+});
+
+/**
+ * A case here costs a process spawn, and the header above says not to add
+ * one. This is the exception the header's own rule allows: the property is
+ * **what happens at module load**, and a module that throws while loading
+ * cannot be observed by anything that imports it — the in-process matrix
+ * would have to import the module to test it, which is the very act that
+ * fails. Only a spawn can watch a process not start.
+ *
+ * The surface reads its reported version from the manifest. If that read is
+ * allowed to throw, a missing or unreadable `package.json` takes down the
+ * whole server *before the protocol exists to describe the failure*: the
+ * client sees an exit, not an error. The version is cosmetic; being able to
+ * serve is not.
+ */
+test('the surface SERVES WITHOUT ITS MANIFEST, reporting an unknown version rather than dying', async () => {
+  // Inside the repository rather than in the system temporary directory,
+  // deliberately: the sources import a runtime dependency, and Node resolves
+  // that by walking up from the file to a `node_modules`. A tree in the
+  // temporary directory has none above it, so the process would die on the
+  // dependency and the test would pass or fail for a reason that has nothing
+  // to do with the manifest. Nested here, the repository's own
+  // `node_modules` is on the walk.
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const root = mkdtempSync(path.join(repo, '.broker-nomanifest-'));
+  try {
+    // A tree with the sources but no manifest beside them. Copying `src` and
+    // writing the type marker is enough for the loader to treat the files as
+    // modules; what is deliberately absent is the file the version is read
+    // from.
+    cpSync(path.join(repo, 'src'), path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'package.json.absent'), '');
+
+    const child = spawn(process.execPath, [path.join(root, 'src', 'bin', 'broker-tool.ts')], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        BROKER_DB: path.join(root, 'broker.db'),
+        BROKER_ARTIFACTS_ROOT: path.join(root, 'artefacts'),
+        BROKER_PROFILE_ROOT: path.join(root, 'profiles'),
+      },
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
+    child.stderr.on('data', (chunk: Buffer) => (err += chunk.toString('utf8')));
+    const closed = new Promise<number | null>((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', resolve);
+    });
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: JSONRPC_VERSION,
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: 'a-client', version: '1.0.0' },
+        },
+      })}\n`,
+    );
+    child.stdin.end();
+    const code = await closed;
+
+    assert.equal(
+      code,
+      0,
+      `the surface died without its manifest rather than serving. stderr: ${err}`,
+    );
+    const [line] = out.trim().split('\n');
+    assert.ok(line !== undefined && line.length > 0, 'no reply at all without a manifest');
+    const response = JSON.parse(line) as {
+      result?: { serverInfo?: { name?: string; version?: string } };
+    };
+    assert.equal(
+      response.result?.serverInfo?.name,
+      'browser-broker',
+      'the surface stopped naming itself',
+    );
+    assert.equal(
+      typeof response.result?.serverInfo?.version,
+      'string',
+      'the version was absent rather than falling back',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

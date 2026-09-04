@@ -278,6 +278,11 @@ export interface ReconciliationReport {
   readonly closeFailures: number;
   /** How many rows were left alone because their open is still in flight. */
   readonly skippedOpening: number;
+  /**
+   * How many rows stranded at `closing` by an ended lease were settled,
+   * their page not being among what the browser listed.
+   */
+  readonly strandedSettled: number;
 }
 
 /**
@@ -305,6 +310,70 @@ export function readRecordedTabs(db: Database, browserId: string): readonly Reco
 }
 
 /**
+ * Settle rows stranded at `closing` whose page the browser does not have.
+ *
+ * ── Why the vanished-tab path cannot reach these ────────────────────────
+ *
+ * {@link readRecordedTabs} requires `claims.state = 'active'`, and rightly:
+ * a lapsed lease's rows are the sweep's business, not reconciliation's. But
+ * that is exactly the population that strands. A lease ends, its tab is moved
+ * to `closing`, and if the answer is never written back the row is left in a
+ * state meaning "waiting for the tool" — attached to a lease that is no
+ * longer active, and therefore invisible to every later reconciliation.
+ *
+ * A store was found holding 22 such rows, the oldest two days old, every one
+ * with `close_attempts = 0`. The pages had been closed by hand; the rows
+ * could not be reached by anything.
+ *
+ * ── Why this is safe to settle without asking again ─────────────────────
+ *
+ * The caller has just asked the browser what it has open, and passes the
+ * driver names it answered with. A row whose name is not in that list
+ * describes a page this browser does not have, so there is no round trip
+ * outstanding and nothing to wait for — the same reasoning
+ * {@link applyReconciliation} uses for a vanished page, and the sweep uses
+ * for a tab that never opened.
+ *
+ * **A row whose name IS in the list is left alone.** Its page exists, the
+ * close may genuinely still be in flight, and settling it would claim an
+ * answer nobody has given.
+ */
+export function settleStrandedTabs(
+  db: Database,
+  browserId: string,
+  openDriverTabIds: readonly string[],
+  at: string,
+): number {
+  const stranded = db
+    .prepare<[string], { tabId: string; driverTabId: string | null }>(
+      `SELECT tabs.id AS tabId, tabs.driver_tab_id AS driverTabId
+         FROM tabs
+         JOIN claims ON claims.id = tabs.claim_id
+        WHERE tabs.browser_id = ?
+          AND tabs.state = 'closing'
+          AND claims.state <> 'active'
+        ORDER BY tabs.id`,
+    )
+    .all(browserId);
+
+  const open = new Set(openDriverTabIds);
+  const gone = stranded.filter((tab) => tab.driverTabId === null || !open.has(tab.driverTabId));
+  if (gone.length === 0) {
+    return 0;
+  }
+
+  const placeholders = gone.map(() => '?').join(', ');
+  db.prepare(
+    `UPDATE tabs
+        SET state = 'closed', closed_at = ?, updated_at = ?
+      WHERE id IN (${placeholders})
+        AND state = 'closing'`,
+  ).run(at, at, ...gone.map((tab) => tab.tabId));
+
+  return gone.length;
+}
+
+/**
  * Settle the rows whose pages are gone, and end the leases that held them.
  *
  * **A database handle and no session** (the constraint `tabs.ts` sets), so
@@ -326,6 +395,24 @@ export function readRecordedTabs(db: Database, browserId: string): readonly Reco
  * |---|---|---|
  * | `updateSweptTabs` | The lease ended; is there a page to close? | `closing` — the tool is about to be asked |
  * | this | The page is already gone | `closed` — there is nothing to ask |
+ *
+ * **`closing` appears in the predicate, and no row reaches it in that
+ * state.** The rows here come from {@link readRecordedTabs} by way of
+ * {@link decideReconciliation}, and that read requires `tabs.state IN
+ * ('opening', 'open')` — so the third value in the predicate below matches
+ * nothing this caller can supply. It is kept as a bound on what the write is
+ * permitted to touch rather than as a population it serves: the statement
+ * says which states this function may move a row out of, and a future caller
+ * that widens its own read cannot silently reopen a `closed` row through it.
+ *
+ * **The stranded-`closing` population is {@link settleStrandedTabs}'s**, not
+ * this function's, and the distinction is load-bearing. Those rows belong to
+ * leases that have already ended, which is precisely why `readRecordedTabs`
+ * (`claims.state = 'active'`) cannot see them and why they need their own
+ * pass. A store was found holding 22 of them, each still occupying its slot
+ * in the partial unique index on `(browser_id, driver_tab_id)`. Reading that
+ * story as this function's would leave the impression the gap is covered
+ * here, and it is not.
  *
  * A vanished page has no round trip outstanding, so `closing` would assert
  * one that is not, and the row would wait forever for an answer nobody is
@@ -372,7 +459,7 @@ export function applyReconciliation(
     `UPDATE tabs
         SET state = 'closed', closed_at = ?, updated_at = ?
       WHERE id IN (${tabPlaceholders})
-        AND state IN ('opening', 'open')`,
+        AND state IN ('opening', 'open', 'closing')`,
   ).run(at, at, ...tabIds);
 
   // The lease goes with the tab, because a lease *is* a tab (§2.3): a lease

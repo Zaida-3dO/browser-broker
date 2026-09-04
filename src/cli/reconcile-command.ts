@@ -6,6 +6,7 @@ import {
   applyReconciliation,
   decideReconciliation,
   readRecordedTabs,
+  settleStrandedTabs,
   type ReconciliationReport,
 } from '../service/reconcile.ts';
 import { COMMAND_EXIT, parseFlags, type CommandStreams } from './operations-commands.ts';
@@ -175,6 +176,19 @@ export async function runReconcileCommand(
   const at = now();
   applyReconciliation(options.db, plan.vanishedTabs, at);
 
+  // Rows left `closing` by a lease that has already ended, whose page this
+  // browser does not have. The vanished-tab path cannot see them — it reads
+  // only tabs of *active* leases — so without this they are unreachable by
+  // anything, forever, while still holding their slot in the partial unique
+  // index. The browser has just said what it has open; that is the answer
+  // those rows were waiting for.
+  const strandedSettled = settleStrandedTabs(
+    options.db,
+    browser,
+    pages.map((page) => page.driverTabId),
+    at,
+  );
+
   for (const tab of plan.vanishedTabs) {
     // §1.6: one row per decision, and this is a decision — a lease was ended
     // by something that was neither the caller nor the clock. `cli` rather
@@ -210,6 +224,7 @@ export async function runReconcileCommand(
 
   const report: ReconciliationReport = {
     pagesSeen: pages.length,
+    strandedSettled,
     settled: plan.vanishedTabs.map((tab) => tab.tabId),
     closed,
     closeFailures,
@@ -257,6 +272,14 @@ export function formatReconciliation(
 
   for (const tabId of report.settled) {
     lines.push(`  tab ${tabId}`);
+  }
+
+  // Only when it happened. A line that is present and zero on every healthy
+  // run is noise, and this one describes a state that should be rare.
+  if (report.strandedSettled > 0) {
+    lines.push(
+      `records settled that were waiting on a close nobody was coming to answer: ${String(report.strandedSettled)}`,
+    );
   }
 
   if (report.closeFailures > 0) {

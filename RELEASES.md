@@ -16,29 +16,65 @@ happens if it does nothing.
 
 ## Unreleased
 
-### ⚠ Behaviour change: the default browser engine is Edge
+### The package is published, and it ships compiled JavaScript
 
-**What moved.** A browser launched by this service uses **`msedge`** by default. The previous
-behaviour was to launch whatever `chromium.executablePath()` resolved to — the Chromium build the
-automation library had fetched.
+**What moved.** The service is installable from the registry as `browser-broker`, so a caller can
+spawn it without a checkout. The manifest's `bin` entries now name emitted JavaScript under `dist/`
+rather than the TypeScript sources.
 
-**Why.** Edge is present on every Windows machine, so a fresh install runs with nothing set, with no
-separate browser download step. That is `DECISIONS.md` §6.1's *"a fresh install runs with nothing
-set"* applied to the one prerequisite `npm install` genuinely could not cover.
+**Why the build exists**, given that the development path deliberately has none: **Node refuses to
+strip types from any file under a `node_modules` path**, and an installed package is a directory
+under `node_modules`. A manifest whose `bin` named a `.ts` file would install cleanly and then fail
+on the machine of whoever installed it. There is no flag that changes this. The compiler therefore
+runs once per release rather than on every machine that consumes the package, and `erasableSyntaxOnly`
+stays on so the sources still run unbuilt — the two paths execute the same dialect.
 
-**What an installation has to do.** Nothing, if Edge is acceptable. To keep the prior behaviour, or
-to pick a different browser, set the engine per kind:
+**What an installation has to do.** Nothing. A checkout is unaffected: `node src/bin/broker.ts` still
+runs the sources with no build. An installation that would rather not track a checkout can point at
+the package instead, and npm revalidates the version on every spawn:
+
+```json
+{ "command": "npx", "args": ["-y", "-p", "browser-broker", "broker-tool"] }
+```
+
+The `-p` is not decoration: the package ships two executables and neither is named for the package,
+so `npx browser-broker` cannot choose between them and refuses to run at all.
+
+**Worth weighing before switching:** `npx` performs a registry round-trip on every spawn, costing
+seconds where a path on disk costs a fraction of one. It buys an upgrade path, not speed.
+
+**One surface changes what it reports.** The tool handshake's `serverInfo.version` was the literal
+`0.0.0` while the package was unversioned, and now reads the manifest — so a client logging it sees
+the released version rather than a placeholder.
+
+
+### The default browser engine is named Edge, but resolving it is not built yet
+
+**What moved.** `BROKER_REGULAR_BROWSER_ENGINE` and `BROKER_PRIVATE_BROWSER_ENGINE` default to
+**`msedge`** rather than being unset. `DECISIONS.md` §13i chose Edge as the default *name* because it
+is present on every Windows machine, applying §6.1's *"a fresh install runs with nothing set"* to
+which engine a fresh install prefers.
+
+**What this does not do: it does not change which binary launches, and it does not remove the browser
+download step.** Resolving an engine name to an executable path is deliberately not built (§13i) —
+`executablePathForEngine` only looks up a path this process was *given* for that engine, and nothing
+in this repository supplies one. So the launch still falls through to `chromium.executablePath()`
+regardless of which engine is named, and a machine that has never fetched a Chromium build still
+needs to, exactly as before this change. The earlier release note claiming this default removed the
+download step was wrong and is corrected here.
+
+**What an installation has to do.** Nothing, either way — the engine setting has no observable effect
+yet. Setting it now is preparation for when per-engine resolution is built, not a way to skip the
+browser fetch:
 
 ```bash
-BROKER_REGULAR_BROWSER_ENGINE=chrome     # chrome | brave | msedge
+BROKER_REGULAR_BROWSER_ENGINE=chrome     # chrome | brave | msedge — has no effect on which binary launches
 BROKER_PRIVATE_BROWSER_ENGINE=chrome     # may differ from the line above
 ```
 
-**If it does nothing:** browsers launch under Edge. **Profiles are per browser and are not shared
-between engines**, so an installation whose signed-in profile was established under a different
-binary will find that browser signed out, and a person will be asked to sign in once more with
-`broker login`. Nothing is destroyed — `setup.profile_never_destroyed` still holds, and the earlier
-profile directory is left exactly where it is.
+**If it does nothing:** browsers keep launching under whichever Chromium build `playwright-core`
+resolves, same as before this change. The per-engine profile and sign-in consequences described in
+`DECISIONS.md` §13i apply once resolution is wired, not yet.
 
 ### Browsers are a configured list, and `browser` on a claim is optional
 

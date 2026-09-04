@@ -163,7 +163,11 @@ export async function makeServiceSubject(): Promise<ConformanceSubject> {
   return {
     service: runtime.service,
     // The fake's own log, which is what makes "a refusal touched no browser"
-    // checkable rather than asserted.
+    // checkable rather than asserted — and the entries are passed whole, so a
+    // case can also ask what the browser was told, not merely that it was
+    // spoken to. Dropping the arguments here would make a route that forwards
+    // an argument and one that discards it indistinguishable to every case in
+    // the table.
     driverCalls: () => driver.calls,
     // **The same predicate the capacity check uses**, per `driver.ts`'s
     // requirement for this reading — not a count of rows in `claims`, which

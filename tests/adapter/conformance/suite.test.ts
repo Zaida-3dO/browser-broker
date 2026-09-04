@@ -174,6 +174,22 @@ test('the subject reports a real browser log and a real claim count', async () =
       names.includes('openTab') && names.includes('navigate'),
       `the browser log did not record the work, got ${names.join(', ') || '(nothing)'}`,
     );
+
+    // **And what the browser was TOLD, not merely that it was spoken to.**
+    // A reading carrying only the name answers "was the browser touched" and
+    // never "with what" — so a route that forwards an argument and one that
+    // drops it look identical to it, both having called `navigate` exactly
+    // once. A defect of that shape survived here for that reason.
+    //
+    // The single change that breaks this test: dropping `detail` as the
+    // subject hands its log over, which also restores the narrower type this
+    // reading is declared with.
+    const navigated = subject.driverCalls().find((call) => call.name === 'navigate');
+    assert.equal(
+      navigated?.detail?.['url'],
+      'https://example.com/',
+      'the browser log recorded that a navigation happened but not where to',
+    );
   } finally {
     await subject.dispose?.();
   }

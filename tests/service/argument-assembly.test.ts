@@ -55,6 +55,11 @@ import type { BrokerService } from '../../src/adapter/service-seam.ts';
 async function withLease(
   body: (
     act: (argv: readonly string[]) => Promise<Awaited<ReturnType<BrokerService['perform']>>>,
+    // What the driver was actually told. A test that can only see the
+    // outcome can say a call was not refused; it cannot say what the call
+    // did, and for an answer whose two values are opposites that is the
+    // whole of the behaviour.
+    driverCalls: () => readonly { name: string; detail?: unknown }[],
   ) => Promise<void>,
 ): Promise<void> {
   const subject = await makeServiceSubject();
@@ -72,12 +77,14 @@ async function withLease(
     assert.equal(claimed.outcome, 'accepted', 'the lease this test needs was not granted');
     const key = String((claimed as { value: Record<string, unknown> }).value['key']);
 
-    await body((argv) =>
-      subject.service.perform({
-        operation: 'act',
-        adapter: 'cli',
-        arguments: parseArguments([...argv, '--lease-key', key]),
-      }),
+    await body(
+      (argv) =>
+        subject.service.perform({
+          operation: 'act',
+          adapter: 'cli',
+          arguments: parseArguments([...argv, '--lease-key', key]),
+        }),
+      () => subject.driverCalls(),
     );
   } finally {
     await subject.dispose?.();
@@ -393,4 +400,227 @@ test('the verbs that always worked still work — the assembly did not capture a
     const pressed = await act(['--action', 'press', '--value', 'Enter']);
     assert.equal(pressed.outcome, 'accepted', JSON.stringify(pressed));
   });
+});
+
+test('ACT DIALOG IS REACHABLE, AND SAYS THE ANSWER THE CALLER MEANT', async () => {
+  // Left unreachable by the pull request that fixed resize and emulate, and
+  // recorded there as "known and deliberately not fixed here". The operation
+  // wants `response: { accept: boolean }`; a command line produces strings,
+  // so --response accept, --value accept and --accept true were all refused
+  // identically with a message describing what the caller had just said.
+  //
+  // **Asserted on the driver's call log, not on the outcome.** An earlier
+  // version of this test checked only that the call was not refused, and a
+  // mutation inverting the dismiss branch — so `--value dismiss` ACCEPTS —
+  // passed all sixteen cases in this file and the whole suite besides. The
+  // two answers are opposites, and a test that cannot tell them apart is
+  // defending nothing: an agent answering "Delete these rows?" would have
+  // clicked OK and been told it succeeded.
+  await withLease(async (act, driverCalls) => {
+    const answers: readonly (readonly [readonly string[], boolean])[] = [
+      [['--action', 'dialog', '--accept'], true],
+      [['--action', 'dialog', '--value', 'accept'], true],
+      [['--action', 'dialog', '--response', 'accept'], true],
+      [['--action', 'dialog', '--dismiss'], false],
+      [['--action', 'dialog', '--value', 'dismiss'], false],
+      [['--action', 'dialog', '--response', 'dismiss'], false],
+    ];
+
+    for (const [argv, expected] of answers) {
+      const before = driverCalls().length;
+      const outcome = await act(argv);
+      assert.equal(outcome.outcome, 'accepted', `${argv.join(' ')}: ${JSON.stringify(outcome)}`);
+
+      const call = driverCalls()
+        .slice(before)
+        .find((entry) => entry.name === 'act');
+      assert.ok(call !== undefined, `${argv.join(' ')} never reached the driver`);
+      const detail = call.detail as { response?: { accept?: unknown } };
+      assert.equal(
+        detail.response?.accept,
+        expected,
+        `${argv.join(' ')} answered the dialog the wrong way round`,
+      );
+    }
+  });
+});
+
+test('a dialog accepted WITH PROMPT TEXT carries the text to the driver', async () => {
+  await withLease(async (act, driverCalls) => {
+    const before = driverCalls().length;
+    const outcome = await act([
+      '--action',
+      'dialog',
+      '--accept',
+      '--prompt-text',
+      'typed before accepting',
+    ]);
+
+    assert.equal(outcome.outcome, 'accepted', JSON.stringify(outcome));
+    const call = driverCalls()
+      .slice(before)
+      .find((entry) => entry.name === 'act');
+    assert.deepEqual((call?.detail as { response?: unknown }).response, {
+      accept: true,
+      promptText: 'typed before accepting',
+    });
+  });
+});
+
+test('a dialog answer that names neither acceptance nor dismissal is still refused', async () => {
+  // The negative control. Without it, "dialog is reachable" would also pass
+  // against a bridge that fabricated an answer whenever one was missing —
+  // which is the worst possible fix, since it would decide on the caller's
+  // behalf whether to accept something they never saw.
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'dialog', '--value', 'perhaps']);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.dialog_answer_named');
+  });
+});
+
+test('prompt text with a dismissal is still refused — the operation decides, not the bridge', async () => {
+  // Assembly is coercion only. This rule lives in the operation, on the
+  // ledger, and the bridge must not start enforcing a second copy of it:
+  // two places deciding the same thing is how they come to disagree.
+  await withLease(async (act) => {
+    const outcome = await act([
+      '--action',
+      'dialog',
+      '--dismiss',
+      '--prompt-text',
+      'text that cannot accompany a dismissal',
+    ]);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.dialog_answer_named');
+  });
+});
+
+test('--accept AND --dismiss together is refused, in both orders, and touches no browser', async () => {
+  // Two flags naming opposite intentions. Resolving them by which the parser
+  // happened to read first decides the one thing a dialog answer decides,
+  // and hands the caller a result they can neither predict nor see: the same
+  // reasoning that refuses prompt text alongside a dismissal.
+  //
+  // **Both orders, because order is the failure mode.** A bridge that reads
+  // `accept` first yields accept for both spellings, so a test that typed
+  // only one of them would agree with the defect exactly half the time and
+  // still be green.
+  //
+  // **And the driver log, not just the outcome.** A refusal delivered after
+  // the page was already told to accept is worse than no refusal, because
+  // everything downstream believes the dialog was thrown away.
+  //
+  // The single change that breaks this test: deleting the conflict branch in
+  // the bridge's `acceptFrom`, which restores the resolve-by-order reading.
+  await withLease(async (act, driverCalls) => {
+    for (const argv of [
+      ['--action', 'dialog', '--accept', '--dismiss'],
+      ['--action', 'dialog', '--dismiss', '--accept'],
+    ]) {
+      const before = driverCalls().length;
+      const outcome = await act(argv);
+
+      assert.equal(outcome.outcome, 'refused', `${argv.join(' ')}: ${JSON.stringify(outcome)}`);
+      assert.equal((outcome as { rule: string }).rule, 'act.dialog_answer_named');
+      assert.deepEqual(
+        driverCalls()
+          .slice(before)
+          .map((entry) => entry.name),
+        [],
+        `${argv.join(' ')} reached the browser before being refused`,
+      );
+    }
+  });
+});
+
+test('ACT FILL_FORM IS REACHABLE FROM THE COMMAND LINE — one --field per field', async () => {
+  // The other half of the same gap: the operation wants an array of objects
+  // and a command line has only strings, so the batch verb measured at 78
+  // calls across 35 sessions could not be called at all from the only client
+  // that was working at the time.
+  await withLease(async (act) => {
+    const outcome = await act([
+      '--action',
+      'fill_form',
+      '--field',
+      'e1=alice',
+      '--field',
+      'e2=bob@example.com',
+    ]);
+
+    assert.notEqual(
+      (outcome as { rule?: string }).rule,
+      'act.form_fields_bounded',
+      `a batch of two fields did not arrive as fields: ${JSON.stringify(outcome)}`,
+    );
+  });
+});
+
+test('a field value may contain an equals sign — only the first one separates', async () => {
+  // A password, a base64 fragment or a query string all carry one. Splitting
+  // on every = would silently truncate the value, which is the kind of defect
+  // that surfaces as "the form was filled but the login failed".
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'fill_form', '--field', 'e1=a=b=c']);
+
+    assert.equal(outcome.outcome, 'accepted', JSON.stringify(outcome));
+  });
+});
+
+test('splitting on the LAST separator would name a different field — it splits on the first', async () => {
+  // The equals-sign case above proves a value carrying one is accepted; it
+  // cannot prove *where* the split happened, because an accepted batch fill
+  // echoes no fields back. This can: a field whose text contains a separator
+  // is paired with one that has none, and the operation refuses a field with
+  // no value **by index**. Splitting anywhere but the first separator moves
+  // which index is bad, so the index in the refusal is the evidence.
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'fill_form', '--field', 'e1=a=b', '--field', 'e2']);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.value_required');
+    // Field 1, never field 0: the first field split correctly and is fine.
+    assert.match(
+      (outcome as { message: string }).message,
+      /Field 1/u,
+      'the wrong field was blamed, so the pair did not split where it should',
+    );
+  });
+});
+
+test('a batch fill with no fields is still refused', async () => {
+  // The negative control for the two above.
+  await withLease(async (act) => {
+    const outcome = await act(['--action', 'fill_form']);
+
+    assert.equal(outcome.outcome, 'refused');
+    assert.equal((outcome as { rule: string }).rule, 'act.form_fields_bounded');
+  });
+});
+
+test('A REPEATED --field ACCUMULATES; every other repeated option still keeps the last word', () => {
+  // The parser assigned unconditionally, so a repeated option kept only its
+  // last occurrence. For `--value` that is right. For `--field` it was
+  // silent data loss of exactly the kind a batch verb cannot tolerate:
+  // `--field a=1 --field b=2` filled ONE field and reported success, which
+  // is worse than the refusal it replaced, because a refusal is visible.
+  //
+  // Asserted on the parser directly rather than through an outcome, because
+  // an accepted batch fill echoes no fields back — there is nothing
+  // downstream that can show how many arrived.
+  assert.deepEqual(parseArguments(['--field', 'e1=a', '--field', 'e2=b'])['field'], [
+    'e1=a',
+    'e2=b',
+  ]);
+
+  // One occurrence is still a list, so the shape does not depend on how many
+  // the caller happened to pass.
+  assert.deepEqual(parseArguments(['--field', 'e1=a'])['field'], ['e1=a']);
+
+  // The narrowness is the point: making every option accumulate would turn a
+  // twice-typed --value into a shape no operation expects.
+  assert.equal(parseArguments(['--value', 'first', '--value', 'second'])['value'], 'second');
 });

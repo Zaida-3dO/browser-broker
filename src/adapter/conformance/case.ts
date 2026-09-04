@@ -95,10 +95,31 @@ export interface ConformanceCase {
  * full; a guard that decrements a counter without telling the browser leaves
  * the log empty and the count wrong."
  */
+/**
+ * One browser call, as the harness sees it.
+ *
+ * **`detail` is carried, not just the name.** A shape holding only the name
+ * can answer *"was the browser touched"* and never *"with what"*, and the
+ * difference is the difference between a route that forwards an argument and
+ * one that drops it — both of which touch the browser exactly once, so a
+ * name-only reading finds them identical. A defect of exactly that shape
+ * survived here: an adapter stopped forwarding an argument and every case
+ * still passed, because nothing in this harness could see a payload.
+ *
+ * Deliberately structural rather than the fake driver's own call type: this
+ * observation crosses a route boundary, and one route rebuilds it from what
+ * it read rather than handing over the object it was given.
+ */
+export interface ObservedDriverCall {
+  readonly name: string;
+  /** The arguments the operation was called with, per operation. */
+  readonly detail?: Readonly<Record<string, unknown>>;
+}
+
 export interface CaseObservation {
   readonly outcome: OperationOutcome;
   /** Every browser call the service made while this case ran. */
-  readonly driverCalls: readonly { readonly name: string }[];
+  readonly driverCalls: readonly ObservedDriverCall[];
   /** Live claims, read from **the same predicate the capacity check uses**. */
   readonly liveClaimCount: number;
 }

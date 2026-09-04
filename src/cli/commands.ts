@@ -97,7 +97,8 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
   {
     words: ['act'],
     operation: 'act',
-    summary: 'Click, type, fill, press, select, hover, check, scroll, resize, emulate, dialog.',
+    summary:
+      'Click, type, fill, press, select, hover, check, scroll, resize, emulate, dialog, fill_form.',
     // **Undocumented options are unusable options**, and this command had
     // none listed at all — so `broker act --help` printed `--json` and
     // `--help` and nothing else, for the verb with the most arguments on the
@@ -134,6 +135,18 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
       {
         flag: '--forced-colours <active|none>',
         summary: 'For emulate.',
+      },
+      {
+        flag: '--accept | --dismiss',
+        summary:
+          'For dialog, which answer to give. `--prompt-text <text>` is what to type before ' +
+          'accepting, and cannot accompany a dismissal.',
+      },
+      {
+        flag: '--field <ref>=<value>',
+        summary:
+          'For fill_form, one field to fill. Repeat it once per field; only the first = ' +
+          'separates, so a value may contain one.',
       },
     ],
   },

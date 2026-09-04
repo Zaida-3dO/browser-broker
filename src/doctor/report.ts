@@ -15,6 +15,7 @@ import {
   checkKeeperTab,
   checkRootWritable,
   checkSchemaVersion,
+  checkStrandedTabs,
   checkSignInSession,
   checkStoreLocation,
   checkStorePresent,
@@ -190,6 +191,17 @@ export function runDoctor(
 
   checks.push(checkTabBudget(storedBudget, probes.configuredTabBudget ?? null));
 
+  // Counted here rather than in the check, which takes a number so it stays
+  // testable without a store. A store that is absent yields no count and the
+  // check is not run at all: "no store" is already reported by its own row,
+  // and a second row saying zero stranded tabs would read as reassurance
+  // drawn from nothing.
+  if (db !== undefined) {
+    checks.push(
+      checkStrandedTabs(countStrandedTabs(db, environment.leaseSeconds), environment.leaseSeconds),
+    );
+  }
+
   return {
     checks,
     exitCode: exitCodeFor(checks),
@@ -283,4 +295,26 @@ export function formatReport(report: DoctorReport): readonly string[] {
 
   lines.push('', `exit code: ${String(report.exitCode)}`);
   return lines;
+}
+
+/**
+ * Tabs that have been waiting on a close for longer than a lease may go
+ * without contact.
+ *
+ * The comparison is on `updated_at`, which is when the row was moved to
+ * `closing` — the moment the tool was asked. A round trip still inside that
+ * window is a close in flight and is deliberately not counted, because
+ * reporting one would make a healthy release look like a fault.
+ */
+function countStrandedTabs(db: Database, leaseSeconds: number): number {
+  const cutoff = new Date(Date.now() - leaseSeconds * 1000).toISOString();
+  const row = db
+    .prepare<[string], { n: number }>(
+      `SELECT COUNT(*) AS n
+         FROM tabs
+        WHERE state = 'closing'
+          AND updated_at < ?`,
+    )
+    .get(cutoff);
+  return row?.n ?? 0;
 }
