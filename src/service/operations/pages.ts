@@ -650,7 +650,77 @@ export interface ActInput extends TabOperationInput {
 export interface ActResult extends TabOperationResult {
   /** Which action was accepted, for a caller that sent it loosely typed. */
   readonly action: ActionRequest['action'];
+
+  /**
+   * How far an `emulate` reaches, present on every `emulate` and on nothing
+   * else.
+   *
+   * ── The failure this field exists to stop ───────────────────────────────
+   *
+   * A media preference is set through CDP's `Emulation.setEmulatedMedia`,
+   * which is an **override scoped to the connection that issued it**. The
+   * service is daemonless (§1.0) — spawned by its caller, serving that
+   * session, exiting with it — so a command-line invocation opens its own
+   * connection, sets the preference, and drops it on the way out. The tab
+   * survives, the page survives, and the binding does not.
+   *
+   * That produced a real and expensive failure: a reviewer set
+   * `--colour-scheme dark`, captured from a **separate invocation**, got a
+   * light page, and filed a high-severity bug against an application that had
+   * done nothing wrong. The report had to be withdrawn. **The harm was
+   * manufactured evidence, and its cause was silence** — the call reported
+   * `accepted` with `pageDriven: true`, both of which are true, and nothing
+   * anywhere said how long the effect would last.
+   *
+   * ── Why an advisory field, and not a refusal or a corrected flag ────────
+   *
+   * `pageDriven` is not the field that is wrong. It means "whether a browser
+   * was genuinely reached" — see {@link TabOperationResult.pageDriven} — and a
+   * browser *was* reached, and `emulateMedia` *did* take effect for that
+   * connection's life. Answering `false` would misreport a different thing.
+   *
+   * A refusal would be wrong for the same reason it is wrong on `pageDriven`:
+   * the call happened, and on the surface where one connection spans several
+   * calls the verb works exactly as documented. Refusing it there to fix a
+   * different surface removes a capability §3.8 measured as absent rather
+   * than awkward.
+   *
+   * So this follows `pageDriven`'s own stated design — **the surprising state
+   * is the one that has to be spelled out**, in a field present only when the
+   * surprise applies. It is unconditional on `emulate` rather than conditional
+   * on the surface, because the service cannot tell from inside one call
+   * whether the caller's *next* call will share this connection.
+   *
+   * ── Why it names the working path ──────────────────────────────────────
+   *
+   * A caveat that only states a limitation leaves a reader stuck, and this
+   * project's rule is that a no arrives carrying its alternative
+   * (`refusals.ts`, §7). Both working paths are real and neither is a
+   * workaround: emulate and capture within one invocation, or use the tool
+   * surface, where one connection spans the calls.
+   */
+  readonly emulationScope?: string | undefined;
 }
+
+/**
+ * What an `emulate` result says about how long its effect lasts.
+ *
+ * A constant rather than an inline literal so there is one place to reword it.
+ *
+ * **What the tests hold it to is the meaning, not the wording.** They match the
+ * parts that have to survive a rewrite — that the effect is scoped to the
+ * connection, and that a path which works is named — rather than the sentence
+ * itself. Equality against the whole string would break on every harmless
+ * rewording while proving less: a note can keep every word and still stop
+ * telling a caller what to do. So a rewrite that keeps the meaning is free, and
+ * one that drops the working path fails.
+ */
+export const EMULATION_SCOPE_NOTE =
+  'This preference lasts as long as the connection that set it, not as long ' +
+  'as the tab. A later call from a separate invocation will not see it: the ' +
+  'tab survives and the emulation binding does not. To act on it, emulate ' +
+  'and capture within one invocation, or use the tool surface, where one ' +
+  'connection spans the calls.';
 
 /**
  * `act` (§3.6) — one interaction against an owned tab.
@@ -683,7 +753,17 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
   );
   return {
     value: withPageDriven(
-      { claimId: lease.claimId, tabId: tab.tabId, expiresAt, action: request.action },
+      {
+        claimId: lease.claimId,
+        tabId: tab.tabId,
+        expiresAt,
+        action: request.action,
+        // Derived from the action that was validated, in the one place that
+        // knows which action ran — the same property `pageDriven` is built
+        // for. Spread away on the other twelve so the field's presence is
+        // itself the signal, with no "" to mistake for a scope nobody stated.
+        ...(request.action === 'emulate' ? { emulationScope: EMULATION_SCOPE_NOTE } : {}),
+      },
       work,
     ),
     afterCommit: work.afterCommit,

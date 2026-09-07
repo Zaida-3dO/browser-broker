@@ -1846,11 +1846,23 @@ survive or collapse. A service whose main purpose is looking at pages cannot rea
 without this, which makes it the same class of absence `resize` was: not awkward, absent.
 
 **It adds no tool, on the same test `resize` passes.** Tab-scoped, non-destructive, affects no other
-caller, and leaves nothing behind anybody has to recover from — the preference belongs to the
-browsing context the lease already owns, and it ends with the tab. It is exactly the shape
-`browser_act` exists to hold, and it folds under the principle §3.1 states: a separate tool when
-something must be refusable by name or when it changes what the caller owns, folded otherwise. This
-is neither.
+caller, and leaves nothing behind anybody has to recover from. It is exactly the shape `browser_act`
+exists to hold, and it folds under the principle §3.1 states: a separate tool when something must be
+refusable by name or when it changes what the caller owns, folded otherwise. This is neither.
+
+**The preference ends with the connection, not with the tab.** A media preference is set through
+CDP's `Emulation.setEmulatedMedia`, which is an override scoped to the connection that issued it, so
+the tab and its page both outlive it: the binding is dropped when the connection goes and the page
+carries on unchanged. This is measured, and it is the one place `emulate` and `resize` genuinely
+differ — `setViewportSize` changes durable browser-side state, and there is no browser-side home for
+a media preference to occupy. It is why an `emulate` result carries `emulationScope`, and why that
+sentence names the two paths that work rather than only stating the limit.
+
+Because the service is daemonless (§1.0), the connection is the process, so a command-line caller
+that emulates in one invocation and captures in the next sees no effect. **That hole is accepted for
+the same reason `pending-seeds.ts` accepts its own** — the custody is the process's and it is short —
+and §13l records why the alternative was rejected on cost. What is *not* accepted is discovering it
+by surprise, which is what the advisory field exists to prevent.
 
 **It returns a fresh snapshot like every other action**, because changing the colour scheme can
 change the page's rendered content and every subsequent element reference has to come from the page

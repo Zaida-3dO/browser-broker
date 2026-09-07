@@ -2308,6 +2308,81 @@ measured across repeated runs from a verified-empty baseline.
 
 ---
 
+## 13l. A media preference ends with the connection, and the design document said it ends with the tab (2026-09-04)
+
+`act emulate` reported `accepted` with `pageDriven: true` and had no effect a later command-line call
+could see. The mechanism, measured rather than reasoned: `page.emulateMedia()` becomes CDP
+`Emulation.setEmulatedMedia`, **an override scoped to the connection that issued it**. The tab
+survives, the page survives, and the binding does not — proved per-Page (it does not reach a sibling
+page on the same context), reload-durable within one connection, and gone from a separate process
+reading the same never-reloaded tab.
+
+**What was wrong in this repository was a sentence, and it is worth naming precisely.** §3.8 argued
+`emulate` needed no separate tool partly because *"the preference belongs to the browsing context the
+lease already owns, and it ends with the tab"*, and `driver.ts`'s `MediaPreferences` comment carried
+the same premise in different words. The half about unreachability from inside the page is true and
+still load-bearing. The half about the tab is false. So per-tab preference state was never
+consciously deferred — **it was asserted unnecessary on a premise nobody had measured**, which is a
+worse failure than deferring it, because it left both files telling the next reader the opposite of
+the truth. Both are corrected.
+
+### What the defect actually cost, which decided the fix
+
+Not inconvenience — **manufactured evidence.** A reviewer set `--colour-scheme dark`, captured from a
+separate invocation, got a light page, and filed a high-severity bug against an application that had
+done nothing wrong. The report had to be withdrawn. That is the same defect class as the capture that
+wrote no row and the dialog test that could not tell accept from dismiss: a check that cannot observe
+the thing it checks for is indistinguishable from the thing working.
+
+**The harm is caused by the silence, not by the impersistence**, and that distinction is what makes
+the cheap fix sufficient. A caller told plainly that the preference will not outlive this call does
+not file the bug. So an `emulate` result now carries `emulationScope`, naming the boundary and the
+two paths that work — emulate and capture within one invocation, or the tool surface, where one
+connection spans the calls.
+
+It follows `pageDriven`'s own documented design rather than inventing a shape: the surprising state
+is the one that has to be spelled out, in a field present only when the surprise applies. It is
+unconditional on `emulate` rather than conditional on the surface, because the service cannot tell
+from inside one call whether the caller's *next* call shares this connection.
+
+### Rejected: persisting the preference per tab and re-applying it on connect
+
+**Rejected on cost, and it is important that the record says so, because the difficulty that stopped
+an earlier attempt was not a real one.** The `no-preference`-versus-unset ambiguity is already solved
+in the code: `MediaPreferences` uses optional properties and `real.ts` spreads each key only when it
+is defined, so *never mentioned* and *explicitly none* are already distinct and already load-bearing,
+and nullable columns map onto that one-to-one. Anyone re-opening this should not re-open it on that.
+
+It was rejected because it costs a schema migration, changes across three driver-seam files, and a
+re-application on every operation to serve a preference that **19 calls across 9 sessions** used —
+and because of what that buys: only convenience, since the advisory field already removes the false
+evidence. The decisive objection is architectural. The service is daemonless (§1.0) and owns no
+browser-side state; `pending-seeds.ts` meets this identical process-scoped hole and accepts it
+explicitly on that premise, and `real.ts`'s in-memory dialog map makes the same choice again. Storing
+media preferences would make them **the sole piece of browser-side state the store reaches out to
+own**, spending an invariant that does not appear in a diffstat.
+
+Refusing the verb on the surface where it cannot persist was rejected too: it would delete a
+capability that genuinely works on the tool surface — the primary one — to fix a secondary one, and
+the refusal would have to be conditioned on surface, which no refusal in `pages.ts` is. §3.8's case
+that the capability is *absent rather than awkward* still stands.
+
+`pageDriven` was deliberately left alone. It means *whether a browser was genuinely reached*, a
+browser was reached, and `emulateMedia` did take effect for that connection's life. Inverting it
+would misreport a different thing to fix this one.
+
+### The test bar, and why it is honest about what it does not cover
+
+A `fake.ts` test **cannot** catch the impersistence: that lives in a CDP session lifetime the fake
+does not model, and observing it needs a real browser and two real processes. That bar stands and is
+not claimed to be met. What is tested is the thing that was missing — that an accepted `emulate`
+always carries the field, that no other action does, and that the sentence names the working path —
+all of which are deterministic against the faked driver and need no browser. That asymmetry is itself
+one of the reasons this option won: the rejected one is the one needing a rig nothing else in the
+suite requires.
+
+---
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because
