@@ -16,6 +16,90 @@ happens if it does nothing.
 
 ## Unreleased
 
+### ⚠ Behaviour change: `browser_status` asks whether the browser is still there
+
+**What moved.** Liveness was derived from rows and a clock. `browser_status` now asks the operating
+system whether the browser process is still answering, and a session that has died is let go, so the
+next acquisition relaunches rather than handing back a dead one.
+
+**Why this is a behaviour change and not a new check.** A lease whose browser had died reported
+`active`, with its expiry advancing, and no sequence of calls from the tool surface could recover it:
+releasing and reclaiming reached the same settled session, because the provider memoised it for the
+life of the process. The lease looked healthy from every angle a caller could see, and every page
+call on it failed.
+
+**What an installation has to do.** Nothing.
+
+**If it does nothing:** `browser_status` may report a browser gone where it reported `active`. **That
+is the check working, not a new fault appearing** — the browser was already gone, and the report is
+what changed.
+
+**The discriminator is load-bearing, and worth knowing about.** A row that says `running` while
+nothing answers is a browser that died; a row that says `stopped` never started. Acquisition is lazy,
+so a freshly granted lease on a machine with no browser installed is the ordinary case, not an error
+— probing without that distinction reports those leases as expired.
+
+### A claim says when a browser's tabs are stranded
+
+**What moved.** Three reports about tabs stranded mid-close:
+
+- **A grant now carries the count**, from the same query and the same instant. A browser holding a
+  backlog of tabs left by sessions killed mid-lease can grant a lease that cannot be used: the claim
+  succeeds and every navigate on it fails. Five consecutive claims were granted against such a
+  backlog before anything said so.
+- **`broker doctor` splits its stranded count per browser** rather than reporting one total, so
+  clearing one browser moves the number it is judged by.
+- **`broker reconcile` says when the tab blocking it belongs to the caller's own lease**, given a
+  `--session-id` to know it by.
+
+**What an installation has to do.** Nothing. The count rides on a grant that is genuinely
+granted — capacity was taken and the lease is active — so this is a note on a successful response
+rather than a refusal, and it is absent rather than zero when there is no backlog.
+
+### Command-line help lists the flags a command is refused for omitting, and an unknown flag is refused
+
+**What moved.** `broker claim --help` documents `--session-id` and `--purpose`, the two flags a claim
+is refused by name for omitting, and `broker reconcile --help` documents its optional `--session-id`.
+A help text listing three optional flags and neither required one teaches a reader how to call the
+command unsuccessfully.
+
+An unknown flag on `snapshot`, `events` or `reconcile` is refused, naming the flag and the accepted
+set, rather than being accepted and discarded.
+
+**What an installation has to do.** Nothing. A caller passing correct flags is unaffected.
+
+**The refusal's reach is narrower than the help fix, and worth stating plainly:** it covers those
+three commands. `claim` and the other operation commands parse their arguments by a different route,
+so `broker claim --session x` still does not name the typo. The completeness gate covering the
+documented commands is a hand-written list.
+
+### `act emulate` says how long its effect lasts
+
+**What moved.** An `emulate` result carries `emulationScope`, naming the bound the preference lives
+within and the path that works: emulate and capture within one invocation, or use the tool surface,
+where one connection spans the calls.
+
+The preference is scoped to the connection that set it — the tab survives and the emulation binding
+does not — so an emulate driven from a separate invocation than the capture that reads it returns
+`accepted` and changes nothing on the page. A reviewer checking dark mode that way gets a clean
+result and a light screenshot. The harm is the silence rather than the impersistence.
+
+**What an installation has to do.** Nothing; the field is additive. `pageDriven` is unchanged and
+still reports `true` here, because a browser genuinely was reached.
+
+### `browser_capture` can ask for a higher-resolution tier
+
+**What moved.** `browser_capture` takes `tier` — `"detail"` or `"max"` — and `reason` is bounded at 8
+to 200 characters and required alongside `tier="max"`. The default has no name and is what passing
+nothing gives you. A new refusal, `capture.tier_known`, names both accepted words when a tier is not
+one of them.
+
+The ladder was built end to end, and the pipeline refuses the top rung without a written reason,
+while no surface could populate either field — so the escalation rollup could only ever read as
+*nobody escalates*, which is a measurement of the surface rather than of any caller.
+
+**What an installation has to do.** Nothing. A capture that names no tier gets the default.
+
 ### ⚠ Behaviour change: `wait_ms` on a navigate is now honoured
 
 **What moved.** `browser_navigate` has advertised a `wait_ms` argument for some time, typed,
