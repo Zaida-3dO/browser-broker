@@ -1,6 +1,6 @@
 {
   "name": "browser-broker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "description": "Leases over tabs in a fixed set of browsers: bounded capacity, a queue, reclamation, and an enforced capture policy.",
   "type": "module",

@@ -14,7 +14,7 @@ happens if it does nothing.
 
 ---
 
-## Unreleased
+## 0.2.0
 
 ### ⚠ Behaviour change: `browser_status` asks whether the browser is still there
 
