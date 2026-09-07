@@ -29,15 +29,60 @@ import { checkBackSeconds } from './claim.ts';
  * what makes one duration serve both states — and it is why the queued
  * response tells a caller to check back at just under the lifetime rather
  * than merely telling it how long the place lasts.
+ *
+ * ── What this operation deliberately does NOT know ──────────────────────
+ *
+ * **Whether the browser is still there.** Measured 2026-09-04: both browsers
+ * were gone, the store went on granting leases against them, and this
+ * operation reported every one `active` with the expiry advancing. Reading a
+ * row is not the same as looking at the machine, and this operation only ever
+ * does the first — everything it returns above is rows plus the expiry
+ * derivation, and that derivation is about **time** and nothing else
+ * (`operations/derive.ts`).
+ *
+ * It cannot be fixed by asking here. `arbitration.no_browser_io` (§2.4b)
+ * forbids browser work inside the arbitration transaction, because one
+ * unresponsive browser inside it blocks every arbitration call on the
+ * machine — and a browser that has died is exactly the browser most likely to
+ * be slow to answer. So the honest shape is: this operation says `unknown`,
+ * and the layer that holds the browser seam settles it **after the commit**
+ * and downgrades `active` to `expired` when the browser is gone
+ * (`service/broker.ts`).
+ *
+ * The standing rule that makes that the right split rather than a workaround
+ * is §2.4's, one level up from where it is usually applied: **stored state is
+ * provisional, derived state is the truth.** A row saying `active` against a
+ * dead browser is provisional in precisely the way a lapsed row is.
  */
 
 export interface StatusInput {
   readonly key: string;
 }
 
+/**
+ * What this operation can say about the browser behind an active lease.
+ *
+ * ── Why the unknown case is a word and not an absence ───────────────────
+ *
+ * A build with no way to probe (§2.4b's documented no-browser state, and
+ * every test that runs without one) must be distinguishable from a build that
+ * probed and found a browser answering. Collapsing the two onto a boolean
+ * makes *not asked* and *asked and fine* the same value, which is the exact
+ * confusion this whole row exists to remove — one level up.
+ */
+export type BrowserLiveness = 'live' | 'gone' | 'unknown';
+
 export interface StatusResult {
   readonly claimId: string;
-  readonly state: 'queued' | 'active';
+  /**
+   * Where the lease stands.
+   *
+   * **`expired` is reachable without the lease's clock having run out**, and
+   * that is the point of it: a lease whose browser is gone is not active,
+   * whatever its expiry says. See {@link browser} for what settles it and
+   * `service/broker.ts` for where the probe happens.
+   */
+  readonly state: 'queued' | 'active' | 'expired';
   readonly browserId: string;
   readonly purpose: string;
   /** The expiry **after** this call extended it. */
@@ -51,6 +96,16 @@ export interface StatusResult {
   readonly waitEstimateSeconds?: number;
   /** The tab, present only once the lease is active. */
   readonly tabId?: string;
+  /**
+   * Whether the browser this lease is held against is actually there.
+   *
+   * **Never settled inside the transaction.** Answering it means talking to a
+   * browser, and `arbitration.no_browser_io` (§2.4b) forbids that here — one
+   * unresponsive browser inside the arbitration transaction blocks every
+   * arbitration call on the machine. So this operation returns `unknown` and
+   * the layer holding the browser seam settles it after the commit.
+   */
+  readonly browser?: BrowserLiveness;
 }
 
 /**
@@ -120,6 +175,14 @@ export function decideStatus(
       checkBackSeconds: checkBack,
       checkBack: advice,
       ...(tab === undefined ? {} : { tabId: tab.tabId }),
+      // **`unknown` rather than `live`, and the difference is the whole
+      // defect.** Everything above is derived from rows and a clock, which is
+      // what a lease is; whether the browser still exists is a fact about the
+      // operating system and cannot be read here without breaking
+      // `arbitration.no_browser_io`. Claiming `live` from this seat would be
+      // asserting the very thing that was measured false — a store believing
+      // in a browser that had been dead for minutes.
+      browser: 'unknown',
     },
   };
 }

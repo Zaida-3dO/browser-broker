@@ -177,6 +177,14 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     environment,
     adapter: options.adapter,
     session: browsers.session,
+    // **What makes `status` able to tell the truth about a dead browser.**
+    // Supplied here rather than defaulted inside the broker for the reason
+    // the option's own comment gives: a build that cannot look must report
+    // `unknown` rather than claim the browser is fine. This build can look,
+    // so it does. Note this is the provider's `liveness`, which asks the
+    // operating system — not its memoised session, which is the very thing
+    // that keeps presenting a dead browser as a working connection.
+    checkBrowser: browsers.liveness,
     artifacts,
     // The same provider closes the tabs the sweep orphaned. Without one,
     // `SCHEMA.md` §2.4b's "a leaked tab is not a leaked lease" describes a

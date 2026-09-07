@@ -32,7 +32,8 @@ import type {
   RequestSignInInput,
   RequestSignInResult,
 } from './operations/sign-in.ts';
-import type { StatusInput, StatusResult } from './operations/status.ts';
+import type { BrowserLiveness, StatusInput, StatusResult } from './operations/status.ts';
+import type { BrowserId } from '../browser/driver.ts';
 
 /**
  * The service surface, which is what every adapter calls and the only thing
@@ -150,6 +151,29 @@ export interface BrokerOptions {
    * that cannot vary them.
    */
   readonly diffSettings?: DiffSettings;
+  /**
+   * Whether the browser behind a lease is actually running, asked **after**
+   * the arbitration transaction has committed.
+   *
+   * ── Why this exists as a seam rather than a call inside the operation ───
+   *
+   * Measured 2026-09-04: both browsers were dead, and `status` reported every
+   * lease against them `active` with the expiry advancing. `operations/
+   * status.ts` cannot answer this itself — it runs inside the arbitration
+   * transaction, and `arbitration.no_browser_io` (§2.4b) keeps browser work
+   * out of there because one unresponsive browser inside it blocks every
+   * arbitration call on the machine. A browser that has died is exactly the
+   * one most likely to be slow to answer, so making the honest check there
+   * would trade a silent outage for a total one.
+   *
+   * **Optional, and omitting it means `browser: 'unknown'` rather than a
+   * cheerful `live`** — the same documented-consequence shape
+   * {@link BrokerOptions.session} and {@link BrokerOptions.closeTab} take. A
+   * build that cannot look must not claim to have looked; that is the defect
+   * this row exists to remove, and reintroducing it here as a default would
+   * be the neatest possible way to undo the whole change.
+   */
+  readonly checkBrowser?: (browser: BrowserId) => Promise<BrowserLiveness>;
 }
 
 /**
@@ -256,7 +280,60 @@ export function createBroker(options: BrokerOptions): Broker {
       }
       return result;
     },
-    status: (input) => run<StatusInput, StatusResult>('status', input),
+    /**
+     * **After the call returns, so the probe is outside the transaction.**
+     * The same shape `claim` above uses for its seed, and for a stricter
+     * reason: this one talks to a browser, and
+     * `arbitration.no_browser_io` (§2.4b) is what keeps that out of the
+     * arbitration transaction.
+     *
+     * A queued lease is not probed. It holds no tab and is waiting for
+     * capacity rather than using it, so a browser that is down is the
+     * ordinary reason the queue exists — reporting a waiting caller as
+     * expired would end a lease that has nothing wrong with it.
+     */
+    status: async (input) => {
+      const result = await run<StatusInput, StatusResult>('status', input);
+      if (result.state !== 'active' || options.checkBrowser === undefined) {
+        return result;
+      }
+
+      const liveness = await options.checkBrowser(result.browserId);
+      if (liveness !== 'gone') {
+        return { ...result, browser: liveness };
+      }
+
+      // **The lease is reported `expired`, and this writes nothing.**
+      //
+      // Two things are true at once and the split matters: the browser is
+      // gone, so this lease cannot do anything a lease is for; but the
+      // reclamation that ends leases is the sweep's, inside the arbitration
+      // transaction, and this code is deliberately outside it. Writing here
+      // would be a second writer of lease state racing the one that owns it.
+      //
+      // So this reports the truth without asserting authorship of it, which
+      // is exactly what §2.4's standing rule licenses: **stored state is
+      // provisional, derived state is the truth.** A row saying `active`
+      // against a dead browser is provisional in the same way a lapsed row
+      // is, and a reader that derives correctly renders the same picture
+      // whether or not the row has been swept.
+      //
+      // `tabId` is dropped rather than carried: it names a page in a browser
+      // that does not exist, and handing it back invites a caller to address
+      // it. Nothing owns it to close — the browser took it.
+      const { tabId, ...withoutTab } = result;
+      // Read so that dropping it is a decision the compiler can see rather
+      // than an unused binding a later cleanup would "tidy" back into the
+      // result. The tab is real in the store; what is gone is the browser
+      // holding it, which is why it is omitted here and not closed here.
+      void tabId;
+      return {
+        ...withoutTab,
+        state: 'expired',
+        browser: 'gone',
+        checkBack: `The ${result.browserId} browser this lease was held against is not running: its endpoint did not answer, or answered as a different browser. The lease cannot be used, so it is reported expired rather than active however much time is left on it. Release this lease and claim again — a claim is what starts a browser, and the next one will start a fresh one.`,
+      };
+    },
     release: (input) =>
       run<ReleaseInput & { settings: ArbitrationSettings }, ReleaseResult>('release', {
         ...input,
