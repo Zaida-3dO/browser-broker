@@ -39,8 +39,13 @@ function page(driverTabId: string): LivePage {
   return { driverTabId };
 }
 
-function recorded(tabId: string, driverTabId: string | null, claimId = 'claim-a'): RecordedTab {
-  return { tabId, driverTabId, claimId };
+function recorded(
+  tabId: string,
+  driverTabId: string | null,
+  claimId = 'claim-a',
+  sessionId = 'session-a',
+): RecordedTab {
+  return { tabId, driverTabId, claimId, sessionId };
 }
 
 test('a page no live lease owns is closed, and an owned page beside it is not', () => {
@@ -133,7 +138,7 @@ test('while a tab is mid-open, no page is closed — but vanished rows are still
   );
   assert.deepEqual(
     plan.skippedOpening,
-    ['tab-opening'],
+    [{ tabId: 'tab-opening', sessionId: 'session-a' }],
     'and the declining is reported, not silent',
   );
 
@@ -157,7 +162,7 @@ test('an opening row is never itself settled, even with nothing else in play', (
     [],
     'a row that has not been opened has no page to be missing',
   );
-  assert.deepEqual(plan.skippedOpening, ['tab-opening']);
+  assert.deepEqual(plan.skippedOpening, [{ tabId: 'tab-opening', sessionId: 'session-a' }]);
 });
 
 test('a browser with nothing open settles every live row and closes nothing', () => {
@@ -306,7 +311,10 @@ test('an opening row reaches the decider as a null driver name, from a real stor
       [],
       'the page this lease is about to be handed must not be closed under it',
     );
-    assert.deepEqual(plan.skippedOpening, [openingTab]);
+    // The session comes from the lease through the real join, which is what
+    // makes the ownership half of the report trustworthy rather than a value
+    // the command guessed.
+    assert.deepEqual(plan.skippedOpening, [{ tabId: openingTab, sessionId: 'session-a' }]);
   });
 });
 

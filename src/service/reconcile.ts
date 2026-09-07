@@ -96,11 +96,33 @@ export interface RecordedTab {
    */
   readonly driverTabId: string | null;
   readonly claimId: string;
+  /**
+   * The session whose lease owns this row.
+   *
+   * Carried so that a report can tell a caller when the thing blocking the
+   * run is **its own** lease. Reconciliation declines to close anything while
+   * a row is mid-open, which is correct — but a caller that cannot tell
+   * whether the blocking row is its own has no way to act on being told, and
+   * the correct caution reads as an unexplained refusal to work.
+   */
+  readonly sessionId: string;
 }
 
 /** A page the browser has open that no live lease owns (§2.6). */
 export interface UnownedPage {
   readonly driverTabId: string;
+}
+
+/**
+ * A row left alone because its open is still in flight, and who owns it.
+ *
+ * The session is here rather than looked up later because the lookup would
+ * need the store, and this plan is deliberately a value a test can build
+ * without one.
+ */
+export interface SkippedOpeningTab {
+  readonly tabId: string;
+  readonly sessionId: string;
 }
 
 /** A row a live lease believes it owns, whose page is not there (§2.6). */
@@ -130,8 +152,11 @@ export interface ReconciliationPlan {
    * a busy installation is the difference between *"reconciliation considered
    * these and declined"* and *"reconciliation did not look"*, and only the
    * first of those is a design.
+   *
+   * Each entry carries the session that owns it, so a report can say when the
+   * blocking row belongs to the caller reading the report.
    */
-  readonly skippedOpening: readonly string[];
+  readonly skippedOpening: readonly SkippedOpeningTab[];
 }
 
 /**
@@ -221,7 +246,9 @@ export function decideReconciliation(
   pages: readonly LivePage[],
   recorded: readonly RecordedTab[],
 ): ReconciliationPlan {
-  const skippedOpening = recorded.filter((tab) => tab.driverTabId === null).map((tab) => tab.tabId);
+  const skippedOpening = recorded
+    .filter((tab) => tab.driverTabId === null)
+    .map((tab) => ({ tabId: tab.tabId, sessionId: tab.sessionId }));
 
   // Every driver name a live lease claims. Built from the rows that have one,
   // which by §1.4's check is exactly the rows that are not `opening`.
@@ -279,6 +306,16 @@ export interface ReconciliationReport {
   /** How many rows were left alone because their open is still in flight. */
   readonly skippedOpening: number;
   /**
+   * How many of those belong to the session running this command.
+   *
+   * **Zero when the caller did not say who it is**, which is honest rather
+   * than convenient: without a session to compare against, "none of them are
+   * yours" and "nobody asked" are different answers, and only the second is
+   * true. The report says the ordinary thing in that case rather than
+   * asserting an ownership fact nobody established.
+   */
+  readonly skippedOpeningOwnedByCaller: number;
+  /**
    * How many rows stranded at `closing` by an ended lease were settled,
    * their page not being among what the browser listed.
    */
@@ -298,7 +335,8 @@ export function readRecordedTabs(db: Database, browserId: string): readonly Reco
     .prepare<[string], RecordedTab>(
       `SELECT tabs.id AS tabId,
               tabs.driver_tab_id AS driverTabId,
-              tabs.claim_id AS claimId
+              tabs.claim_id AS claimId,
+              claims.session_id AS sessionId
          FROM tabs
          JOIN claims ON claims.id = tabs.claim_id
         WHERE tabs.browser_id = ?

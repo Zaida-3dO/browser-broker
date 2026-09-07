@@ -4,6 +4,7 @@ import { SIGNABLE_BROWSER } from '../service/operations/sign-in.ts';
 import type { Environment } from '../config/environment.ts';
 import { readTabBudget } from '../operations/status.ts';
 import { classifySignIn, type ProcessLiveness } from '../service/signin-recovery.ts';
+import { strandedTabsByBrowser } from '../service/tabs.ts';
 import type { NetworkPathChecks } from '../store/network-path.ts';
 import { readStoreVersion } from '../store/schema/step.ts';
 import { inspectProfileSession, type CookieStoreReader } from './session.ts';
@@ -198,7 +199,10 @@ export function runDoctor(
   // drawn from nothing.
   if (db !== undefined) {
     checks.push(
-      checkStrandedTabs(countStrandedTabs(db, environment.leaseSeconds), environment.leaseSeconds),
+      checkStrandedTabs(
+        strandedTabsByBrowser(db, environment.leaseSeconds),
+        environment.leaseSeconds,
+      ),
     );
   }
 
@@ -295,26 +299,4 @@ export function formatReport(report: DoctorReport): readonly string[] {
 
   lines.push('', `exit code: ${String(report.exitCode)}`);
   return lines;
-}
-
-/**
- * Tabs that have been waiting on a close for longer than a lease may go
- * without contact.
- *
- * The comparison is on `updated_at`, which is when the row was moved to
- * `closing` — the moment the tool was asked. A round trip still inside that
- * window is a close in flight and is deliberately not counted, because
- * reporting one would make a healthy release look like a fault.
- */
-function countStrandedTabs(db: Database, leaseSeconds: number): number {
-  const cutoff = new Date(Date.now() - leaseSeconds * 1000).toISOString();
-  const row = db
-    .prepare<[string], { n: number }>(
-      `SELECT COUNT(*) AS n
-         FROM tabs
-        WHERE state = 'closing'
-          AND updated_at < ?`,
-    )
-    .get(cutoff);
-  return row?.n ?? 0;
 }

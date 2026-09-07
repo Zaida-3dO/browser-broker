@@ -5,6 +5,7 @@ import type { BrowserId } from '../browser/driver.ts';
 import type { Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
 import { SIGN_IN_OWNER_UNKNOWN_REMEDY, type SignInOwnerState } from '../service/signin-recovery.ts';
+import type { StrandedByBrowser } from '../service/tabs.ts';
 import { refuseNetworkLocation, type NetworkPathChecks } from '../store/network-path.ts';
 import { EXPECTED_VERSION } from '../store/schema/steps.ts';
 import type { SessionProbe } from './session.ts';
@@ -316,8 +317,23 @@ export function checkSchemaVersion(found: number | null): GroupedCheck {
  * without contact, a round trip outstanding for longer is not pending.
  * Taking the threshold from configuration rather than writing one down keeps
  * the two from drifting apart.
+ *
+ * ── Why the count is broken down per browser ────────────────────────────
+ *
+ * The remedy is per-browser, so a single total cannot say which browsers
+ * still need it. An operator who reconciled one browser and watched the total
+ * fall from 29 to 13 reasonably concluded reconcile had not worked; the
+ * remaining 13 were all on the other browser, and the run had done exactly
+ * what it said. The breakdown is what makes the remaining work obvious, and
+ * the remedy names the browsers rather than saying "each browser" — the
+ * browsers are a configured list per kind rather than a fixed pair, so
+ * "each" is not something a reader can enumerate from the message alone.
  */
-export function checkStrandedTabs(stranded: number, thresholdSeconds: number): GroupedCheck {
+export function checkStrandedTabs(
+  byBrowser: readonly StrandedByBrowser[],
+  thresholdSeconds: number,
+): GroupedCheck {
+  const stranded = byBrowser.reduce((total, entry) => total + entry.stranded, 0);
   if (stranded === 0) {
     return {
       group: 'store',
@@ -335,9 +351,14 @@ export function checkStrandedTabs(stranded: number, thresholdSeconds: number): G
     detail:
       `${String(stranded)} tab(s) have been waiting on a close for longer than ` +
       `${String(thresholdSeconds)} seconds, which is how long a lease may go without contact ` +
-      'before it is declared lapsed. A close outstanding for longer is not in flight.',
+      'before it is declared lapsed. A close outstanding for longer is not in flight. ' +
+      `Per browser: ${byBrowser
+        .map((entry) => `${String(entry.stranded)} on ${entry.browserId}`)
+        .join(', ')}.`,
     remedy:
-      'Run `broker reconcile` against each browser. It asks what the browser actually has open, ' +
+      `Run \`broker reconcile\` against each browser named above: ${byBrowser
+        .map((entry) => `\`broker reconcile ${entry.browserId}\``)
+        .join(', ')}. It asks what the browser actually has open, ` +
       'closes pages no live lease owns, and settles the records whose page is gone.',
   };
 }

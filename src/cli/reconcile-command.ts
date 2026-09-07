@@ -132,6 +132,10 @@ export async function runReconcileCommand(
   const flags = parseFlags(rest);
   const named = rest.find((word) => !word.startsWith('--'));
   const browser = typeof flags.browser === 'string' ? flags.browser : named;
+  // Optional, and the report degrades honestly without it: a caller that does
+  // not say who it is gets the ordinary message rather than a claim about
+  // ownership nobody established.
+  const callerSession = typeof flags['session-id'] === 'string' ? flags['session-id'] : undefined;
   const browsers = options.browsers ?? DEFAULT_BROWSER_IDS;
 
   if (browser === undefined) {
@@ -229,6 +233,10 @@ export async function runReconcileCommand(
     closed,
     closeFailures,
     skippedOpening: plan.skippedOpening.length,
+    skippedOpeningOwnedByCaller:
+      callerSession === undefined
+        ? 0
+        : plan.skippedOpening.filter((tab) => tab.sessionId === callerSession).length,
   };
 
   if (options.json) {
@@ -293,8 +301,20 @@ export function formatReconciliation(
   if (report.skippedOpening > 0) {
     // Said on the run it happened on, because the alternative is a person
     // reading "0 closed" and concluding there was nothing to close.
+    //
+    // **The caution itself does not change when the caller owns the blocking
+    // row.** Closing a page belonging to an in-flight claim would be worse
+    // than declining, and that is true whoever the claim belongs to. What
+    // changes is that the caller is told the remedy is in its own hands: an
+    // operator once ran this four times against a row that was its own lease,
+    // held open while it ran the command, with nothing in the message able to
+    // say so.
+    const owned = report.skippedOpeningOwnedByCaller;
     lines.push(
-      `${String(report.skippedOpening)} tab(s) are still being opened, so nothing was closed on this run — a page seen now may belong to one of them. Run again once they have settled.`,
+      `${String(report.skippedOpening)} tab(s) are still being opened, so nothing was closed on this run — a page seen now may belong to one of them.` +
+        (owned > 0
+          ? ` ${String(owned)} of them ${owned === 1 ? 'belongs' : 'belong'} to your own lease — release ${owned === 1 ? 'it' : 'them'}, or run this from another session.`
+          : ' Run again once they have settled.'),
     );
   }
 

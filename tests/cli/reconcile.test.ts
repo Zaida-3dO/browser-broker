@@ -405,6 +405,129 @@ describe('broker reconcile', () => {
     }
   });
 
+  it('NAMES THE CALLER OWN LEASE as the thing blocking the run', async () => {
+    // The four wasted passes. `reconcile regular` correctly declined to close
+    // anything while a row was mid-open — and the row was the caller's own
+    // lease, held while it ran the command. The caution was right; the
+    // message could not say whose lease it was, so the only way to find out
+    // was to guess.
+    //
+    // The fixture makes right and wrong differ in *what* is named rather than
+    // in a count: two opening rows, one the caller's and one another
+    // session's. An implementation that reported the total as owned, or that
+    // matched no session at all, fails.
+    const temp = makeTempStore();
+    try {
+      const store = await prepareStore(temp.environment);
+      const driver = new FakeBrowserDriver();
+      const session = await driver.coldStart({
+        browser: 'regular',
+        profileDirectory: path.join(temp.directory, 'profiles', 'regular'),
+        mode: 'headless',
+      });
+
+      const mine = seedClaim(store.db, { browserId: 'regular', sessionId: 'session-mine' });
+      const theirs = seedClaim(store.db, { browserId: 'regular', sessionId: 'session-theirs' });
+      // Reserved and never opened: a row with no driver name is exactly what
+      // §1.4's check makes equivalent to "the browser has not been asked yet".
+      reserveTab(store.db, mine.claimId, 'regular');
+      reserveTab(store.db, theirs.claimId, 'regular');
+      store.close();
+
+      const { streams, captured } = capture();
+      const code = await run(['reconcile', 'regular', '--session-id', 'session-mine'], {
+        streams,
+        env: envFor(temp.directory),
+        session: () => Promise.resolve(session),
+      });
+
+      assert.equal(code, COMMAND_EXIT.accepted, captured.err.join('\n'));
+      const output = captured.out.join('\n');
+
+      // The caution stays. Closing a page belonging to an in-flight claim
+      // would be worse than declining, whoever owns it.
+      assert.match(output, /2 tab\(s\) are still being opened/u);
+      // And the part that was missing: exactly one of them is the caller's,
+      // and the remedy is in the caller's own hands.
+      assert.match(output, /1 of them belongs to your own lease/u);
+      assert.match(output, /release it, or run this from another session/u);
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('does not claim ownership of a blocking tab that belongs to another session', async () => {
+    // The negative control, and the assertion that stops the message being
+    // unconditional. The blocking row is a different session's, so the
+    // ordinary "run again once they have settled" is the true thing to say —
+    // telling this caller to release a lease it does not hold would send it
+    // looking for something it cannot find.
+    const temp = makeTempStore();
+    try {
+      const store = await prepareStore(temp.environment);
+      const driver = new FakeBrowserDriver();
+      const session = await driver.coldStart({
+        browser: 'regular',
+        profileDirectory: path.join(temp.directory, 'profiles', 'regular'),
+        mode: 'headless',
+      });
+
+      const theirs = seedClaim(store.db, { browserId: 'regular', sessionId: 'session-theirs' });
+      reserveTab(store.db, theirs.claimId, 'regular');
+      store.close();
+
+      const { streams, captured } = capture();
+      const code = await run(['reconcile', 'regular', '--session-id', 'session-mine'], {
+        streams,
+        env: envFor(temp.directory),
+        session: () => Promise.resolve(session),
+      });
+
+      assert.equal(code, COMMAND_EXIT.accepted, captured.err.join('\n'));
+      const output = captured.out.join('\n');
+
+      assert.match(output, /1 tab\(s\) are still being opened/u);
+      assert.match(output, /Run again once they have settled/u);
+      assert.doesNotMatch(output, /your own lease/u);
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('says the ordinary thing when the caller did not say who it is', async () => {
+    // Without a session to compare against, "none of them are yours" and
+    // "nobody asked" are different answers and only the second is true. The
+    // report must not assert an ownership fact nobody established.
+    const temp = makeTempStore();
+    try {
+      const store = await prepareStore(temp.environment);
+      const driver = new FakeBrowserDriver();
+      const session = await driver.coldStart({
+        browser: 'regular',
+        profileDirectory: path.join(temp.directory, 'profiles', 'regular'),
+        mode: 'headless',
+      });
+
+      const mine = seedClaim(store.db, { browserId: 'regular', sessionId: 'session-mine' });
+      reserveTab(store.db, mine.claimId, 'regular');
+      store.close();
+
+      const { streams, captured } = capture();
+      const code = await run(['reconcile', 'regular'], {
+        streams,
+        env: envFor(temp.directory),
+        session: () => Promise.resolve(session),
+      });
+
+      assert.equal(code, COMMAND_EXIT.accepted, captured.err.join('\n'));
+      const output = captured.out.join('\n');
+      assert.match(output, /Run again once they have settled/u);
+      assert.doesNotMatch(output, /your own lease/u);
+    } finally {
+      temp.remove();
+    }
+  });
+
   it('is discoverable: the command table lists it, so `broker --help` prints it', async () => {
     // The reachability assertion made at the surface a person actually
     // touches. A command wired into the dispatcher but absent from the table
