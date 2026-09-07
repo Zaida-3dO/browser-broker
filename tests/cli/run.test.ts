@@ -155,6 +155,67 @@ test('claim documents --wait, which changes what the command does', async () => 
   assert.match(help, /queued place|queue place/i);
 });
 
+test('claim documents the two flags it refuses you for omitting', async () => {
+  // Named explicitly rather than left to the rule above for the reason the
+  // rule cannot express: these two are *required*. `claim.session_bounded` and
+  // `claim.purpose_bounded` refuse without them, so a help text omitting them
+  // taught a reader how to call this command unsuccessfully — and the caller
+  // who then guessed `--session` was refused a second time in identical words.
+  const help = (await drive(['claim', '--help'], {})).out.join('\n');
+  assert.match(help, /--session-id/);
+  assert.match(help, /--purpose/);
+});
+
+test('reconcile documents --session-id, and that omitting it is fine', async () => {
+  // The optionality is the point and is why it needs saying out loud: a caller
+  // who does not know the flag exists gets the general caution and no way to
+  // learn a better answer was available for the asking.
+  const help = (await drive(['reconcile', '--help'], {})).out.join('\n');
+  assert.match(help, /--session-id/);
+  assert.match(help, /Optional/i);
+});
+
+test('a mistyped flag is refused, naming it and what the command does accept', async () => {
+  const temp = makeTempStore();
+  try {
+    // The incident this is named after: `--session` for `--session-id`, which
+    // was accepted, discarded, and left the command reporting truthfully that
+    // nothing had been passed.
+    const result = await drive(['reconcile', 'regular', '--session', 'a-session'], {
+      BROKER_DB: temp.environment.databasePath,
+    });
+
+    assert.equal(result.code, 2);
+    const said = result.err.join('\n');
+    // The flag that was wrong...
+    assert.match(said, /--session\b/);
+    // ...and the set it should have come from, the way `claim.browser_known`
+    // names the browsers. Naming only the mistake leaves the caller guessing.
+    assert.match(said, /--session-id/);
+    assert.match(said, /--browser/);
+  } finally {
+    temp.remove();
+  }
+});
+
+test('a known flag is still accepted, so the refusal has not swallowed the command', async () => {
+  const temp = makeTempStore();
+  try {
+    // The mirror of the test above, and the one that would catch a refusal
+    // written too broadly: `--session-id` is a real flag of `reconcile` and
+    // must survive. It gets past parsing to the browser check, which is a
+    // different refusal with a different code.
+    const result = await drive(['reconcile', 'regular', '--session-id', 'a-session'], {
+      BROKER_DB: temp.environment.databasePath,
+    });
+
+    assert.notEqual(result.code, 2);
+    assert.ok(!result.err.join('\n').includes('There is no option named'), result.err.join('\n'));
+  } finally {
+    temp.remove();
+  }
+});
+
 test('an unrecognised option is refused with a non-zero code', async () => {
   const result = await drive(['--nonsense'], {});
   assert.equal(result.code, 2);

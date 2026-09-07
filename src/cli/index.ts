@@ -25,7 +25,12 @@ import { ArtifactStore } from '../artifacts/store.ts';
 import { runDiffs } from './diffs.ts';
 import { runCaptures } from './telemetry.ts';
 import { runImage } from './image.ts';
-import { runDoctorCommand, runEventsCommand, runSnapshotCommand } from './operations-commands.ts';
+import {
+  runDoctorCommand,
+  runEventsCommand,
+  runSnapshotCommand,
+  UnknownFlagError,
+} from './operations-commands.ts';
 import type { AutomationProbe } from '../doctor/checks.ts';
 import { explainLoginFailure, runLoginCommand } from './login-command.ts';
 import { runReconcileCommand } from './reconcile-command.ts';
@@ -1027,6 +1032,17 @@ async function runOperationsCommand(
     }
     return runEventsCommand(rest, { db: store.db, streams, json });
   } catch (error) {
+    // **A mistyped flag is malformed input, not a refused decision.** It is
+    // answered here rather than inside each command because all three parse
+    // their flags the same way and would otherwise each need the same catch —
+    // and because the exit code is the thing a caller branches on: `malformed`
+    // says the vector was wrong, which is what a typo is, while `refused`
+    // would say the service considered the request and declined it. Nothing
+    // was considered; the command never ran.
+    if (error instanceof UnknownFlagError) {
+      streams.err(error.message);
+      return EXIT.malformed;
+    }
     if (error instanceof BrokerError) {
       streams.err(`refused (${error.rule}): ${error.message}`);
       return EXIT.refused;
