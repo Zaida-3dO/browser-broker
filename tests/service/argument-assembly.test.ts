@@ -624,3 +624,83 @@ test('A REPEATED --field ACCUMULATES; every other repeated option still keeps th
   // twice-typed --value into a shape no operation expects.
   assert.equal(parseArguments(['--value', 'first', '--value', 'second'])['value'], 'second');
 });
+
+test('AN ACCEPTED EMULATE SAYS HOW LONG ITS EFFECT LASTS, and names a path that works', async () => {
+  // The defect this closes is not a refusal and not a wrong flag — it is
+  // SILENCE. `act emulate` returned `accepted` with `pageDriven: true`, both
+  // of which are true, while the preference it set died with the process that
+  // set it. A reviewer set dark mode, captured from a SEPARATE invocation,
+  // got a light page, and filed a high-severity bug against an application
+  // that had done nothing wrong. That report had to be withdrawn.
+  //
+  // The impersistence itself is NOT testable here and this test does not
+  // claim to catch it: it lives in a CDP session lifetime that `fake.ts` does
+  // not model, and observing it needs a real browser and two real processes.
+  // What IS testable, deterministically and in CI, is the thing that was
+  // actually missing — that the result says so at all.
+  //
+  // The single change that breaks this test: deleting the `emulationScope`
+  // spread from `decideAct`, or making it conditional on anything.
+  await withLease(async (act) => {
+    for (const argv of [
+      ['--action', 'emulate', '--colour-scheme', 'dark'],
+      ['--action', 'emulate', '--reduced-motion', 'reduce'],
+      ['--action', 'emulate', '--forced-colours', 'active'],
+      ['--action', 'emulate', '--colour-scheme', 'dark', '--reduced-motion', 'reduce'],
+    ]) {
+      const outcome = await act(argv);
+      assert.equal(outcome.outcome, 'accepted', `${argv.join(' ')} was refused`);
+
+      const value = (outcome as { value: Record<string, unknown> }).value;
+      const scope = value['emulationScope'];
+
+      assert.equal(
+        typeof scope,
+        'string',
+        `${argv.join(' ')} was accepted silently — the caller cannot learn the effect will not ` +
+          'outlive this process',
+      );
+
+      // Present is not enough; the sentence has to carry the two things that
+      // stop the false bug report. First, the boundary — and specifically
+      // that it is NOT the tab, which is the premise the design document
+      // asserted and the measurement disproved.
+      assert.match(String(scope), /connection/u, 'it does not say what the effect is scoped to');
+
+      // Second, and this is the half a bare caveat leaves out: the path that
+      // works. A limitation with no alternative leaves a reader exactly as
+      // stuck as silence did, only better informed about being stuck.
+      assert.match(
+        String(scope),
+        /one invocation/u,
+        'it states a limitation without naming the single-invocation path that works',
+      );
+      assert.match(
+        String(scope),
+        /tool surface/u,
+        'it does not name the surface where one connection spans the calls',
+      );
+    }
+  });
+});
+
+test('every other action stays silent about emulation scope — the negative control', async () => {
+  // Without this, the test above would also pass against a service that
+  // stapled the sentence onto all thirteen actions. The field's PRESENCE is
+  // the signal, which is the same property `notDrivenReason` has and the same
+  // reason: a note attached to a resize is a note nobody reads on an emulate.
+  await withLease(async (act) => {
+    for (const argv of [
+      ['--action', 'resize', '--width', '390', '--height', '844'],
+      ['--action', 'dialog', '--accept'],
+    ]) {
+      const outcome = await act(argv);
+      assert.equal(outcome.outcome, 'accepted', `${argv.join(' ')} was refused`);
+      assert.equal(
+        (outcome as { value: Record<string, unknown> }).value['emulationScope'],
+        undefined,
+        `${argv.join(' ')} carried an emulation-scope note it has no business carrying`,
+      );
+    }
+  });
+});

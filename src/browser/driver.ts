@@ -359,13 +359,31 @@ export interface Viewport {
  * Row #62 refuses the empty case, because an emulate that names no preference
  * is a call that means nothing.
  *
- * These are properties of the **browsing context**, not of anything reachable
- * from inside the page (§3.8, §3.10) — which is the same gap `resize` has and
- * the reason 19 measured calls are enough. An expression can read which
- * preferences are in force and cannot set one; a page's own theme switch
- * exercises **the page's state rather than what the browser reports**, and
- * what the browser reports is precisely the code path a dark-mode review
+ * These are unreachable from inside the page (§3.8, §3.10) — the same gap
+ * `resize` has, and the reason 19 measured calls are enough. An expression can
+ * read which preferences are in force and cannot set one; a page's own theme
+ * switch exercises **the page's state rather than what the browser reports**,
+ * and what the browser reports is precisely the code path a dark-mode review
  * exists to check.
+ *
+ * ── They do not live in the browsing context, and the difference is felt ──
+ *
+ * Unreachable from the page is not the same as durable on the tab, and reading
+ * the first as the second is what left `emulate` reporting a success whose
+ * effect a later call could not see. A preference is set through CDP's
+ * `Emulation.setEmulatedMedia`, **an override scoped to the connection that
+ * issued it** — so the tab and the page both outlive it and the binding does
+ * not. Measured: a separate process reading the same never-reloaded tab sees
+ * the preference gone.
+ *
+ * This is where `emulate` and `resize` part company, despite the identical
+ * call shape. `setViewportSize` changes browser-side state that survives the
+ * connection; **there is no browser-side home for a media preference**, so
+ * making this one behave like that one is not an available option. The service
+ * is daemonless (§1.0), so the connection is the process, and a caller that
+ * emulates in one invocation and looks in the next sees nothing. An `emulate`
+ * result therefore carries `emulationScope` saying so — see
+ * `service/operations/pages.ts` and `DECISIONS.md` §13l.
  */
 export interface MediaPreferences {
   /** `light`, `dark`, or the no-preference state. */
