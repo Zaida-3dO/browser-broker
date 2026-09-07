@@ -129,7 +129,7 @@ export async function runReconcileCommand(
   rest: readonly string[],
   options: ReconcileCommandOptions,
 ): Promise<number> {
-  const flags = parseFlags(rest);
+  const flags = parseFlags(rest, ['browser', 'session-id']);
   const named = rest.find((word) => !word.startsWith('--'));
   const browser = typeof flags.browser === 'string' ? flags.browser : named;
   // Optional, and the report degrades honestly without it: a caller that does

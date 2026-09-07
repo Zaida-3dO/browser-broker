@@ -60,13 +60,87 @@ export interface CommandStreams {
  */
 export const COMMAND_EXIT = EXIT;
 
-/** `--name value` and `--name=value`, plus bare `--flag`. */
-export function parseFlags(rest: readonly string[]): Readonly<Record<string, string | true>> {
+/**
+ * Flags every command on this route takes, rendered by the help writer rather
+ * than declared per command — so they are always accepted and never appear in
+ * a command's own list of known flags.
+ */
+const UNIVERSAL_FLAGS: readonly string[] = ['json', 'help'];
+
+/**
+ * An unknown flag, named, with the flags that command does accept.
+ *
+ * Thrown rather than returned because {@link parseFlags} answers with a record
+ * and has no room in it for a refusal, and every caller of it is a command
+ * that must stop rather than proceed on a misread vector.
+ */
+export class UnknownFlagError extends Error {
+  // Declared and assigned rather than written as constructor parameter
+  // properties: this build strips types rather than compiling them, and a
+  // parameter property is syntax that needs a compiler to exist at runtime.
+  readonly flag: string;
+  readonly known: readonly string[];
+
+  constructor(flag: string, known: readonly string[]) {
+    // Named the way `claim.browser_known` names the browsers: the thing that
+    // was wrong, then the set it should have come from. A caller that mistypes
+    // a flag is one edit from being right, and the edit is only obvious if the
+    // alternatives are on the screen.
+    super(
+      `There is no option named --${flag}. This command accepts ${known
+        .map((name) => `--${name}`)
+        .join(', ')}.`,
+    );
+    this.name = 'UnknownFlagError';
+    this.flag = flag;
+    this.known = known;
+  }
+}
+
+/**
+ * `--name value` and `--name=value`, plus bare `--flag`.
+ *
+ * ── Why an unknown flag is refused rather than dropped ──────────────────
+ *
+ * Because dropping it produced the one failure a good refusal cannot rescue.
+ * A caller typing `--session` instead of `--session-id` had the flag discarded
+ * without comment, so the command ran as though nothing had been passed and
+ * truthfully reported that nothing was there — and any argument riding behind
+ * the bad flag was consumed as its value and lost with it. The message that
+ * came back was correct, and it pointed at the value rather than at the flag
+ * name, which is the one place the error actually was. A refusal that repeats
+ * identically after a caller has complied with it moves their suspicion onto
+ * the wrong thing.
+ *
+ * This is what makes an undocumented flag unrecoverable rather than merely
+ * inconvenient: with no entry in `--help` and no signal from the parser, a
+ * caller has nothing to correct against and no reason to suspect a typo.
+ *
+ * **The known set is passed in by the command**, because only the command
+ * knows it. A parser that guessed would either refuse a flag that works or
+ * accept one that does not, and both reintroduce the silence.
+ *
+ * Omitting `known` accepts everything, which is what an in-process caller
+ * testing the parsing shape itself wants; every shipped command passes its
+ * list.
+ */
+export function parseFlags(
+  rest: readonly string[],
+  known?: readonly string[],
+): Readonly<Record<string, string | true>> {
   const parsed: Record<string, string | true> = {};
+  const accepted = known === undefined ? undefined : new Set([...known, ...UNIVERSAL_FLAGS]);
   for (let index = 0; index < rest.length; index += 1) {
     const word = rest[index];
     if (word === undefined || !word.startsWith('--')) {
       continue;
+    }
+    const name = word.slice(2).split('=')[0] ?? '';
+    if (accepted !== undefined && !accepted.has(name)) {
+      // The command's own flags, without the universal two: those are
+      // rendered by the help writer on every command, so listing them here
+      // would pad the sentence with the two the caller did not get wrong.
+      throw new UnknownFlagError(name, known ?? []);
     }
     const body = word.slice(2);
     const equals = body.indexOf('=');
@@ -121,7 +195,10 @@ export async function runSnapshotCommand(
   rest: readonly string[],
   options: SnapshotCommandOptions,
 ): Promise<number> {
-  const flags = parseFlags(rest);
+  // `output` and `path` are long-standing spellings of `--out` that this
+  // command has always read; they are accepted here for that reason, and left
+  // out of the help table because one name is what a table should teach.
+  const flags = parseFlags(rest, ['out', 'output', 'path', 'events', 'feedback']);
   const outputPath = asString(flags.out) ?? asString(flags.output) ?? asString(flags.path);
 
   if (outputPath === undefined) {
@@ -250,7 +327,16 @@ export interface EventsCommandOptions {
  * caller types reaches the SQL text.
  */
 export function runEventsCommand(rest: readonly string[], options: EventsCommandOptions): number {
-  const flags = parseFlags(rest);
+  const flags = parseFlags(rest, [
+    'kind',
+    'outcome',
+    'guard',
+    'session-id',
+    'claim-id',
+    'since',
+    'before',
+    'limit',
+  ]);
 
   const query: LedgerQuery = {
     kinds: asString(flags.kind)?.split(',') ?? undefined,

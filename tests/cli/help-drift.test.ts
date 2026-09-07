@@ -90,6 +90,43 @@ const PARSERS: readonly { command: string; file: string }[] = [
   { command: 'image', file: 'image.ts' },
 ];
 
+/**
+ * Commands whose flags this file's extractor cannot see, with the flags they
+ * are known to take.
+ *
+ * ── Why a second list rather than more rows in the first ────────────────
+ *
+ * {@link flagsMentionedIn} finds a flag by matching the string literal a
+ * parser compares against (`argument === '--out'`). Two of the commands that
+ * had drifted do not parse that way and so are invisible to it:
+ *
+ * - **`reconcile`** reads a parsed record by key — `flags.browser`,
+ *   `flags['session-id']` — so the word `'--browser'` appears nowhere in its
+ *   source. Adding it to `PARSERS` yields an empty set, which the
+ *   not-empty test correctly rejects as a broken extraction rather than
+ *   accepting as a command with no flags.
+ * - **`claim`** and its nine siblings go through `parseArguments`, which
+ *   normalises every `--name` into a record and hands the whole record to the
+ *   service. The service schema is the list; the CLI never names these flags.
+ *
+ * So the flags are written out here. That is weaker than deriving them — this
+ * list can go stale in a way `PARSERS` cannot — and it is still worth having,
+ * because the alternative on offer was no coverage at all for the two
+ * commands where the defect actually happened. The direction it protects is
+ * the one that matters: a flag named here and absent from the table fails.
+ */
+const DECLARED_FLAG_COMMANDS: readonly { command: string; flags: readonly string[] }[] = [
+  // The two `claim` refuses for omitting: `claim.session_bounded` and
+  // `claim.purpose_bounded`. A required argument missing from `--help` is the
+  // worst case of this defect — the command cannot be run successfully by
+  // anybody reading its own help.
+  { command: 'claim', flags: ['--session-id', '--purpose'] },
+  // Optional, and documented for the reason optionality makes sharper rather
+  // than softer: a caller who does not know the flag exists gets the general
+  // message and no way to learn there was a better one available.
+  { command: 'reconcile', flags: ['--browser', '--session-id'] },
+];
+
 test('every flag a command parses is advertised in its --help', () => {
   const advertised = advertisedFlags();
 
@@ -135,6 +172,27 @@ test('every flag a command advertises is one it actually parses', () => {
   );
 });
 
+test('a flag a command is known to take appears in its --help', () => {
+  const advertised = advertisedFlags();
+
+  const undocumented: string[] = [];
+  for (const { command, flags } of DECLARED_FLAG_COMMANDS) {
+    const shown = advertised.get(command);
+    assert.ok(shown !== undefined, `${command} is absent from the command table`);
+    for (const flag of flags) {
+      if (!shown.has(flag)) {
+        undocumented.push(`${command} takes ${flag} but does not document it`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    undocumented,
+    [],
+    `these options are required and cannot be discovered:\n  ${undocumented.join('\n  ')}`,
+  );
+});
+
 test('THE PARSER LIST IS NOT EMPTY, so a green result means something', () => {
   // A comparison over an empty set passes trivially. This project has been
   // caught twice by a signal that could not be told from a non-signal, so the
@@ -146,5 +204,16 @@ test('THE PARSER LIST IS NOT EMPTY, so a green result means something', () => {
       flags.size > 0,
       `${file} yielded no flags at all — the extraction is broken, not the sources`,
     );
+  }
+
+  // The same question of the second list. It compares against the command
+  // table rather than a source file, so its way of covering nothing is a
+  // command name that matches no row — which would pass every assertion above
+  // by never entering the loop.
+  assert.ok(DECLARED_FLAG_COMMANDS.length > 0);
+  const advertised = advertisedFlags();
+  for (const { command, flags } of DECLARED_FLAG_COMMANDS) {
+    assert.ok(flags.length > 0, `${command} names no flags — the row asserts nothing`);
+    assert.ok(advertised.has(command), `${command} matches no row in the command table`);
   }
 });

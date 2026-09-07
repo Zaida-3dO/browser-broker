@@ -75,6 +75,28 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
     operation: 'claim',
     summary: 'Ask for a lease. Get one tab, or a place in the queue.',
     options: [
+      // **The two a claim is refused for omitting, listed first because they
+      // are the two it is refused for omitting.** Both were absent here while
+      // `claim.session_bounded` and `claim.purpose_bounded` asked for them by
+      // name, which is the worst arrangement available: the refusals are
+      // models of the form — each names the missing thing and says why it
+      // exists — and a caller who did as they asked, under a plausible
+      // spelling, was refused a second time in identical words. A help text
+      // that lists three optional flags and neither required one teaches a
+      // reader how to call this command unsuccessfully.
+      {
+        flag: '--session-id <id>',
+        summary:
+          'Required. Who is asking. It attributes this lease and every refusal on it in the ' +
+          'ledger, and it is how the service can tell you when you are queued behind capacity ' +
+          'you already hold.',
+      },
+      {
+        flag: '--purpose <text>',
+        summary:
+          'Required, 3 to 200 characters. What the lease is for, in one line, read by whoever ' +
+          'finds the tab still open.',
+      },
       {
         flag: '--wait',
         summary:
@@ -296,6 +318,13 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
       {
         flag: '--browser <regular|private>',
         summary: 'Which browser to reconcile. May also be given as the first word.',
+      },
+      {
+        flag: '--session-id <id>',
+        summary:
+          'Optional. Who is asking, so a tab still being opened can be named as your own lease ' +
+          'rather than as somebody’s. Omitting it is fine and costs only that distinction: ' +
+          'the report degrades to the general caution, which is the honest answer when nobody said.',
       },
     ],
   },
