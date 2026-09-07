@@ -806,6 +806,40 @@ export function validateCaptureMode(options: {
   }
 }
 
+/**
+ * The resolution rung a capture was asked for, checked before the pipeline
+ * indexes anything by it.
+ *
+ * ── Why this guard is here and not left to the pipeline ─────────────────
+ *
+ * The pipeline types the field {@link RequestableTier}, so within the service
+ * an unknown rung is a compile error and no check is needed. It stops being a
+ * compile-time question at the surface: a tool call and a command line both
+ * arrive as free text, and an unrecognised word typed by a caller would reach
+ * `TIER_LONGEST_EDGE[tier]`, resolve to `undefined`, and be handed to the
+ * downscaler as a target edge. That is a bad answer arriving quietly, which is
+ * the same family as the inert argument this pair was wired for.
+ *
+ * **`default` is refused as a value even though it is a real tier**, because
+ * it is the rung you get by passing nothing. `RequestableTier` excludes it on
+ * the seam deliberately — "there is deliberately no way to ask for the default
+ * explicitly" is a compile error rather than a line in a document — and this
+ * refusal keeps that true for callers who reach the service through text.
+ */
+export function validateCaptureTier(tier: unknown): 'detail' | 'max' | undefined {
+  if (tier === undefined || tier === null) return undefined;
+
+  if (tier !== 'detail' && tier !== 'max') {
+    throw new PageRefusal(
+      'capture.tier_known',
+      'A capture tier is "detail" or "max". Omit it for the default resolution — there is no way to ask for the default by name, because passing nothing is how you get it. "max" additionally requires reason, a written explanation in your own words.',
+      { tier, accepted: ['detail', 'max'] },
+    );
+  }
+
+  return tier;
+}
+
 /** What an evaluation should do with its result: hand it back, or spill it. */
 export interface EvaluationDisposition {
   /** The serialised result. */

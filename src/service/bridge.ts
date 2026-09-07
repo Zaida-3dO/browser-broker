@@ -282,6 +282,22 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         // told the diff is available, passes it, and gets a capture with no
         // comparison and nothing saying why.
         const compareTo = argument(args, 'compare_to', 'compareTo');
+        // The resolution rung and the written justification the top rung
+        // requires. **Coercion only, never validation**, the same split the
+        // wait above keeps: `validateCaptureTier` names the accepted words and
+        // the pipeline decides whether a reason is owed, so an unrecognised
+        // value is handed on deliberately and reaches the rule that can
+        // explain it.
+        //
+        // Read here because the ladder they drive was built end to end and
+        // connected to nothing: the pipeline refuses the top rung without a
+        // reason, the `captures` table carries the column, and the telemetry
+        // rollups query it — while no surface could populate either field. An
+        // escalation rollup with no way to escalate does not report an empty
+        // result, it reports "nobody escalates", which is a fact that is not
+        // one.
+        const tier = argument(args, 'tier');
+        const reason = argument(args, 'reason');
         return {
           ...(await broker.capture({
             key,
@@ -289,6 +305,8 @@ export function serviceFor(options: BridgeOptions): BrokerService {
             ...(fullPage === undefined ? {} : { fullPage: asBoolean(fullPage) }),
             ...(typeof selector === 'string' ? { selector } : {}),
             ...(typeof compareTo === 'string' && compareTo.length > 0 ? { compareTo } : {}),
+            ...(tier === undefined ? {} : { tier }),
+            ...(reason === undefined ? {} : { reason }),
           })),
         };
       }
