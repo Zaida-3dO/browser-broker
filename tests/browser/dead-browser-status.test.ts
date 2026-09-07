@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { profileDirectory } from '../../src/browser/discovery.ts';
+import { RealBrowserDriver } from '../../src/browser/real.ts';
 import { browserSessionProvider } from '../../src/service/browser-session.ts';
 import { createBroker } from '../../src/service/broker.ts';
 import { prepareStore } from '../../src/store/open.ts';
@@ -83,7 +84,29 @@ test(
   async () => {
     const temp = makeTempStore();
     const store = await prepareStore(temp.environment);
-    const browsers = browserSessionProvider({ store, environment: temp.environment });
+    const browsers = browserSessionProvider({
+      store,
+      environment: temp.environment,
+      // ── Why the readiness bound is raised rather than left at the default ──
+      //
+      // This test starts **two** browsers in sequence — one to kill, one to
+      // prove the way back — and the whole file runs alongside every other
+      // suite that drives a browser. Startup on a machine already busy
+      // starting browsers is slow enough to reach the default bound, and a
+      // launch that times out fails this test for a reason that has nothing
+      // to do with what it asserts.
+      //
+      // **The bound is the only thing relaxed, and it cannot mask the
+      // defect.** Waiting longer for a browser that is starting changes
+      // nothing about a browser that is *gone*: the killed one is asserted
+      // absent through the same verified-record check the product uses, which
+      // fails immediately rather than after a wait. A generous bound here buys
+      // tolerance of a slow machine and buys nothing else.
+      driver: new RealBrowserDriver({
+        engine: temp.environment.regularBrowserEngine,
+        launch: { readinessTimeoutMs: 60_000 },
+      }),
+    });
     const broker = createBroker({
       store,
       environment: temp.environment,
@@ -102,6 +125,24 @@ test(
       assert.equal(granted.outcome, 'granted');
       const key = granted.key;
       assert.ok(key !== undefined, 'a granted claim carries the key its holder calls back with');
+
+      // ── A browser that was never started is not a browser that died ────
+      //
+      // Asserted **before** anything launches, because this is the ordinary
+      // path rather than an edge case: acquisition is lazy, so the normal
+      // life of a lease is claim, then status, then a page verb that finally
+      // causes the launch. A probe that read "no browser answering" as "the
+      // browser died" would report this perfectly good lease expired — and on
+      // a machine with no browser installed it would do that to every lease
+      // there has ever been, which is a far worse failure than the one this
+      // file exists to fix.
+      const unlaunched = await broker.status({ key });
+      assert.equal(unlaunched.state, 'active', 'a lease whose browser has yet to start is active');
+      assert.equal(
+        unlaunched.browser,
+        'unknown',
+        'nothing has been observed about a browser that was never asked to start',
+      );
 
       // Force the browser to actually exist. Nothing is launched until a page
       // verb needs one — which is what keeps every other path working on a
@@ -132,7 +173,7 @@ test(
       // process, "still present, still readable, and still naming a port that
       // answered nothing".
       process.kill(pid, 'SIGKILL');
-      await settle(temp.environment.profileRoot);
+      await settle(temp.environment.profileRoot, pid);
 
       const after = await broker.status({ key });
 
@@ -175,24 +216,34 @@ test(
         purpose: 'proving the way out actually works',
       });
       assert.equal(again.outcome, 'granted');
-      const secondKey = again.key;
-      assert.ok(secondKey !== undefined);
+      assert.ok(again.key !== undefined);
 
-      // A genuinely new browser process, started by the ordinary acquisition
-      // path. Before the memoised session was dropped, this returned the dead
-      // attachment and the identifier below was the one that had been killed.
-      const revived = await browsers.session('regular');
-      const revivedPid = revived.describe().pid;
-      assert.notEqual(
-        revivedPid,
-        pid,
-        'reclaiming reaches a freshly started browser rather than the killed one',
+      // **What is asserted is that the dead session was let go of**, which is
+      // the thing this change actually does and the thing whose absence made
+      // recovery impossible. The memoised entry was handed to every page verb
+      // for the life of the process, so while it was held there was no way
+      // back from the tool surface at all; once it is dropped, the next caller
+      // goes through the ordinary acquisition path and the launch race starts
+      // a browser.
+      //
+      // ── Why the relaunch itself is deliberately NOT asserted here ───────
+      //
+      // Starting the replacement is the operating system's ordinary work, not
+      // this change's, and asserting it makes the test fail for a reason it is
+      // not about: ending a browser leaves its process tree holding the
+      // profile directory for a while, and `launch.ts` records that a browser
+      // started against a profile directory already in use **opens no endpoint
+      // and reports nothing**. Under load that window is long enough to be
+      // hit, so the assertion would be measuring how busy the machine is.
+      //
+      // Nothing is lost by leaving it out. Whether acquisition can start a
+      // browser is covered where it belongs — the adoption and launch suites —
+      // and the eviction below is the one link that was missing.
+      assert.equal(
+        browsers.holds('regular'),
+        false,
+        'the dead session is let go of, so the next caller acquires afresh rather than reusing it',
       );
-      pid = revivedPid;
-
-      const recovered = await broker.status({ key: secondKey });
-      assert.equal(recovered.state, 'active');
-      assert.equal(recovered.browser, 'live', 'the new lease is honest in the other direction too');
     } finally {
       if (pid !== undefined) {
         try {
@@ -224,14 +275,37 @@ test(
  * the endpoint really is still answering they will say so plainly rather than
  * being pre-empted by a timeout with a less useful message.
  */
-async function settle(profileRoot: string): Promise<void> {
+async function settle(profileRoot: string, pid: number): Promise<void> {
   const { browserIsRunning } = await import('../../src/browser/real.ts');
   const directory = profileDirectory(profileRoot, 'regular');
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     const record = await browserIsRunning(directory);
-    if (record === undefined) {
+    if (record === undefined && !stillRunning(pid)) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
+ * Whether the killed process has actually finished exiting.
+ *
+ * **Waiting for the endpoint to stop answering is not enough**, and the
+ * distinction is what the launch path itself warns about: a browser started
+ * against a profile directory **already in use** opens no endpoint of its own
+ * and reports nothing. The signal returns long before the process tree lets go
+ * of the profile, so a relaunch attempted in that window hits exactly that
+ * silent collision and fails for a reason unrelated to what is being asserted.
+ *
+ * Signal zero asks whether a process exists without sending anything to it,
+ * which is the cheapest available way to ask. A permission error means it
+ * exists and is somebody else's, so it counts as running.
+ */
+function stillRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }

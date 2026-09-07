@@ -190,6 +190,22 @@ export interface BrowserSessions {
    */
   readonly liveness: (browser: BrowserId) => Promise<BrowserLiveness>;
   /**
+   * Whether this process holds a session for one browser.
+   *
+   * **Present so that letting go of a dead session is observable**, which it
+   * otherwise is not: the memo is private, and the effect of dropping an entry
+   * — that the next caller acquires afresh instead of reusing a connection to
+   * a browser that has gone — is only visible from outside as a browser being
+   * started, which is the operating system's work rather than this module's
+   * and is slow and load-sensitive to wait for.
+   *
+   * It reports what is **held**, not what is running. A `false` here says this
+   * process has no session in hand, and says nothing at all about whether a
+   * browser exists — {@link BrowserSessions.liveness} is the question that
+   * looks at the machine.
+   */
+  readonly holds: (browser: BrowserId) => boolean;
+  /**
    * Detach from every session this process opened.
    *
    * Every failure is swallowed: this runs while a process is exiting, the
@@ -278,7 +294,27 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
       // service never ends a browser (`browser_scoped.never`, §7.3).
       settled.delete(browser);
       inFlight.delete(browser);
-      return 'gone';
+
+      // ── A browser that was never started is NOT a browser that died ────
+      //
+      // The distinction is the whole reason this reads the row, and getting
+      // it wrong breaks the ordinary path rather than an edge case: **a lease
+      // is granted before any browser exists.** Acquisition is lazy, so the
+      // normal life of a lease is claim, then status, then a page verb that
+      // finally causes the launch — and on a machine with no browser
+      // installed at all, that launch never comes and the lease is still
+      // perfectly valid for everything that does not need a page.
+      //
+      // Both states look identical from the profile directory: no verified
+      // record either way. What separates them is what the store was told.
+      // `recordLaunched` moves the row to `running`, so a row that says
+      // `running` while nothing answers is a browser that **has died**;
+      // `stopped` is one that was never started, and a lease against it is
+      // waiting for a launch rather than holding a corpse.
+      const row = options.store.db
+        .prepare<[BrowserId], { state: string }>('SELECT state FROM browsers WHERE id = ?')
+        .get(browser);
+      return row?.state === 'running' ? 'gone' : 'unknown';
     } catch {
       // **`unknown`, never `gone`.** A probe that could not be carried out —
       // an unreadable profile directory, a fetch that threw rather than
@@ -290,9 +326,12 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
     }
   };
 
+  const holds = (browser: BrowserId): boolean => settled.has(browser) || inFlight.has(browser);
+
   return {
     session,
     liveness,
+    holds,
     close: async () => {
       for (const open of settled.values()) {
         try {
