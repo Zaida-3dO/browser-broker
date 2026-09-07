@@ -209,6 +209,28 @@ jobs:
       - run: npm ci
       - run: npm run check:argument-refusals
 
+  # The reachability gate: a declared argument is read by something.
+  #
+  # Its own job, and no install step — it reads source text rather than
+  # importing modules, so it runs against a tree with nothing installed like
+  # the hygiene gate above.
+  #
+  # The defect it was written for is the one that does not announce itself. A
+  # missing argument is refused and the caller goes and reads something; an
+  # inert one succeeds, so the caller draws a conclusion from it. `wait_ms` was
+  # declared, documented and discarded, and a session varied it between two
+  # captures and filed a high-severity finding against an application that did
+  # not have the fault. Nothing was red at any point.
+  argument-reachability:
+    name: argument-reachability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      - run: npm run check:argument-reachability
+
   # The injected-test rule was prose in a test header until it went stale, so
   # it earns a job of its own rather than riding along inside another. A rule
   # that is only enforced when somebody remembers to run the aggregate script

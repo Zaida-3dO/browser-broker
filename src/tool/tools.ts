@@ -380,11 +380,20 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           'An earlier capture to diff against. The diff rides here rather than being its own tool.',
       },
       {
+        name: 'tier',
+        type: 'string',
+        required: false,
+        description:
+          '"detail" or "max" for a higher resolution. Omit for the default — there is no way to ' +
+          'ask for the default by name. "max" also requires reason.',
+      },
+      {
         name: 'reason',
         type: 'string',
         required: false,
         description:
-          'Free text, recorded, never refused — why this capture needed more than the default tier.',
+          'Free text, 8-200 characters, recorded, never refused — why this capture needed more ' +
+          'than the default tier. Required with tier="max".',
       },
     ],
   },

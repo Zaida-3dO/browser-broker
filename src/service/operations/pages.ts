@@ -14,6 +14,7 @@ import {
   disposeEvaluationResult,
   MAX_INLINE_RESULT_BYTES,
   validateCaptureMode,
+  validateCaptureTier,
   resolveReadArtifacts,
   validateAction,
   validateExpression,
@@ -1108,6 +1109,36 @@ export interface CaptureInput extends TabOperationInput {
    * unaffected by the field existing.
    */
   readonly diffSettings?: DiffSettings;
+  /**
+   * Which resolution rung to take the picture at (§3.11), absent meaning the
+   * default rung.
+   *
+   * **Passed straight to the pipeline, which owns every rule about it.** No
+   * validation happens here: `refuseArgumentMistakes` decides whether the tier
+   * is known and whether the top one carries its written reason, in the same
+   * place it decides that a selector and a full page cannot be combined. This
+   * field only carries the value there.
+   */
+  readonly tier?: unknown;
+  /**
+   * The written justification the top rung requires, recorded in the ledger.
+   *
+   * **This pair is why the surface argument existed with nowhere to go.** The
+   * ladder was built end to end — the pipeline refuses `tier="max"` without a
+   * reason of 8–200 characters, the `captures` table carries the column, and
+   * the telemetry rollups query it — while nothing populated either field, so
+   * the rung was unreachable and the rollup that exists to learn *why callers
+   * escalate* could only ever come back empty. An empty answer there reads as
+   * "nobody escalates" rather than as "nothing is connected", which is the
+   * inert-argument failure at the scale of a whole feature: it does not fail
+   * visibly, it reports a fact that is not one.
+   *
+   * `unknown` for the same reason {@link CaptureInput.tier} is: the adapters
+   * coerce and the pipeline validates, so a value that arrived as the wrong
+   * type reaches the rule that names the accepted range rather than a
+   * different one invented on the way.
+   */
+  readonly reason?: unknown;
 }
 
 export interface CaptureResult extends TabOperationResult {
@@ -1185,9 +1216,26 @@ export function decideCapture(
   // before ownership is checked and before a single row is written, so the
   // refusal leaves nothing behind but its own ledger entry.
   validateCaptureMode({ fullPage, selector: input.selector });
+  // Checked here for the same reason and in the same place. The pipeline's own
+  // `refuseArgumentMistakes` still decides whether the top rung carries its
+  // written reason — that rule is not duplicated here, only the one the type
+  // system cannot make on text arriving from a surface.
+  const tier = validateCaptureTier(input.tier);
   const request: CaptureRequest = {
     fullPage,
     ...(input.selector === undefined ? {} : { selector: input.selector }),
+    ...(tier === undefined ? {} : { tier }),
+    // Carried whenever it was given, rather than only alongside a tier.
+    //
+    // **A reason passed without a tier is still discarded**, and that is the
+    // pipeline's existing rule rather than something introduced here: it
+    // records a reason "only ever on the tier that requires it", because a
+    // reason attached to a rung nobody had to justify is not evidence of an
+    // escalation. Passing it on regardless keeps that decision in the one
+    // place that makes it, instead of adding a second, quieter version of it
+    // here — the value reaches the rule either way, and this layer does not
+    // get to have an opinion about which reasons are worth carrying.
+    ...(typeof input.reason === 'string' ? { reason: input.reason } : {}),
   };
   const { lease, tab, expiresAt } = admit(scope, input, 'capture');
 
