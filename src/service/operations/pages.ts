@@ -705,9 +705,15 @@ export interface ActResult extends TabOperationResult {
 /**
  * What an `emulate` result says about how long its effect lasts.
  *
- * A constant rather than an inline literal so the test asserting it is always
- * present reads the same string the caller does, and cannot pass against a
- * sentence the service stopped sending.
+ * A constant rather than an inline literal so there is one place to reword it.
+ *
+ * **What the tests hold it to is the meaning, not the wording.** They match the
+ * parts that have to survive a rewrite — that the effect is scoped to the
+ * connection, and that a path which works is named — rather than the sentence
+ * itself. Equality against the whole string would break on every harmless
+ * rewording while proving less: a note can keep every word and still stop
+ * telling a caller what to do. So a rewrite that keeps the meaning is free, and
+ * one that drops the working path fails.
  */
 export const EMULATION_SCOPE_NOTE =
   'This preference lasts as long as the connection that set it, not as long ' +
