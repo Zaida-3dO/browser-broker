@@ -206,7 +206,34 @@ export const ENVIRONMENT_DECLARING_FILE = ENVIRONMENT_SOURCE;
  * appear in executable positions", and a lexer answers it without this check
  * carrying a dependency the gates that run it do not install.
  */
+/**
+ * Remove comments, and **keep what is inside strings**.
+ *
+ * The configuration half wants string contents gone, so that a variable named
+ * in a message is not mistaken for a variable being read. The argument half
+ * wants the opposite: it locates an operation's branch by matching
+ * `case 'navigate':`, so emptying that quoted name would delete the very
+ * landmark it navigates by — and every operation would then report that the
+ * bridge has no branch for it. Two readers, two needs, one shared skipper for
+ * the part they agree on.
+ */
+export function stripComments(source) {
+  return scanSource(source, { keepStringContents: true });
+}
+
 export function stripCommentsAndStrings(source) {
+  return scanSource(source, { keepStringContents: false });
+}
+
+/**
+ * Walk the source once, dropping comments, and either keeping or emptying what
+ * is inside a string literal.
+ *
+ * One walker rather than two so that the part both halves agree on — where a
+ * comment starts and ends, and that a backslash escapes the next character —
+ * is written once and cannot drift between them.
+ */
+function scanSource(source, { keepStringContents }) {
   let out = '';
   let index = 0;
   const length = source.length;
@@ -228,19 +255,23 @@ export function stripCommentsAndStrings(source) {
     if (character === "'" || character === '"' || character === '`') {
       const quote = character;
       index += 1;
-      // Preserved as an empty pair of quotes so that a call's argument
-      // positions stay countable: `argument(args, 'a', 'b')` must not
-      // collapse into something that reads as a different call shape.
-      out += quote + quote;
+      // The opening quote is written either way. When contents are dropped it
+      // is closed immediately, so that a call's argument positions stay
+      // countable: `argument(args, 'a', 'b')` must not collapse into
+      // something that reads as a different call shape.
+      out += keepStringContents ? quote : quote + quote;
       while (index < length) {
         if (source[index] === '\\') {
+          if (keepStringContents) out += source.slice(index, index + 2);
           index += 2;
           continue;
         }
         if (source[index] === quote) {
+          if (keepStringContents) out += quote;
           index += 1;
           break;
         }
+        if (keepStringContents) out += source[index];
         index += 1;
       }
       continue;
@@ -392,7 +423,14 @@ function argumentNamesIn(region) {
  * record to — is read *for that operation*. Attribution is what stops a name
  * being satisfied by an unrelated operation that happens to read the same word.
  */
-export function bridgeReadsByOperation(source = readFileSync(BRIDGE_SOURCE, 'utf8')) {
+export function bridgeReadsByOperation(rawSource = readFileSync(BRIDGE_SOURCE, 'utf8')) {
+  // Commented-out code is not a read. This matters more than the other routes
+  // an argument can go inert by: commenting a line out is how a read dies
+  // during a refactor that is never finished, and it leaves the declaration,
+  // the documentation and the surrounding branch all intact. Scanning the raw
+  // text would count the corpse, and a check that counts a commented-out read
+  // certifies the exact defect it exists to catch.
+  const source = stripComments(rawSource);
   const helpers = helperReads(source);
   const byOperation = new Map();
 

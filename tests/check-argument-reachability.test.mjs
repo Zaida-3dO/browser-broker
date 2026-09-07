@@ -155,6 +155,41 @@ describe('the rule is satisfied by reaching the operation, not by appearing some
     assert.ok(!stripped.includes('reason'));
   });
 
+  it('does not count a read that has been commented out', () => {
+    // The property above, asserted where it has to hold rather than on the
+    // helper alone. A stripper that works while the reader it is meant to
+    // protect scans raw text is the hollow shape this whole check exists to
+    // catch, one level up — and commenting a line out is how a read dies in
+    // a refactor nobody finished, leaving the declaration, the prose and the
+    // branch around it all intact.
+    const source = `
+      switch (operation) {
+        case 'navigate': {
+          return broker.navigate({
+            url: argument(args, 'url'),
+            // waitMs: asInteger(argument(args, 'wait_ms', 'waitMs')),
+          });
+        }
+      }
+    `;
+    const reads = bridgeReadsByOperation(source);
+    assert.ok(reads.get('navigate').has('url'), 'the live read was not seen');
+    assert.ok(
+      !reads.get('navigate').has('wait_ms'),
+      'a commented-out read counted as a read, so the check would certify the defect it exists to catch',
+    );
+  });
+
+  it('still finds an operation whose branch is labelled with a quoted name', () => {
+    // The negative control for the two tests above. Emptying string contents
+    // would satisfy them both and delete the landmark this scan navigates by,
+    // reporting that the bridge has no branch for any operation at all —
+    // crying wolf on every argument rather than passing on one.
+    const reads = bridgeReadsByOperation();
+    assert.ok(reads.has('navigate'), "the branch labelled case 'navigate' was not found");
+    assert.ok(reads.get('navigate').size > 0, 'the navigate branch reported no reads');
+  });
+
   it('reads every tool argument the surface declares, including shared ones', () => {
     const declarations = declaredToolArguments();
     const capture = declarations.filter((entry) => entry.tool === 'browser_capture');
