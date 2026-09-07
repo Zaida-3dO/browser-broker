@@ -259,16 +259,17 @@ test('an emulate naming no preference at all is refused, and the message now car
 });
 
 /**
- * A subject whose driver log is readable **with its arguments**, which the
- * shared conformance subject deliberately narrows away.
+ * A subject that has already claimed a lease, so a case can say what it is
+ * testing about `navigate` without restating how to get a key.
  *
- * `ConformanceSubject` exposes calls as `{ name }` because every case it
- * serves asks *"was the browser touched"* and nothing finer. The wait is the
- * opposite question: the call is made either way and only its arguments
- * differ, so the name alone cannot tell a wait that was carried from one that
- * was dropped. Rather than widen a shared interface for one file, this builds
- * the same two pieces — the real service over the fake driver — and keeps the
- * whole log.
+ * The driver log here carries its arguments, which is what the wait needs: the
+ * call is made either way and only its arguments differ, so a name alone
+ * cannot tell a wait that was carried from one that was dropped. That is no
+ * longer the distinguishing reason to build this, though — `ConformanceSubject`
+ * passes its entries whole for the same reason, so a shared subject would
+ * observe the wait perfectly well. What it would not do is hold the lease, and
+ * the claim-then-navigate pairing is the part these cases would otherwise
+ * repeat.
  */
 async function withNavigateSubject(
   body: (

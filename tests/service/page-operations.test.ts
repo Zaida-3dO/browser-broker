@@ -610,6 +610,56 @@ test('driving a tab renews the lease that owns it', async () => {
   });
 });
 
+test('a refused wait renews nothing, so a rejected call cannot extend a lease', async () => {
+  // The negative control for the test above, and the one that keeps a comment
+  // load-bearing: the renewal is taken before the wait is validated, so the
+  // refusal has to unwind it. Without this, a change moving the wait check to
+  // after the renewal would hand every refused caller a free extension —
+  // silently, with the whole suite still green, because nothing else reads the
+  // count on a path that fails.
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession();
+
+    const readCount = (): number =>
+      fixture.readCommitted<{ renewCount: number }>(
+        'SELECT renew_count AS renewCount FROM claims WHERE id = @id',
+        { id: lease.claimId },
+      )[0]?.renewCount ?? 0;
+
+    const before = readCount();
+
+    // A wait longer than the lease can live: refused by `validateNavigationWait`
+    // after the operation has already renewed. **Derived from the lease this
+    // test holds**, not written as a literal — a configuration free to lengthen
+    // the lease would leave a hardcoded number under the ceiling, and this case
+    // would then pass while asserting nothing at all.
+    await assert.rejects(
+      fixture.broker.navigate({
+        key: lease.key,
+        tabId: lease.tabId,
+        url: 'https://example.com/',
+        waitMs: lease.leaseSeconds * 1000 + 1,
+        session: () => driver.session,
+      }),
+      // Named, because a bare `rejects` accepts a failure for any reason —
+      // including one that never reached the wait and so never renewed.
+      (error: unknown) => (error as CallRefusal).rule === 'navigate.wait_bounded',
+    );
+
+    assert.equal(
+      readCount() - before,
+      0,
+      'a refused navigate still renewed the lease, so a caller can hold a tab open by asking for things it cannot have',
+    );
+    assert.deepEqual(
+      driver.calls,
+      [],
+      'the browser was asked to do something on a call that was refused',
+    );
+  });
+});
+
 test('an ended lease cannot drive its tab, and the driver is never asked', async () => {
   await withBroker(async (fixture) => {
     const lease = await grantedLease(fixture);
