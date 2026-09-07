@@ -489,3 +489,162 @@ test('closing detaches from what was opened, and does not close the browser', as
     );
   });
 });
+
+/**
+ * ── The liveness discriminator: (observation × row state) → verdict ────────
+ *
+ * `liveness` answers one question — is the browser this lease names still
+ * there — and it answers it by combining two things: what the running check
+ * observed on disk, and what the store was told. The tests below pin that
+ * combination, and only that combination.
+ *
+ * **What these do NOT cover, said plainly.** `isRunning` is faked here, so the
+ * real `browserIsRunning` — the endpoint probe, the discovery record it reads,
+ * and the identity match that catches a different browser answering on a
+ * reused port — is not exercised by a single assertion in this block. Faking
+ * that function fakes precisely its *result*. It follows that the case these
+ * cannot reach is the one that matters most about liveness: the store and the
+ * operating system genuinely disagreeing, because a fake driver has no
+ * operating system to disagree with.
+ *
+ * That case is measured against a real browser in
+ * `tests/browser/dead-browser-status.test.ts`, which is the only thing that
+ * proves it and remains so. **This block is not a substitute for that file**
+ * and a green run here says nothing about whether a killed browser is
+ * detected. What it does say is that the mapping from an observation and a row
+ * to a verdict is the intended one — a different claim from the one the real
+ * browser proves, and the reason these are worth their lines: the mapping is
+ * pure logic over a row and a result, so it can be pinned without a machine.
+ */
+
+/** Puts a browser row into a state, honouring the pid constraint on non-stopped states. */
+function setBrowserState(store: StoreHandle, browser: 'regular' | 'private', state: string): void {
+  store.db
+    .prepare<[string, string | null, 'regular' | 'private']>(
+      'UPDATE browsers SET state = ?, pid = ? WHERE id = ?',
+    )
+    .run(state, state === 'stopped' ? null : '4321', browser);
+}
+
+/** A provider whose observation is fixed, for asking the discriminator one question. */
+function providerObserving(
+  store: StoreHandle,
+  isRunning: () => Promise<DiscoveryRecord | undefined>,
+): ReturnType<typeof browserSessionProvider> {
+  return browserSessionProvider({
+    ...environmentFor(store),
+    driver: new FakeBrowserDriver(),
+    isRunning,
+  });
+}
+
+test('a verified record is live, whatever the store believes about the row', async () => {
+  await withStore(async (store) => {
+    // The observation wins outright here: the browser answered and proved
+    // which browser it was, so no row state can make that untrue.
+    for (const state of ['stopped', 'starting', 'running', 'signing-in', 'failed']) {
+      setBrowserState(store, 'private', state);
+      const provider = providerObserving(store, () => Promise.resolve(RUNNING));
+
+      assert.equal(
+        await provider.liveness('private'),
+        'live',
+        `a browser that answered and identified itself is live with the row at ${state}`,
+      );
+    }
+  });
+});
+
+test('a row that says running with nothing answering is a browser that died', async () => {
+  await withStore(async (store) => {
+    // `recordLaunched` is what moves a row to `running`, so this row is the
+    // store having been told a browser started. Nothing answers now.
+    setBrowserState(store, 'private', 'running');
+    const provider = providerObserving(store, () => Promise.resolve(undefined));
+
+    assert.equal(await provider.liveness('private'), 'gone');
+  });
+});
+
+test('a row that says stopped with nothing answering was never started', async () => {
+  await withStore(async (store) => {
+    // A lease is granted before any browser exists — acquisition is lazy — so
+    // this is the ordinary life of a fresh lease rather than an edge case, and
+    // calling it `gone` would end leases that are merely waiting for a launch.
+    const provider = providerObserving(store, () => Promise.resolve(undefined));
+
+    assert.equal(await provider.liveness('private'), 'unknown');
+  });
+});
+
+test('the states either side of a launch are not a death either', async () => {
+  await withStore(async (store) => {
+    // Only `running` means the store was told a browser is up. Every other
+    // state is some flavour of not-yet or not-well, and none of them can
+    // support the claim that a browser was there and has since died.
+    for (const state of ['starting', 'signing-in', 'failed']) {
+      setBrowserState(store, 'private', state);
+      const provider = providerObserving(store, () => Promise.resolve(undefined));
+
+      assert.equal(
+        await provider.liveness('private'),
+        'unknown',
+        `a row at ${state} has not been told a browser is running`,
+      );
+    }
+  });
+});
+
+test('a record that failed the identity half is not a live browser', async () => {
+  await withStore(async (store) => {
+    setBrowserState(store, 'private', 'running');
+    // Something answered on the endpoint, but it did not say which browser it
+    // is — the identity half of the check, which is what catches a different
+    // process on a reused port. A half-passed check is a stale record, and
+    // stale means not running.
+    const provider = providerObserving(store, () =>
+      Promise.resolve({ endpoint: 'http://127.0.0.1:9333' } as DiscoveryRecord),
+    );
+
+    assert.equal(await provider.liveness('private'), 'gone');
+  });
+});
+
+test('an observation that could not be made reports unknown, never gone', async () => {
+  await withStore(async (store) => {
+    // The row says running, which is the one state that would otherwise
+    // produce `gone` — so if the throw were swallowed into the ordinary path
+    // this would say `gone` and end a working lease on the strength of a probe
+    // that observed nothing at all.
+    setBrowserState(store, 'private', 'running');
+    const provider = providerObserving(store, () =>
+      Promise.reject(new Error('the profile directory could not be read')),
+    );
+
+    assert.equal(await provider.liveness('private'), 'unknown');
+  });
+});
+
+test('finding a browser gone lets go of the session, and finding it live does not', async () => {
+  await withStore(async (store) => {
+    let answer: DiscoveryRecord | undefined = RUNNING;
+    const provider = providerObserving(store, () => Promise.resolve(answer));
+
+    await provider.session('private');
+    assert.equal(provider.holds('private'), true, 'a session was acquired and memoised');
+
+    // Still live: there is nothing to recover from, so the memoised session is
+    // the one that keeps being handed out.
+    assert.equal(await provider.liveness('private'), 'live');
+    assert.equal(provider.holds('private'), true, 'a live browser keeps its session');
+
+    // Now it has died under the memo. Dropping the entry is what makes
+    // release-and-claim-again work: without it every page verb for the life of
+    // this process gets the same dead attachment.
+    answer = undefined;
+    setBrowserState(store, 'private', 'running');
+
+    assert.equal(await provider.liveness('private'), 'gone');
+    assert.equal(provider.holds('private'), false, 'the dead session was forgotten');
+  });
+});
