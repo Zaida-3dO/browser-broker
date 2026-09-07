@@ -135,3 +135,94 @@ export function recordTabOpened(db: Database, tabId: string, driverTabId: string
     );
   }
 }
+
+/**
+ * How many tabs on one browser are waiting on a close that will not come.
+ *
+ * ── Why this is one function and not two ────────────────────────────────
+ *
+ * `broker doctor` and the claim grant both have to answer *"is this browser
+ * carrying a backlog of stranded tabs"*, and a product holding two notions of
+ * "stranded" would be the same defect the backlog itself caused: a caller
+ * told one number by one surface and a different number by another has no way
+ * to tell which is the real one. So the predicate lives here once, and both
+ * read it.
+ *
+ * ── Why the threshold is a lease's own lifetime ─────────────────────────
+ *
+ * Taken from `doctor`'s existing definition rather than invented alongside
+ * it. `closing` means the tool was asked and has not answered — a transient
+ * state measured in a round trip. The honest boundary between "a close is in
+ * flight" and "a close is never happening" is the one the system already uses
+ * to decide a caller is gone: if a lease may be declared lapsed after this
+ * long without contact, a round trip outstanding for longer is not pending.
+ *
+ * The comparison is on `updated_at`, which is when the row was moved to
+ * `closing`. A round trip still inside the window is deliberately not
+ * counted, because reporting one would make a healthy release look like a
+ * fault.
+ */
+export function countStrandedTabsFor(
+  db: Database,
+  browserId: string,
+  leaseSeconds: number,
+  at: Date = new Date(),
+): number {
+  const cutoff = new Date(at.getTime() - leaseSeconds * 1000).toISOString();
+  const row = db
+    .prepare<[string, string], { n: number }>(
+      `SELECT COUNT(*) AS n
+         FROM tabs
+        WHERE browser_id = ?
+          AND state = 'closing'
+          AND updated_at < ?`,
+    )
+    .get(browserId, cutoff);
+  return row?.n ?? 0;
+}
+
+/** One browser's share of the stranded backlog. */
+export interface StrandedByBrowser {
+  readonly browserId: string;
+  readonly stranded: number;
+}
+
+/**
+ * The stranded backlog broken down per browser, heaviest first.
+ *
+ * ── Why a breakdown rather than a total ─────────────────────────────────
+ *
+ * A total is not actionable when the remedy is per-browser. `doctor`'s
+ * remedy line says to run `broker reconcile` against each browser, but a
+ * single total cannot say which ones still need it: an operator who
+ * reconciled `regular` and saw the count fall from 29 to 13 reasonably
+ * concluded reconcile had not worked, when in fact the remaining 13 were all
+ * on `private` and the run had done exactly what it said.
+ *
+ * **Grouped rather than asked per browser from a configured list**, because
+ * the browsers are a configured list per kind and not a fixed pair — a
+ * breakdown assembled from the list this build happens to know about would
+ * silently omit a backlog on a browser that had been reconfigured away, which
+ * is the population most likely to be stranded.
+ *
+ * Only browsers carrying a backlog appear. A row reading zero is not a
+ * finding, and listing every configured browser on every healthy run would
+ * bury the one line that matters.
+ */
+export function strandedTabsByBrowser(
+  db: Database,
+  leaseSeconds: number,
+  at: Date = new Date(),
+): readonly StrandedByBrowser[] {
+  const cutoff = new Date(at.getTime() - leaseSeconds * 1000).toISOString();
+  return db
+    .prepare<[string], StrandedByBrowser>(
+      `SELECT browser_id AS browserId, COUNT(*) AS stranded
+         FROM tabs
+        WHERE state = 'closing'
+          AND updated_at < ?
+        GROUP BY browser_id
+        ORDER BY COUNT(*) DESC, browser_id`,
+    )
+    .all(cutoff);
+}

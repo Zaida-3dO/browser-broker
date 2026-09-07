@@ -1,11 +1,13 @@
+import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
 import { BROWSER_CHOICE_GUIDANCE, type BrowserId } from '../../browser/driver.ts';
 import { admits, countActiveClaims } from '../capacity.ts';
-import { append } from '../events.ts';
+import { append, type EventAdapter } from '../events.ts';
 import { hashKey, mintKey } from '../keys.ts';
 import { nudgeIfOwnObstacle, type OwnObstacleNudge } from '../nudge.ts';
 import { queuePosition, waitEstimateSeconds } from '../queue.ts';
+import { countStrandedTabsFor } from '../tabs.ts';
 import { CallRefusal } from '../refusals.ts';
 import {
   StorageSeedRefusal,
@@ -179,6 +181,51 @@ export interface ClaimGranted {
    */
   readonly storageSeed: readonly StorageSeedEntry[];
   readonly nudge?: OwnObstacleNudge;
+  /**
+   * That this browser is carrying a backlog of tabs stranded mid-close, and
+   * what to do about it. **Present only when there is one.**
+   *
+   * ── The grant this is attached to is real ───────────────────────────────
+   *
+   * This is a note on a grant and not a refusal, and the distinction is the
+   * whole design. The arbitration half genuinely happened: capacity was
+   * taken, the lease is active, the tab row exists. Refusing here would tell
+   * a caller to retry a decision that is already committed — the same
+   * reasoning `pages.ts` gives for reporting `pageDriven: false` on an
+   * accepted result rather than refusing.
+   *
+   * ── Why a caller could not find this out for itself ─────────────────────
+   *
+   * A backlog of tabs stranded at `closing` can leave a browser in a state
+   * where the lease it just granted cannot be used — the claim succeeds and
+   * every subsequent page call fails with the browser reporting itself
+   * closed. `broker doctor` has always been able to say so, and says it well.
+   * But **a caller has no reason to run `doctor` while its claims are
+   * succeeding**, which is exactly the situation: five consecutive claims
+   * were granted against a browser holding 29 stranded tabs, and the failure
+   * was misdiagnosed as a login problem across five round trips.
+   *
+   * So the information is attached to the response the caller is already
+   * reading. Absent rather than zero-valued on the ordinary case, so the
+   * field's presence is itself the signal — the same convention
+   * `notDrivenReason` follows, where the surprising state is the one that has
+   * to be spelled out.
+   */
+  readonly strandedBacklog?: StrandedBacklogNote;
+}
+
+/**
+ * What a granted caller is told about a browser carrying stranded tabs.
+ *
+ * Carries the count and the remedy as a runnable command, because a note
+ * naming a problem without naming what to do about it has moved the work
+ * rather than done it — the standard `doctor`'s own remedy lines set.
+ */
+export interface StrandedBacklogNote {
+  /** How many tabs on this browser are waiting on a close that will not come. */
+  readonly stranded: number;
+  /** One line: the count, and the command that clears it. */
+  readonly note: string;
 }
 
 /** The queue placement: a lease and a key, and no tab. */
@@ -804,6 +851,38 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
   // last unit and the rest of its work is now queued behind other callers.
   // §2.3a scopes the nudge to a refusal or a queue placement, so nothing is
   // attached here; the ledger already records the grant.
+
+  // **The count is taken on the handle this transaction is already writing
+  // through**, over the table the INSERT above has just touched, so it costs
+  // no round trip and cannot read a browser's state from a different instant
+  // than the grant did. The threshold is `doctor`'s own definition, imported
+  // rather than restated: two notions of "stranded" in one product is the
+  // defect this note exists to report.
+  const strandedBacklog = strandedBacklogNote(
+    scope.db,
+    browserId,
+    settings.leaseSeconds,
+    scope.adapter,
+  );
+
+  if (strandedBacklog !== undefined) {
+    // The ledger row is the part that is not optional. Each occurrence is
+    // invisible once the caller acts on it, which is exactly why it is
+    // recorded: without a record there is no way to learn that granting into
+    // a browser with a backlog has become common, and *common* is the signal
+    // that something upstream is killing callers mid-lease.
+    append(scope.db, {
+      kind: 'claim_granted',
+      outcome: 'allow',
+      adapter: scope.adapter,
+      claimId,
+      tabId,
+      sessionId: input.sessionId,
+      browserId,
+      detail: { note: 'stranded_backlog', stranded: strandedBacklog.stranded },
+    });
+  }
+
   return {
     value: {
       outcome: 'granted',
@@ -814,7 +893,55 @@ function grant(branch: Branch): ArbitrationOutcome<ClaimResult> {
       expiresAt,
       leaseSeconds: settings.leaseSeconds,
       storageSeed,
+      ...(strandedBacklog === undefined ? {} : { strandedBacklog }),
     },
+  };
+}
+
+/**
+ * The note, when this browser is carrying a backlog worth telling a caller
+ * about.
+ *
+ * ── Why the threshold is one stranded tab ───────────────────────────────
+ *
+ * Not a round number chosen for feel. `doctor` already fails its check at
+ * one, on the reasoning that a report which is clean while any tab waits on a
+ * close nobody will answer is not reporting — and a second, higher threshold
+ * here would mean the claim path and the readiness check disagreeing about
+ * whether the same browser is healthy. **That disagreement is the defect this
+ * note exists to close**, so the two thresholds are the same threshold, read
+ * from the same function.
+ *
+ * The cost of saying it at one is a single extra line on a response, carrying
+ * a true fact, only when a fact is true. The cost of not saying it until some
+ * larger number is a caller working blind through exactly the band where the
+ * backlog is easiest to clear.
+ */
+function strandedBacklogNote(
+  db: Database,
+  browserId: BrowserId,
+  leaseSeconds: number,
+  adapter: EventAdapter,
+): StrandedBacklogNote | undefined {
+  const stranded = countStrandedTabsFor(db, browserId, leaseSeconds);
+  if (stranded === 0) {
+    return undefined;
+  }
+
+  // The remedy names the browser rather than saying "the browser", so it can
+  // be run as typed. `doctor` sets that standard and it is why it diagnosed
+  // this in one call.
+  const remedy =
+    adapter === 'cli'
+      ? `broker reconcile ${browserId}`
+      : `broker reconcile ${browserId}, from a shell`;
+
+  return {
+    stranded,
+    note:
+      `note: ${String(stranded)} tab(s) on ${browserId} are stranded mid-close, which can leave ` +
+      'this browser unable to serve the lease just granted — a page call may report the browser ' +
+      `closed. Run \`${remedy}\` to clear them, and \`broker doctor\` to confirm.`,
   };
 }
 

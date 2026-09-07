@@ -19,17 +19,25 @@ import type { BrowserId } from '../../src/browser/driver.ts';
 export interface SeededClaim {
   readonly claimId: string;
   readonly browserId: BrowserId;
+  readonly sessionId: string;
 }
 
 export interface SeedClaimOptions {
   readonly browserId?: BrowserId;
   readonly state?: 'queued' | 'active' | 'released' | 'expired' | 'revoked';
+  /**
+   * Who holds it. Defaulted, because most tests do not care — but a test
+   * about whether a report can tell one caller's lease from another's needs
+   * two different values, and it cannot get them from a constant.
+   */
+  readonly sessionId?: string;
 }
 
 export function seedClaim(db: Database, options: SeedClaimOptions = {}): SeededClaim {
   const claimId = randomUUID();
   const browserId = options.browserId ?? 'regular';
   const state = options.state ?? 'active';
+  const sessionId = options.sessionId ?? 'session-a';
   const at = new Date().toISOString();
 
   // A final state owes an end (§1.3's own CHECK), and a queued lease has
@@ -48,7 +56,7 @@ export function seedClaim(db: Database, options: SeedClaimOptions = {}): SeededC
   ).run(
     claimId,
     `hash-${claimId}`,
-    'session-a',
+    sessionId,
     browserId,
     state,
     'a seeded lease for a test',
@@ -59,7 +67,7 @@ export function seedClaim(db: Database, options: SeedClaimOptions = {}): SeededC
     revokeReason,
   );
 
-  return { claimId, browserId };
+  return { claimId, browserId, sessionId };
 }
 
 /**

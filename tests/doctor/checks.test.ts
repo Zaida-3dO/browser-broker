@@ -501,7 +501,7 @@ describe('checkStrandedTabs', () => {
     // anybody noticed was a person looking at his own browser and thinking
     // there were too many tabs. A report that is clean while that is true is
     // not reporting.
-    const result = checkStrandedTabs(22, 600);
+    const result = checkStrandedTabs([{ browserId: 'regular', stranded: 22 }], 600);
 
     assert.equal(result.status, 'failed');
     assert.match(result.detail, /22 tab/u);
@@ -514,9 +514,54 @@ describe('checkStrandedTabs', () => {
   it('reports no stranded tab as ok, never as unknown', () => {
     // The negative control. `unknown` would be the wrong answer: nothing was
     // unexaminable here — the count was taken, and it was zero.
-    const result = checkStrandedTabs(0, 600);
+    const result = checkStrandedTabs([], 600);
 
     assert.equal(result.status, 'ok');
     assert.equal(result.remedy, undefined, 'a passing check owes no remedy');
+  });
+
+  it('SPLITS THE COUNT PER BROWSER — the total that read as reconcile not working', () => {
+    // The reporting failure this breakdown exists for. An operator ran
+    // `reconcile regular`, cleared 16, ran `doctor` and still saw a FAIL — and
+    // reasonably concluded reconcile had not worked. The remaining 13 were all
+    // on `private`, and the run had done exactly what it said. A total cannot
+    // say which browsers still need the remedy, so the count is broken down
+    // and the remedy names the browsers it applies to.
+    const result = checkStrandedTabs(
+      [
+        { browserId: 'regular', stranded: 16 },
+        { browserId: 'private', stranded: 13 },
+      ],
+      600,
+    );
+
+    assert.equal(result.status, 'failed');
+    // The detail carries both the whole and the parts: the total says how
+    // much work there is, the breakdown says where it is.
+    assert.match(result.detail, /29 tab/u);
+    // Each browser is named with its own share. This is the assertion a bare
+    // total cannot satisfy.
+    assert.match(result.detail, /16 on regular/u);
+    assert.match(result.detail, /13 on private/u);
+
+    assert.ok(result.remedy !== undefined, 'a failure with no remedy');
+    // The remedy is runnable as typed, per browser, rather than the
+    // unenumerable "each browser" — the browsers are a configured list and a
+    // reader cannot expand "each" from the message alone.
+    assert.match(result.remedy, /broker reconcile regular/u);
+    assert.match(result.remedy, /broker reconcile private/u);
+  });
+
+  it('names only the browsers carrying a backlog, not every configured one', () => {
+    // A zero row is not a finding. Listing every configured browser on a run
+    // where one has a backlog would bury the single line that matters, and
+    // would tell an operator to reconcile a browser with nothing to clear.
+    const result = checkStrandedTabs([{ browserId: 'private', stranded: 4 }], 600);
+
+    assert.equal(result.status, 'failed');
+    assert.match(result.detail, /4 on private/u);
+    assert.doesNotMatch(result.detail, /regular/u);
+    assert.ok(result.remedy !== undefined, 'a failure with no remedy');
+    assert.doesNotMatch(result.remedy, /reconcile regular/u);
   });
 });
