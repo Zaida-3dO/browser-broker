@@ -13,6 +13,7 @@ import type { ArtifactStore } from '../artifacts/store.ts';
 import type { Environment } from '../config/environment.ts';
 import { StartupRefusal } from '../errors.ts';
 import type { StoreHandle } from '../store/open.ts';
+import type { BrowserLiveness } from './operations/status.ts';
 
 /**
  * **How a shipped binary gets a browser.** The join between the adoption
@@ -164,6 +165,47 @@ export type BrowserSessionProvider = (browser: BrowserId) => Promise<BrowserSess
 export interface BrowserSessions {
   readonly session: BrowserSessionProvider;
   /**
+   * Whether one browser is actually running, right now.
+   *
+   * ── Why this is on the provider and not a second check somewhere ────────
+   *
+   * It is `browserIsRunning` — §1.2c's two checks, **liveness** (the endpoint
+   * answers) and **identity** (the browser's own identifier matches, because
+   * ports are reused) — over the profile directory this provider already
+   * computes. `waitForWinner` states the rule it is following: *"A caller
+   * that wrote a second check here would be trusting a claim by two different
+   * routes that could disagree; there is one route."*
+   *
+   * It exists as a member because `status` needs the answer and has no
+   * business reaching for a driver: a lease's honesty must not depend on
+   * attaching to anything. **This never attaches, never launches and never
+   * writes** — it reads the record off disk and asks the endpoint who it is.
+   *
+   * **It deliberately does not consult the memoised session.** That cache is
+   * the second half of the measured defect: a settled session is handed back
+   * for the life of the process without revalidation, so a browser that died
+   * under it keeps being presented as a working connection. Asking the
+   * operating system instead is the only way to get an answer the cache
+   * cannot have poisoned.
+   */
+  readonly liveness: (browser: BrowserId) => Promise<BrowserLiveness>;
+  /**
+   * Whether this process holds a session for one browser.
+   *
+   * **Present so that letting go of a dead session is observable**, which it
+   * otherwise is not: the memo is private, and the effect of dropping an entry
+   * — that the next caller acquires afresh instead of reusing a connection to
+   * a browser that has gone — is only visible from outside as a browser being
+   * started, which is the operating system's work rather than this module's
+   * and is slow and load-sensitive to wait for.
+   *
+   * It reports what is **held**, not what is running. A `false` here says this
+   * process has no session in hand, and says nothing at all about whether a
+   * browser exists — {@link BrowserSessions.liveness} is the question that
+   * looks at the machine.
+   */
+  readonly holds: (browser: BrowserId) => boolean;
+  /**
    * Detach from every session this process opened.
    *
    * Every failure is swallowed: this runs while a process is exiting, the
@@ -219,8 +261,77 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
     return acquiring;
   };
 
+  const liveness = async (browser: BrowserId): Promise<BrowserLiveness> => {
+    const isRunning = options.isRunning ?? browserIsRunning;
+    const profileDir = profileDirectory(options.environment.profileRoot, browser);
+    try {
+      const record = await isRunning(profileDir);
+      // The same two-condition reading `acquire` applies to its own
+      // observation: a record with no identifier failed the identity half,
+      // and a record that failed either half is stale (§1.2c). Stale means
+      // the browser is treated as not running.
+      if (record !== undefined && record.browserUuid !== undefined) {
+        return 'live';
+      }
+
+      // ── The recovery path, and it is one line for a reason ────────────
+      //
+      // **Forgetting the dead session is what makes reclaiming work.** The
+      // memoised entry is a connection to a browser that is gone, and it is
+      // handed to every page verb for the life of this process — so without
+      // this, a caller that does the obvious correct thing (release, claim
+      // again, drive the page) gets the same dead attachment each time and
+      // there is no way back from the tool surface at all.
+      //
+      // Dropping it sends the next caller through `acquire`, which makes the
+      // observation, loses or wins the launch race in the store like any
+      // other caller, and starts a browser. Nothing here launches anything
+      // itself: a second process launching against one profile directory is
+      // the measured silent-collision failure the race exists to prevent.
+      //
+      // **Nothing is detached and no browser is ended.** There is nothing to
+      // detach from — the browser is the thing that went away — and this
+      // service never ends a browser (`browser_scoped.never`, §7.3).
+      settled.delete(browser);
+      inFlight.delete(browser);
+
+      // ── A browser that was never started is NOT a browser that died ────
+      //
+      // The distinction is the whole reason this reads the row, and getting
+      // it wrong breaks the ordinary path rather than an edge case: **a lease
+      // is granted before any browser exists.** Acquisition is lazy, so the
+      // normal life of a lease is claim, then status, then a page verb that
+      // finally causes the launch — and on a machine with no browser
+      // installed at all, that launch never comes and the lease is still
+      // perfectly valid for everything that does not need a page.
+      //
+      // Both states look identical from the profile directory: no verified
+      // record either way. What separates them is what the store was told.
+      // `recordLaunched` moves the row to `running`, so a row that says
+      // `running` while nothing answers is a browser that **has died**;
+      // `stopped` is one that was never started, and a lease against it is
+      // waiting for a launch rather than holding a corpse.
+      const row = options.store.db
+        .prepare<[BrowserId], { state: string }>('SELECT state FROM browsers WHERE id = ?')
+        .get(browser);
+      return row?.state === 'running' ? 'gone' : 'unknown';
+    } catch {
+      // **`unknown`, never `gone`.** A probe that could not be carried out —
+      // an unreadable profile directory, a fetch that threw rather than
+      // answering — has observed nothing, and reporting a browser dead on the
+      // strength of a failed observation would end working leases on a
+      // machine having an unrelated bad moment. Not knowing is a state this
+      // result can express precisely so it does not have to be guessed at.
+      return 'unknown';
+    }
+  };
+
+  const holds = (browser: BrowserId): boolean => settled.has(browser) || inFlight.has(browser);
+
   return {
     session,
+    liveness,
+    holds,
     close: async () => {
       for (const open of settled.values()) {
         try {
