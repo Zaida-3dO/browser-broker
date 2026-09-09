@@ -238,6 +238,11 @@ export const STANDALONE_COMMANDS: readonly StandaloneCommand[] = [
     words: ['snapshot'],
     summary: 'Write the operations document to a path and exit.',
     owedBy: 'the row that builds the operations document',
+    options: [
+      { flag: '--out <path>', summary: 'The file to write the document to. Required.' },
+      { flag: '--events <n>', summary: 'How many ledger entries to include.' },
+      { flag: '--feedback <n>', summary: 'How many feedback rows to include.' },
+    ],
   },
   {
     words: ['doctor'],
