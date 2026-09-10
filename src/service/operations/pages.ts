@@ -3,7 +3,6 @@ import type {
   ActionRequest,
   BrowserId,
   BrowserSession,
-  CaptureRequest,
   ReadArtifact,
   TabHandle,
 } from '../../browser/driver.ts';
@@ -27,7 +26,8 @@ import { seedRecord } from '../storage-seed.ts';
 import { BrokerError } from '../../errors.ts';
 import type { ArtifactStore } from '../../artifacts/store.ts';
 import { sanitiseLabel, stampFromInstant } from '../../artifacts/names.ts';
-import { takeCapture } from '../../capture/pipeline.ts';
+import { takeCapture, type CaptureRequestOptions } from '../../capture/pipeline.ts';
+import { describeReduction, type CaptureReduction, type CaptureTier } from '../../capture/tiers.ts';
 import { capturesTakenBy, recordCapture } from '../capture-store.ts';
 import { captureSource } from '../capture-seam.ts';
 import { insertComparison } from '../comparison-store.ts';
@@ -1157,6 +1157,27 @@ export interface CaptureResult extends TabOperationResult {
     readonly height: number;
     readonly bytes: number;
     /**
+     * What the browser produced, before the downscale to the rung.
+     *
+     * Always present, so that comparing it against `width` is a thing a caller
+     * can do without knowing whether some other field appeared.
+     */
+    readonly sourceWidth: number;
+    readonly sourceHeight: number;
+    /** Which rung this was actually taken at — the answer, not the request. */
+    readonly tier: CaptureTier;
+    /**
+     * **Present exactly when the image written is smaller than the page
+     * measured**, carrying the scale, both sets of dimensions and a sentence
+     * saying so in words.
+     *
+     * Its absence means the picture is the page at full size. See
+     * {@link describeReduction} for why this is a disclosure rather than a
+     * refusal, and for the measurement that rejected the alternative of
+     * capping width instead.
+     */
+    readonly reduced?: CaptureReduction;
+    /**
      * How to diff a later capture against this one, spelled out rather than
      * left to be inferred from `compare_to` existing as an argument.
      *
@@ -1221,7 +1242,21 @@ export function decideCapture(
   // written reason — that rule is not duplicated here, only the one the type
   // system cannot make on text arriving from a surface.
   const tier = validateCaptureTier(input.tier);
-  const request: CaptureRequest = {
+  // **Typed as the pipeline's options, not the driver's `CaptureRequest`.**
+  //
+  // This annotation is the defect's whole mechanism, so it is worth naming.
+  // `CaptureRequest` is the *driver* seam — what the browser is told — and it
+  // has no `tier` and no `reason`, correctly: a rung is a decision about the
+  // picture after the shutter, not something a browser is asked for. The
+  // literal below nevertheless packed both in, and the excess-property check
+  // that would ordinarily catch that **does not apply to conditionally spread
+  // properties**, so it compiled silently. The value then had nowhere to go,
+  // and the one call site downstream quietly took only the two fields the
+  // driver type admits.
+  //
+  // Annotating with the type that actually consumes these fields is what makes
+  // the same mistake a compile error next time rather than an inert argument.
+  const request: CaptureRequestOptions = {
     fullPage,
     ...(input.selector === undefined ? {} : { selector: input.selector }),
     ...(tier === undefined ? {} : { tier }),
@@ -1300,6 +1335,25 @@ export function decideCapture(
         {
           fullPage,
           ...(request.selector === undefined ? {} : { selector: request.selector }),
+          // **The rung and its justification, which used to stop here.**
+          //
+          // `request` was built with both a dozen lines above — `tier`
+          // validated by `validateCaptureTier`, `reason` carried whenever it
+          // was given — and then this call site spread only `fullPage` and
+          // `selector`, so both died one line before the pipeline that
+          // honours them. Every capture was consequently taken at the default
+          // rung no matter what the caller asked for.
+          //
+          // That is the inert-argument defect `check:argument-reachability`
+          // exists to prevent, one layer below where that check looks: its
+          // rule is that a declared argument is read *at the bridge*, and
+          // `tier` is read there, so the check passed while the value went
+          // nowhere. It is worse than the `wait_ms` case that motivated the
+          // check, because `tier="max"` charges the caller a written
+          // justification first — the caller pays for the escalation, is told
+          // it was accepted, and receives the unescalated picture.
+          ...(request.tier === undefined ? {} : { tier: request.tier }),
+          ...(request.reason === undefined ? {} : { reason: request.reason }),
         },
         takenBefore,
       );
@@ -1308,12 +1362,38 @@ export function decideCapture(
       // `capture-store.ts` for why that order is the rule and not a preference.
       recordCapture(scope.db, lease.claimId, tab.tabId, taken.telemetry);
 
+      // **What the browser produced, and by how much it was shrunk to fit the
+      // rung** — present exactly when the two differ.
+      //
+      // The pipeline has computed `sourceWidth`/`sourceHeight` all along and
+      // `captures` has stored them all along; this object simply never passed
+      // them on, so the one layer that talks to the caller was the one layer
+      // that could not tell a reduced picture from an unreduced one. A
+      // `full_page` capture of a long article consequently came back at about
+      // sixteen per cent, complete and undistorted and entirely illegible,
+      // with nothing in the response saying so.
+      const reduction = describeReduction(
+        { width: taken.sourceWidth, height: taken.sourceHeight },
+        { width: taken.width, height: taken.height },
+        taken.tier,
+      );
+
       written = {
         captureId: taken.captureId,
         path: taken.path,
         width: taken.width,
         height: taken.height,
         bytes: taken.bytes,
+        // Echoed on every capture, reduced or not, because "what did the page
+        // actually measure" is a fact a caller may want either way — and
+        // because a field that appears only on the bad case is a field nobody
+        // learns to read.
+        sourceWidth: taken.sourceWidth,
+        sourceHeight: taken.sourceHeight,
+        tier: taken.tier,
+        // Absent when nothing was shrunk. Its **presence** is the signal, which
+        // is why it is not a `scale: 1` that a caller would learn to skip.
+        ...(reduction === undefined ? {} : { reduced: reduction }),
         compareHint: `to diff a later capture against this one, pass compare_to: ${taken.captureId}`,
       };
 

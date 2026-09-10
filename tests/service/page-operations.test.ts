@@ -63,8 +63,10 @@ interface DriverLog {
  * supplied by the fake, and the fake cannot make a failing assertion pass
  * because it never sees the store.
  */
-function recordingSession(): DriverLog {
+function recordingSession(canned?: { readonly width: number; readonly height: number }): DriverLog {
   const calls: string[] = [];
+  const shotWidth = canned?.width ?? CAPTURE_WIDTH;
+  const shotHeight = canned?.height ?? CAPTURE_HEIGHT;
   const handle: TabHandle = { browser: 'regular', driverTabId: 'driver-tab' };
 
   const session = {
@@ -130,10 +132,13 @@ function recordingSession(): DriverLog {
         // are not an image make every capture throw inside the after-commit
         // work — where the failure is swallowed — and the test would then be
         // asserting against a capture that silently did nothing.
-        image: encodePng(blankImage(CAPTURE_WIDTH, CAPTURE_HEIGHT)),
-        width: CAPTURE_WIDTH,
-        height: CAPTURE_HEIGHT,
-        viewportWidth: CAPTURE_WIDTH,
+        image: encodePng(blankImage(shotWidth, shotHeight)),
+        width: shotWidth,
+        height: shotHeight,
+        // The breakpoint is the page's own width, which on a tall page is the
+        // number a caller compares the written width against to judge whether
+        // anything is legible.
+        viewportWidth: shotWidth,
         url: 'https://example.com/',
       });
     },
@@ -500,6 +505,183 @@ test('the expression is never written to the ledger, only its size', async () =>
     assert.ok(
       details.some((detail) => detail.includes('expressionBytes')),
       'the size was not recorded either, so the row says nothing at all',
+    );
+  });
+});
+
+/**
+ * A page far taller than it is wide — the shape that made both defects
+ * visible, at the dimensions the report measured.
+ *
+ * 1030 x 6404 is a real measurement, not a round number: an ordinary
+ * encyclopaedia article at a 1030px viewport. It matters that the width is
+ * **under** every rung and the height is far over all of them, because that is
+ * exactly when a cap applied to the longest edge lands on the height and drags
+ * the width down with it.
+ */
+const TALL_PAGE = { width: 1030, height: 6404 } as const;
+
+test('a tall full-page capture says it was reduced, and by how much', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession(TALL_PAGE);
+
+    const whole = await fixture.broker.capture({
+      key: lease.key,
+      tabId: lease.tabId,
+      fullPage: true,
+      session: () => driver.session,
+      artifacts: fixture.artifacts,
+    });
+
+    const capture = whole.capture;
+    assert.ok(capture, 'a full-page capture of a tall page wrote no image at all');
+
+    // The reduction itself, which is the behaviour under test rather than a
+    // restatement of the arithmetic: a 1030-wide page came back at 165.
+    assert.ok(
+      capture.width < TALL_PAGE.width,
+      'the fixture must exercise a downscale, or this test proves nothing',
+    );
+
+    // ── The defect: this happened silently ────────────────────────────────
+    //
+    // Everything below existed one layer down — the pipeline computed it and
+    // `captures` stored it — and the caller was told none of it.
+    assert.equal(capture.sourceWidth, TALL_PAGE.width);
+    assert.equal(capture.sourceHeight, TALL_PAGE.height);
+
+    const reduced = capture.reduced;
+    assert.ok(
+      reduced,
+      'the image was shrunk to a fraction of the page and the response did not say so — ' +
+        'which is the whole defect: a reviewer sees a plausible thumbnail, writes ' +
+        '"layout looks correct", and has attached evidence that cannot support the claim',
+    );
+    assert.equal(reduced.sourceWidth, TALL_PAGE.width);
+    assert.equal(reduced.sourceHeight, TALL_PAGE.height);
+    assert.ok(
+      reduced.scale < 0.25,
+      `a page shrunk this far should report a small scale, got ${String(reduced.scale)}`,
+    );
+
+    // The sentence has to carry the numbers, because a caller that reads one
+    // field reads this one and no schema.
+    assert.match(reduced.note, /REDUCED/);
+    assert.match(reduced.note, new RegExp(String(TALL_PAGE.height)));
+    assert.match(reduced.note, new RegExp(String(capture.width)));
+    assert.match(
+      reduced.note,
+      /tier="detail"/,
+      'the disclosure has to name the way out, or it is a complaint rather than guidance',
+    );
+  });
+});
+
+test('a capture that fits its rung reports no reduction', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    // The default fixture is 8 x 6 — comfortably inside every rung.
+    const driver = recordingSession();
+
+    const shot = await fixture.broker.capture({
+      key: lease.key,
+      tabId: lease.tabId,
+      session: () => driver.session,
+      artifacts: fixture.artifacts,
+    });
+
+    const capture = shot.capture;
+    assert.ok(capture);
+    assert.equal(capture.width, CAPTURE_WIDTH);
+    // **Absent, not `scale: 1`.** A field that is always there is a field a
+    // caller learns to skip; its presence is the signal.
+    assert.equal(
+      capture.reduced,
+      undefined,
+      'nothing was shrunk, so claiming a reduction would be a false warning',
+    );
+    // Still echoed, so "what did the page measure" is answerable either way.
+    assert.equal(capture.sourceWidth, CAPTURE_WIDTH);
+    assert.equal(capture.sourceHeight, CAPTURE_HEIGHT);
+  });
+});
+
+test('tier reaches the pipeline: a higher rung returns a bigger image', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+
+    const at = async (
+      tier?: 'detail' | 'max',
+      reason?: string,
+    ): Promise<{ width: number; height: number; tier: string }> => {
+      const driver = recordingSession(TALL_PAGE);
+      const result = await fixture.broker.capture({
+        key: lease.key,
+        tabId: lease.tabId,
+        fullPage: true,
+        ...(tier === undefined ? {} : { tier }),
+        ...(reason === undefined ? {} : { reason }),
+        session: () => driver.session,
+        artifacts: fixture.artifacts,
+      });
+      const capture = result.capture;
+      assert.ok(capture, `the ${tier ?? 'default'} capture wrote no image`);
+      return { width: capture.width, height: capture.height, tier: capture.tier };
+    };
+
+    const base = await at();
+    const detail = await at('detail');
+    const max = await at('max', 'Reading small body copy on a long article for a visual review.');
+
+    // ── The defect: all three of these are one picture unless tier flows ──
+    //
+    // `tier` was validated, packed into a request object and then dropped at
+    // the one call site that would have honoured it, so every capture was
+    // taken at the default rung. `max` charges the caller a written
+    // justification for the privilege, which made it the worse half: the
+    // caller pays, is told the escalation was accepted, and gets the
+    // unescalated picture.
+    assert.equal(base.tier, 'default');
+    assert.equal(detail.tier, 'detail');
+    assert.equal(max.tier, 'max');
+
+    assert.ok(
+      detail.width > base.width,
+      `tier="detail" returned no more pixels than the default: ${String(detail.width)} vs ${String(base.width)}`,
+    );
+    assert.ok(
+      max.width > detail.width,
+      `tier="max" returned no more pixels than "detail": ${String(max.width)} vs ${String(detail.width)}`,
+    );
+  });
+});
+
+test('the top rung still says it was reduced, and stops promising a way up', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession(TALL_PAGE);
+
+    const result = await fixture.broker.capture({
+      key: lease.key,
+      tabId: lease.tabId,
+      fullPage: true,
+      tier: 'max',
+      reason: 'Checking whether the highest rung is legible on a very tall page.',
+      session: () => driver.session,
+      artifacts: fixture.artifacts,
+    });
+
+    const capture = result.capture;
+    assert.ok(capture);
+    // Honesty at the top of the ladder is the point: `max` genuinely raises
+    // the cap, and on a page this tall it *still* cannot reach the page's own
+    // width. Saying so is the difference between a limit and a trap.
+    assert.ok(capture.reduced, 'the top rung shrank the page and did not say so');
+    assert.doesNotMatch(
+      capture.reduced.note,
+      /pass tier=/,
+      'there is no rung above max, so telling the caller to escalate sends them nowhere',
     );
   });
 });

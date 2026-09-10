@@ -185,3 +185,125 @@ const TOKENS_PER_PIXEL_DIVISOR = 750;
 export function estimateTokens(width: number, height: number): number {
   return Math.ceil((width * height) / TOKENS_PER_PIXEL_DIVISOR);
 }
+
+/**
+ * What a caller is owed when the picture it is holding is not the picture the
+ * page showed.
+ *
+ * ── Why this exists, stated as the thing that happened ──────────────────
+ *
+ * A `full_page` capture of an ordinary long article came back **165 x 1024**
+ * from a 1030 x 6404 page — a faithful, complete, undistorted render at about
+ * sixteen per cent, in which no text is legible. The response said
+ * `outcome: accepted`, gave a real path and a real byte count, and the file
+ * opened. **Nothing in it said the image had been reduced at all**, because
+ * the two numbers that would have said so — what the browser produced, before
+ * shrinking — were computed by the pipeline, written to `captures`, and then
+ * dropped by the service layer that builds the caller's reply.
+ *
+ * That is the failure this repository keeps finding in other clothes: a call
+ * that succeeds and quietly hands back less than it appears to. It is
+ * particularly costly here because a full-page capture is the standard
+ * evidence a reviewer attaches, and *"an unreadable control"* is one of the
+ * defects this project's own history lists as invisible to a large passing
+ * suite. **A control that is unreadable at full size and a control that is
+ * unreadable at sixteen per cent look identical.** A reviewer who glances at
+ * a plausible thumbnail and writes "layout looks correct" has attached
+ * evidence that cannot support the claim, and nothing warned them.
+ *
+ * ── Why a sentence and not only a number ────────────────────────────────
+ *
+ * The scale alone is a number a caller has to know to look for. The sentence
+ * is what reaches a caller that never read a specification — the same reason
+ * `escalationGuidance` is prose rather than a pair of integers. It names the
+ * reduction, the dimensions on both sides, and — when there is a rung left to
+ * climb — what to pass to get more, so the caller can decide whether the
+ * image supports the claim it was about to make.
+ *
+ * **This is deliberately a disclosure and not a refusal.** The long-edge cap
+ * is how `capture` honours *"never refused for cost"*, and raising it into
+ * the caller's field of view does not remove it. Capping the *width* at the
+ * rung instead — so that a tall page came back at its own width — was
+ * measured on the observed pages and reaches roughly 8,700 to 21,800
+ * estimated tokens against the present 90 to 230. A silent forty-fold cost
+ * increase would be a worse defect than the one this reports.
+ */
+export interface CaptureReduction {
+  /** What the browser produced, before any shrinking. */
+  readonly sourceWidth: number;
+  readonly sourceHeight: number;
+  /**
+   * Written over source, on the dimension the cap actually bit.
+   *
+   * Rounded to three places because it is a description, not an input to
+   * anything: a caller reads it to judge whether text survived.
+   */
+  readonly scale: number;
+  /** The reduction in words, for a caller that reads one field and no schema. */
+  readonly note: string;
+}
+
+/**
+ * Describe the shrink, or return nothing when there was not one.
+ *
+ * **Absent rather than `scale: 1` when nothing was reduced**, and the
+ * difference is the one this whole helper is for: a field that is always
+ * present is a field a caller stops reading. Its presence is the signal.
+ */
+export function describeReduction(
+  source: { readonly width: number; readonly height: number },
+  written: { readonly width: number; readonly height: number },
+  tier: CaptureTier,
+): CaptureReduction | undefined {
+  if (written.width >= source.width && written.height >= source.height) {
+    return undefined;
+  }
+
+  // Taken on the long edge, which is the edge the cap is applied to — so this
+  // is the factor that was actually used rather than one recovered from
+  // whichever dimension happens to round more kindly.
+  const scale =
+    Math.max(source.width, source.height) === 0
+      ? 1
+      : Math.max(written.width, written.height) / Math.max(source.width, source.height);
+  const percent = Math.round(scale * 100);
+
+  // Named only when there is one, so the sentence never tells a caller already
+  // on the top rung to escalate to it.
+  const higher = HIGHER_TIERS[tier];
+  const remedy =
+    higher === undefined
+      ? `This is the highest rung, so a larger image of the whole page is not available; capture a selector, or read the page as text instead.`
+      : `For more detail pass tier="${higher}"${higher === TIER_REQUIRING_REASON ? ' together with reason' : ''}.`;
+
+  // The width is called out separately because it is the number that decides
+  // legibility on a tall page, and it is the one a caller reading "scale" on
+  // its own would not think to compare against the viewport.
+  return {
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    scale: Math.round(scale * 1000) / 1000,
+    note:
+      `This image was REDUCED to about ${String(percent)}% of the page: ` +
+      `${String(source.width)}x${String(source.height)} was written as ` +
+      `${String(written.width)}x${String(written.height)}. ` +
+      `A capture is shrunk so its LONGEST edge fits ${String(TIER_LONGEST_EDGE[tier])}px, so on a page ` +
+      `taller than it is wide the height sets the factor and the width shrinks with it — ` +
+      `${String(written.width)}px of width here. Text may not be legible. ` +
+      remedy,
+  };
+}
+
+/**
+ * The next rung up from each, and `undefined` at the top.
+ *
+ * A table rather than an ordering computed from {@link TIER_LONGEST_EDGE},
+ * because "which rung does a caller ask for next" is a fact about the
+ * surface's vocabulary — `default` is not requestable by name — and not about
+ * which number is larger.
+ */
+const HIGHER_TIERS: Readonly<Record<CaptureTier, RequestableTier | undefined>> = {
+  default: 'detail',
+  detail: 'max',
+  max: undefined,
+};
