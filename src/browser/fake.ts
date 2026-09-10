@@ -162,12 +162,45 @@ export interface FakeEvaluationOptions {
   readonly value: unknown;
 }
 
+/**
+ * What a fake navigation reports arriving at.
+ *
+ * ── Why the fake has to be able to move the page ────────────────────────
+ *
+ * Without this the fake answered `{url}` — the address it was handed — and
+ * that made it **structurally unable to catch the defect it was most needed
+ * for**. A handler that echoed the requested address and one that reported
+ * the arrived address are indistinguishable when the two are equal, and
+ * against this fake they were always equal. A test could assert the returned
+ * URL, pass, and prove nothing: the service was reporting the request and the
+ * fake was agreeing with it for the wrong reason.
+ *
+ * So a redirect is expressible here. The mutation this exists to catch is a
+ * handler going back to reporting its input, which now shows up as a real
+ * inequality rather than as two spellings of the same string.
+ */
+export interface FakeNavigationOptions {
+  /**
+   * Where navigation ends up, whatever was asked for — a fake redirect.
+   *
+   * A function of the requested address so one fake can serve a redirecting
+   * case and a non-redirecting one, which is the pair the control needs.
+   * Omitted, the page arrives where it was sent.
+   */
+  readonly arriveAt?: (requested: string) => string;
+  /** The title of the page that was arrived at. */
+  readonly title?: (arrived: string) => string;
+  /** The status reported, including `null` for a navigation with no response. */
+  readonly status?: number | null;
+}
+
 /** Where the fake's canned answers come from, when a test needs a particular one. */
 export interface FakeDriverOptions {
   readonly regular?: FakeBrowserOptions;
   readonly private?: FakeBrowserOptions;
   readonly capture?: FakeCaptureOptions;
   readonly evaluate?: FakeEvaluationOptions;
+  readonly navigate?: FakeNavigationOptions;
 }
 
 /**
@@ -634,7 +667,18 @@ export class FakeBrowserDriver implements BrowserDriver {
           detail: { url, ...(waitMs === undefined ? {} : { waitMs }) },
         });
         if (failure) return Promise.reject(failure);
-        return Promise.resolve({ url, title: `fake page at ${url}`, status: 200 });
+        // **Where the page ARRIVES, which is not always where it was sent.**
+        // Defaults to the requested address, so every existing caller sees
+        // what it always saw; a test that configures `arriveAt` gets a fake
+        // that redirects, which is the only way a fake can exercise the
+        // difference between reporting the request and reporting the result.
+        const options = this.#options.navigate;
+        const arrived = options?.arriveAt?.(url) ?? url;
+        return Promise.resolve({
+          url: arrived,
+          title: options?.title?.(arrived) ?? `fake page at ${arrived}`,
+          status: options?.status === undefined ? 200 : options.status,
+        });
       },
 
       seedStorage: (tab: TabHandle, entries: readonly StorageSeedEntry[]): Promise<void> => {

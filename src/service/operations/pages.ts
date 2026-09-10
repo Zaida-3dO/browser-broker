@@ -4,6 +4,7 @@ import type {
   BrowserId,
   BrowserSession,
   CaptureRequest,
+  NavigationResult,
   ReadArtifact,
   TabHandle,
 } from '../../browser/driver.ts';
@@ -587,8 +588,68 @@ export interface NavigateInput extends TabOperationInput {
 }
 
 export interface NavigateResult extends TabOperationResult {
-  /** The address that was accepted, after validation. */
+  /**
+   * Where the tab actually ended up — the address **after redirects**, not
+   * the one that was asked for.
+   *
+   * ── Why this is the final address and not the accepted one ──────────────
+   *
+   * Reporting the request here — the address straight off
+   * `validateNavigationTarget` — is wrong in a way that can only be seen from
+   * outside. A caller driving the shipped binary over real pipes sees this:
+   *
+   * ```
+   * browser_navigate {url: "https://<host>/redirect/3"}
+   *   -> {"outcome":"accepted","value":{…,"url":"https://<host>/redirect/3"}}
+   * browser_evaluate {expression: "location.href"}
+   *   -> "https://<host>/get"
+   * ```
+   *
+   * The tab was somewhere else, and on a cross-origin redirect it was on a
+   * different site entirely. **A non-redirecting address reported correctly**,
+   * which is what kept it hidden: the field is only wrong when it carries
+   * information, and it agrees with the request in every case where nobody
+   * needs it to.
+   *
+   * That is worse than a refusal and worse than an absent field, because it
+   * manufactures evidence. A reviewer asked to check "did this send me to
+   * /login?" reads this field, sees the address they typed, and concludes no
+   * redirect happened — with `pageDriven: true` sitting beside it looking like
+   * corroboration. Auth, locale, canonical-slug and trailing-slash redirects
+   * are all things a caller is specifically asked to verify, and this is the
+   * obvious field to verify them with.
+   *
+   * The driver had the right answer the whole time — {@link
+   * NavigationResult.url} is `page.url()` read after the load settles — and
+   * this handler was discarding it. So this is a getter, for the reason every
+   * other after-commit field here is one: the browser has not moved yet when
+   * the value object is built. See {@link withPageDriven}.
+   *
+   * **Falls back to the requested address** when the page was never driven —
+   * a build with no browser, or a navigation that threw. Reporting the
+   * request is honest there because nothing redirected: `pageDriven: false`
+   * and `notDrivenReason` are what say the page did not move, and this field
+   * does not restate it.
+   */
   readonly url: string;
+
+  /**
+   * The page's title once it arrived, absent when no browser was driven.
+   *
+   * Advertised by the tool description and never returned — the driver
+   * collects it, this handler dropped it on the floor with the URL. Absent
+   * rather than empty-string on the not-driven path, because a page with no
+   * title genuinely reports `''` and the two must stay distinguishable.
+   */
+  readonly title?: string | undefined;
+
+  /**
+   * The HTTP status of the navigation, absent when no browser was driven and
+   * **null when the navigation produced no response to have a status from** —
+   * the ordinary case for an address the browser satisfies without a request,
+   * such as `about:blank`.
+   */
+  readonly status?: number | null | undefined;
 }
 
 /**
@@ -631,15 +692,47 @@ export function decideNavigate(
     detail: { url, ...(waitMs === undefined ? {} : { waitMs }) },
   });
 
+  // Where the page actually ended up, filled by the after-commit closure
+  // below. Undefined until the browser has answered — and permanently so on a
+  // build with no browser, which is what the getters' fallbacks are for.
+  let arrived: NavigationResult | undefined;
+
   const work = afterCommitWork(
     scope,
     input,
     tab,
-    (session, page) => session.navigate(page, url, waitMs),
+    async (session, page) => {
+      // **The driver's answer is kept, not discarded.** It reports
+      // `page.url()` read after the load settles, plus the title and status,
+      // and this assignment is the whole of the redirect fix: the value was
+      // always available here and was being thrown away.
+      arrived = await session.navigate(page, url, waitMs);
+    },
     lease.claimId,
   );
   return {
-    value: withPageDriven({ claimId: lease.claimId, tabId: tab.tabId, expiresAt, url }, work),
+    value: withPageDriven(
+      {
+        claimId: lease.claimId,
+        tabId: tab.tabId,
+        expiresAt,
+        // Getters, for the reason `pageDriven` is one — see
+        // {@link withPageDriven}. Read eagerly they would always report the
+        // request and no title, because nothing has run yet. That eager read
+        // is precisely the defect this fix removes, so spelling these as
+        // plain properties would restore it while looking correct.
+        get url() {
+          return arrived?.url ?? url;
+        },
+        get title() {
+          return arrived?.title;
+        },
+        get status() {
+          return arrived?.status;
+        },
+      },
+      work,
+    ),
     afterCommit: work.afterCommit,
   };
 }

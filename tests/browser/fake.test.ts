@@ -373,3 +373,49 @@ test('a seeded capture failure is still RECORDED, so "asked and refused" is not 
   assert.equal(driver.callsOf('capture').length, 1, 'the failed shutter left no trace');
   assert.equal(driver.callsOf('capture')[0]?.failed, true);
 });
+
+/**
+ * The fake can move the page, and by default does not.
+ *
+ * ── Why this is tested at all ───────────────────────────────────────────
+ *
+ * `arriveAt` exists so a fake navigation can land somewhere other than where
+ * it was aimed, which is the only shape that distinguishes a service
+ * reporting its input from one reporting the page. Left untested, the
+ * capability could be removed or reduced back to an echo and every suite
+ * built on it would keep passing — the tests that depend on it would go on
+ * asserting equality between two strings that had quietly become the same
+ * one, which is exactly the false-confidence state it was introduced to end.
+ *
+ * The mutation this catches: answering `url` instead of the arrived address.
+ */
+test('a fake navigation reports where it arrived, not where it was sent', async () => {
+  const driver = new FakeBrowserDriver({
+    navigate: { arriveAt: () => 'https://example.org/final' },
+  });
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  const result = await session.navigate(tab, 'https://example.com/start');
+
+  assert.equal(result.url, 'https://example.org/final');
+  // The title follows the ARRIVED address. A fake titling the requested one
+  // would hide the same defect one field across.
+  assert.match(result.title, /final/);
+  // The driver was still asked for the address the caller gave, so the
+  // difference is a redirect rather than a rewritten request.
+  assert.equal(driver.callsOf('navigate')[0]?.detail?.['url'], 'https://example.com/start');
+});
+
+// The control: unconfigured, the page arrives where it was sent, so every
+// existing caller of this fake sees what it always saw.
+test('a fake navigation with no redirect configured arrives where it was sent', async () => {
+  const driver = new FakeBrowserDriver();
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  const result = await session.navigate(tab, 'https://example.com/start');
+
+  assert.equal(result.url, 'https://example.com/start');
+  assert.equal(result.status, 200);
+});
