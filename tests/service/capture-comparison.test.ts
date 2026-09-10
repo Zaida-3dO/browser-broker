@@ -482,7 +482,13 @@ test('a missing target returns the full screenshot with an explanation, never a 
     const comparison = result.comparison;
     assert.ok(comparison !== undefined, 'asking for a diff must produce an answer about the diff');
     assert.equal(comparison.diffed, false, 'no comparison ran');
-    assert.equal(comparison.changed, false, 'and `changed` is false because nothing was compared');
+    // **Absent rather than `false`.** Nothing was compared, so there is no
+    // finding — and `false` is the value a real all-clear carries.
+    assert.equal(
+      comparison.changed,
+      undefined,
+      '`changed` must be absent, because nothing was compared',
+    );
     assert.equal(comparison.comparisonId, null, 'nothing was recorded');
     assert.ok(
       comparison.explanation !== null && comparison.explanation.length > 0,

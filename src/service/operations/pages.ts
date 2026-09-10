@@ -1191,6 +1191,13 @@ export interface CaptureResult extends TabOperationResult {
    * It carries `comparedAgainst` echoed back and `truncated` when the region
    * cap bit, both of which §1.9 requires the caller be told rather than left
    * to assume.
+   *
+   * **On a `diffed: false` result the findings are absent, not zeroed.**
+   * `changed`, `changedPixels` and `changedRatio` are simply not there, so a
+   * caller that reads `changed` without branching on `diffed` first gets
+   * `undefined` rather than `false` — which is the value a comparison that ran
+   * and found nothing returns, and would otherwise be indistinguishable from a
+   * real all-clear. `explanation` says which of the four reasons applied.
    */
   readonly comparison?: ComparisonResult;
 }
