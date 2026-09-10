@@ -716,43 +716,48 @@ test('a live memoised session is still handed back, so nothing re-acquires per v
   });
 });
 
-test('a session source that cannot report its connection is assumed usable', async () => {
+test('a session source that cannot observe its connection says so, and is believed', async () => {
   await withStore(async (store) => {
-    // A driver whose sessions predate `isConnected` — which is the reason the
-    // member is optional. Such a session has **observed nothing** about its
-    // connection, and the standing rule in this module is that an
-    // observation which could not be made never concludes the negative:
-    // `liveness` returns `unknown` rather than `gone` for exactly this
-    // reason.
+    // `isConnected` is REQUIRED on the seam, so a source that genuinely
+    // cannot observe its connection has to answer anyway — and the answer it
+    // owes is `true`. The rule that motivates it is unchanged: an observation
+    // which could not be made never concludes the negative, exactly as
+    // `liveness` returns `unknown` rather than `gone`.
+    //
+    // The decision lives in the source rather than in an absence. An omitted
+    // member is accepted by the compiler in silence, which cannot distinguish
+    // a source that means "assume usable" from one that simply never
+    // implemented the member — and the second reading leaves the guard inert
+    // for every real caller. Requiring the member means the permissive answer
+    // is written down by a source that means it, where a reader can see it.
     const inner = new FakeBrowserDriver();
-    const stripped: BrowserDriver = {
-      attach: async (browser, record) => withoutIsConnected(await inner.attach(browser, record)),
-      coldStart: async (request) => withoutIsConnected(await inner.coldStart(request)),
+    const cannotTell: BrowserDriver = {
+      attach: async (browser, record) => alwaysConnected(await inner.attach(browser, record)),
+      coldStart: async (request) => alwaysConnected(await inner.coldStart(request)),
     };
     const provider = browserSessionProvider({
       ...environmentFor(store),
-      driver: stripped,
+      driver: cannotTell,
       isRunning: () => Promise.resolve(undefined),
     });
 
     const acquired = await provider.session('private');
-    assert.equal(acquired.isConnected, undefined, 'this source cannot answer the question');
+    assert.equal(acquired.isConnected(), true, 'this source cannot conclude the negative');
 
-    // Treat absence as disconnected and this fails: every call re-acquires,
-    // for a source that never said anything was wrong.
+    // Treat "cannot tell" as disconnected and this fails: every call
+    // re-acquires, for a source that never said anything was wrong.
     const again = await provider.session('private');
     assert.equal(again, acquired, 'the memo was kept');
     assert.equal(inner.callsOf('coldStart').length, 1, 'nothing re-acquired');
   });
 });
 
-/** The same session with the optional member absent, as a source may leave it. */
-function withoutIsConnected(session: BrowserSession): BrowserSession {
-  const { isConnected, ...rest } = session;
-  // Read so that dropping it is a decision the compiler can see rather than
-  // an unused-variable warning somebody silences later.
-  void isConnected;
-  return rest;
+/**
+ * A session that cannot observe its connection, stating the permissive answer
+ * explicitly — the only way to express it now the member is required.
+ */
+function alwaysConnected(session: BrowserSession): BrowserSession {
+  return { ...session, isConnected: () => true };
 }
 
 test('the dead connection is dropped for that browser alone', async () => {

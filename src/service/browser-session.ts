@@ -291,6 +291,16 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
       // performs no input/output and cannot throw, so this adds no round trip
       // to a call that is about to make several.
       //
+      // ── Every session answers, because the member is required ─────────
+      //
+      // It was optional first, so that a source unable to observe its
+      // connection could stay silent and be assumed usable. That let the one
+      // production session omit it entirely while `tsc` stayed quiet, and
+      // this guard then took the assume-usable branch on every real call —
+      // shipping a fix that changed nothing. A source that cannot tell now
+      // returns `true` explicitly instead, so the permissive answer is a
+      // decision in the source rather than a hole in it.
+      //
       // ── Only a settled session can be judged ──────────────────────────
       //
       // An entry still in flight has no session to ask yet, and it is
@@ -298,7 +308,7 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
       // rather than starting two, which is the property the promise-valued
       // memo exists for. An acquisition in progress cannot be stale.
       const open = settled.get(browser);
-      if (open === undefined || open.isConnected === undefined || open.isConnected()) {
+      if (open === undefined || open.isConnected()) {
         return existing;
       }
 

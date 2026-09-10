@@ -65,6 +65,10 @@ function brokenSession(failure = new Error('the browser stopped answering')): Br
       pid: 1,
       discovery: { endpoint: 'endpoint' },
     }),
+    // The connection is up; what this fixture models is the browser failing
+    // an individual verb, which is a different thing from the connection
+    // ending and must not be conflated with it.
+    isConnected: () => true,
     openTab: reject,
     listTabs: () => Promise.resolve([handle]),
     ensureKeeperTab: () => Promise.resolve(handle),
@@ -107,6 +111,7 @@ function workingSession(): BrowserSession {
       pid: 1,
       discovery: { endpoint: 'endpoint' },
     }),
+    isConnected: () => true,
     openTab: () => {
       opened += 1;
       return Promise.resolve({

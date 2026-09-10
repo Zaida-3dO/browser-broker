@@ -992,15 +992,31 @@ export interface BrowserSession extends TabOperations {
    * dead connection be handed out for the life of a long-running process. So
    * this asks the only party that knows: the connection.
    *
-   * ── Optional, and absence means "assume usable" ─────────────────────────
+   * ── Required, because optional made the fix inert ───────────────────────
    *
-   * A session that cannot answer has **observed nothing**, and the standing
-   * rule in this codebase is that a failed or unavailable observation never
-   * concludes the negative — `liveness` returns `unknown` rather than `gone`
-   * for exactly this reason. A caller therefore treats an absent
-   * implementation as *connected*, which keeps a session source that predates
-   * this member behaving as it always did instead of being evicted on every
-   * call.
+   * This member was **first written optional**, on the reasoning that a
+   * session which cannot answer has observed nothing and that an unavailable
+   * observation should never conclude the negative — the rule `liveness`
+   * follows when it returns `unknown` rather than `gone`. That reasoning is
+   * sound about *observations*. It was the wrong shape for a *seam member*,
+   * and the difference is worth stating because it cost a whole review round.
+   *
+   * An optional member cannot distinguish "this source was asked and could
+   * not say" from "nobody implemented this". Those got the same answer —
+   * assume usable — and the second one was the production state: the sole
+   * production session simply did not implement it, `tsc --noEmit` accepted
+   * that because the member was optional, and every real call took the
+   * assume-usable branch. The guard shipped, passed review, and changed no
+   * caller's behaviour at all.
+   *
+   * So the default that made the member safe to roll out is the same property
+   * that let its only production implementation be omitted silently. Required
+   * is the stronger form here and costs nothing: `BrowserSession` is internal
+   * — the package publishes `bin` entries only, with no `main` and no
+   * `exports` — so there is no out-of-tree session source for the permissive
+   * default to protect. A source that genuinely cannot answer should say so
+   * by returning `true` **explicitly and with a comment**, which is a
+   * decision a reader can see, rather than by staying silent.
    *
    * **It must not perform input/output or throw.** It is consulted on the hot
    * path before every page verb, so it reads a flag the connection already
@@ -1008,7 +1024,7 @@ export interface BrowserSession extends TabOperations {
    * front of every call and could itself fail in the state it exists to
    * detect.
    */
-  readonly isConnected?: () => boolean;
+  readonly isConnected: () => boolean;
 
   /**
    * End this process's connection. Non-destructive, and the browser is

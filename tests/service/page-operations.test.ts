@@ -74,6 +74,10 @@ function recordingSession(): DriverLog {
       pid: 1,
       discovery: { endpoint: 'endpoint' },
     }),
+    // Not recorded in `calls`: this is consulted by the session provider
+    // before a verb runs, not by the verb, so counting it here would put a
+    // call in the log that the operation under test never made.
+    isConnected: () => true,
     openTab: async () => {
       calls.push('openTab');
       return await Promise.resolve({ browser: 'regular' as const, driverTabId: 'fresh-tab' });
