@@ -1978,10 +1978,11 @@ with nothing set, which is §6.1's *"a fresh install runs with nothing set."*
 **The default names an engine; it does not choose a binary.** Per-engine executable resolution is
 not built — see *"What is built is the hook and the validation, and nothing else"* below — so on an
 installation that sets nothing the launch falls through to the automation library's own Chromium
-whatever the name says. §6.3's last row puts a changed default in **release notes** rather than a
-quiet edit, so it is written there, along with the fact that naming Edge has no observable effect
-yet: `RELEASES.md`, *"The default browser engine is named Edge, but resolving it is not built yet"*,
-is the fuller account. What is being recorded here is the choice of name, not a change in what runs,
+whatever the name says. §6.3's last row treats a changed default as the behaviour change it is: the
+commit that moves one says so, and the variable's comment in `.env.example` states it, so both the
+history and a reader's own configuration carry it. That naming Edge has no observable effect yet is
+stated in the same two places and in the README's configuration section, so a reader meets it wherever
+they arrive. What is being recorded here is the choice of name, not a change in what runs,
 and no third-party installation exists, so fixing the name is as cheap now as it will ever be.
 
 **What is built is the hook and the validation, and nothing else.** Chrome, Brave and Edge are all

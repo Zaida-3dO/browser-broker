@@ -179,7 +179,7 @@ is deliberately not built, so every browser launches the automation library's ow
 engine is named, and a machine still has to fetch that Chromium once. The private variable goes one
 step less far than the regular one: a single driver serves every browser in the process and only the
 regular engine is handed to it, so the private value is validated at startup and then read by nothing
-at all. `RELEASES.md` has the fuller account.
+at all.
 
 Two signed-in browsers is how two identities are exercised at once: tabs within one browser share
 its cookie jar, so they are isolated from other browsers and not from each other. **Note that each
@@ -381,9 +381,7 @@ surface is being built, and the one manual step is wired: `broker login` hands a
 browser and `broker doctor` reports whether the sign-in took. Read [`docs/ROLLOUT.md`](docs/ROLLOUT.md) for taking it from installed to sole route in an order that
 never leaves traffic unarbitrated, [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
 [`docs/plans/DECISIONS.md`](docs/plans/DECISIONS.md) for why it is shaped this way, and
-[`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue, and
-[`RELEASES.md`](RELEASES.md) for what changes between versions — in particular for defaults that
-move, which change an installation that has taken no action.
+[`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue.
 
 ## Releasing
 

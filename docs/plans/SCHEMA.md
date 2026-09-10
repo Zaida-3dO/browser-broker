@@ -2954,7 +2954,7 @@ easier rather than harder.
 | A variable is set and cannot be read as its type | **Refuse to start, naming the variable and what was expected.** Not the default silently: a caller that set a value and got the default would be running a configuration it did not choose and has no way to notice. The value is one line in one file and the fix is immediate, so refusing costs a correction rather than an outage |
 | The tab budget disagrees with the value in the store | **Refuse to start, naming both numbers** (§1.10). Neither is adopted and neither is overwritten |
 | A variable the service does not recognise is set | Ignored. A process cannot tell an unrecognised variable of its own from any other variable in an environment it shares with everything else on the machine |
-| A default changes between versions | Every installation that never set that variable changes behaviour on upgrade. **That is a behaviour change and is treated as one** — it belongs in release notes, not in a change nobody reads |
+| A default changes between versions | Every installation that never set that variable changes behaviour on upgrade. **That is a behaviour change and is treated as one** — the commit that moves a default says so in its message, and the variable's comment in `.env.example` states the new default, so the change is legible both to someone reading the history and to someone reading their own configuration |
 
 **A version mismatch is not a configuration problem and is not handled here.** Two callers on
 different builds can spawn against the same store; the schema stepper (§1.2d) is what reconciles that,

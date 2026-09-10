@@ -58,7 +58,6 @@ function seeded(mutate) {
       'tsconfig.json',
       'tsconfig.build.json',
       'README.md',
-      'RELEASES.md',
       'LICENSE',
       '.env.example',
       '.gitignore',

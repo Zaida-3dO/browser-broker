@@ -53,7 +53,6 @@
     "dist/",
     ".env.example",
     "README.md",
-    "RELEASES.md",
     "LICENSE"
   ]
 }

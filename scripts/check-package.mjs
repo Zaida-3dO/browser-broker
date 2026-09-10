@@ -167,7 +167,7 @@ for (const unwanted of ['tests/', 'docs/', 'tsconfig.json']) {
 const binNames = new Set(bins.map(([name]) => name));
 const packageIsOwnBin = binNames.has(manifest.name);
 if (!packageIsOwnBin) {
-  for (const doc of ['README.md', 'RELEASES.md']) {
+  for (const doc of ['README.md']) {
     const text = readFileSync(path.join(root, doc), 'utf8');
     // `npx <flags> <package>` with no executable after it. `-p`/`--package`
     // is the form that names one, so a match carrying it is correct.

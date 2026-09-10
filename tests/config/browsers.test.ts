@@ -53,8 +53,10 @@ test('with nothing set there is one browser of each kind, named after its kind',
 });
 
 test('with nothing set both engines are msedge', () => {
-  // The changed default §6.3 puts in release notes: present on every Windows
-  // machine, so a fresh install runs with no browser download step.
+  // §6.3's changed default. Edge is present on every Windows machine, which is
+  // why the name was chosen — but naming an engine decides nothing while
+  // per-engine executable resolution is unbuilt: the launch falls through to the
+  // automation library's own Chromium, and a machine still fetches that once.
   const environment = read({});
   assert.equal(environment.regularBrowserEngine, 'msedge');
   assert.equal(environment.privateBrowserEngine, 'msedge');
