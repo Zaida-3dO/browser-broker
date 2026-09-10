@@ -59,6 +59,30 @@ import type { BrowserLiveness } from './operations/status.ts';
  * The memo holds the **promise**, not the resolved session, so two verbs
  * racing in the same process await one acquisition rather than starting two.
  *
+ * ── …but a memoised session is checked before it is handed back ──────────
+ *
+ * One session per process is right; *trusting* it for the life of the process
+ * is not. A session is a connection, and a connection can end while the
+ * browser it points at is still running — so a memo that is never revalidated
+ * hands a dead connection to every page verb until the process exits.
+ *
+ * That is not hypothetical and it is why this check exists. It is the
+ * difference between the two surfaces: the command line is one process per
+ * command, so its memo cannot outlive the verb that created it and the state
+ * is unreachable there. The tool surface serves a whole session from one
+ * process, so it is the surface where a stale memo is not merely possible but
+ * eventually certain — and a caller doing the obvious correct thing (release,
+ * claim again, drive the page) got the same dead connection every time, with
+ * no way back from that surface at all.
+ *
+ * So {@link BrowserSessions.session} asks {@link BrowserSession.isConnected}
+ * before returning a settled entry and drops it if the answer is no. **This
+ * is a different question from {@link BrowserSessions.liveness}**, which asks
+ * the machine whether a browser is running: in the state above the browser is
+ * running, so liveness says `live` and correctly evicts nothing. Both checks
+ * are needed because a browser and a connection can each die without the
+ * other.
+ *
  * ── A failed acquisition is not cached ───────────────────────────────────
  *
  * If acquiring throws, the memo is cleared, so the next call tries again. The
@@ -242,7 +266,54 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
   const session: BrowserSessionProvider = (browser) => {
     const existing = inFlight.get(browser);
     if (existing !== undefined) {
-      return existing;
+      // ── The memo is checked before it is trusted ──────────────────────
+      //
+      // **This is what stops a dead connection being handed out for the life
+      // of a long-running process.** A settled session is a live connection
+      // over the debugging protocol, and a connection can end while the
+      // browser it points at carries on perfectly well — a browser restart, a
+      // closed target, a dropped protocol socket. When that happens the
+      // session object is still here, still resolved, and every page verb
+      // performed over it fails with `Target page, context or browser has
+      // been closed`.
+      //
+      // Nothing else in this file can catch that state, which is why it
+      // survived a previous fix. The `.catch` below clears only a *rejected*
+      // acquisition, and a session that resolved and later died never
+      // rejects. {@link BrowserSessions.liveness} clears a dead entry, but it
+      // asks the machine whether a browser is **running** — which in this
+      // state is `true` — and it is reached only from `status`, never from a
+      // page verb.
+      //
+      // ── Why it is safe to consult on the hot path ─────────────────────
+      //
+      // `isConnected` reads a flag the connection already maintains. It
+      // performs no input/output and cannot throw, so this adds no round trip
+      // to a call that is about to make several.
+      //
+      // ── Only a settled session can be judged ──────────────────────────
+      //
+      // An entry still in flight has no session to ask yet, and it is
+      // returned untouched: two verbs racing must await one acquisition
+      // rather than starting two, which is the property the promise-valued
+      // memo exists for. An acquisition in progress cannot be stale.
+      const open = settled.get(browser);
+      if (open === undefined || open.isConnected === undefined || open.isConnected()) {
+        return existing;
+      }
+
+      // ── Dropped, not detached, and nothing is launched here ───────────
+      //
+      // There is nothing to detach from: the connection is the thing that
+      // ended. Dropping both entries sends this very call through `acquire`,
+      // which makes its own observation and wins or loses the launch race in
+      // the store like any other caller — the same recovery `liveness` takes,
+      // for the same reason it takes it that way. **No browser is ended**
+      // (`browser_scoped.never`, §7.3) and none is started from here: a
+      // second process launching against one profile directory is the
+      // measured silent-collision failure the race exists to prevent.
+      settled.delete(browser);
+      inFlight.delete(browser);
     }
 
     const acquiring = acquire(driver, browser, options)

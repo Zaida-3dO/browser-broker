@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { FakeBrowserDriver } from '../../src/browser/fake.ts';
-import type { DiscoveryRecord } from '../../src/browser/driver.ts';
+import type { BrowserDriver, BrowserSession, DiscoveryRecord } from '../../src/browser/driver.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 import { browserSessionProvider } from '../../src/service/browser-session.ts';
 import { prepareStore, type StoreHandle } from '../../src/store/open.ts';
@@ -646,5 +646,134 @@ test('finding a browser gone lets go of the session, and finding it live does no
 
     assert.equal(await provider.liveness('private'), 'gone');
     assert.equal(provider.holds('private'), false, 'the dead session was forgotten');
+  });
+});
+
+/**
+ * A connection that ended under a memo that never revalidated it.
+ *
+ * ── The state these four tests are about ────────────────────────────────
+ *
+ * A session is a connection, and a connection can end while the browser it
+ * points at carries on. That asymmetry is the whole subject: the browser
+ * answers every liveness question truthfully with `live`, so
+ * {@link BrowserSessions.liveness} correctly evicts nothing, while every page
+ * verb performed over the held connection fails.
+ *
+ * It is reachable only from a process that outlives one verb. The command
+ * line is one process per command, so its memo dies with the verb that made
+ * it; the tool surface serves a whole session from one process, which is why
+ * that surface is where this is not merely possible but eventually certain.
+ * `FakeBrowserDriver.disconnect` is what lets the state be produced at all —
+ * seeding a failure makes an operation *reject*, which is the different thing
+ * the `.catch` eviction already handles.
+ */
+
+test('a memoised session whose connection has ended is not handed back', async () => {
+  await withStore(async (store) => {
+    const driver = new FakeBrowserDriver();
+    const provider = browserSessionProvider({
+      ...environmentFor(store),
+      driver,
+      // Nothing is running, so each acquisition cold-starts and the count of
+      // cold starts is a direct reading of how many times the memo was missed.
+      isRunning: () => Promise.resolve(undefined),
+    });
+
+    const first = await provider.session('private');
+    assert.equal(driver.callsOf('coldStart').length, 1);
+
+    // The browser is untouched; only this process's connection to it ends.
+    driver.disconnect('private');
+
+    const second = await provider.session('private');
+
+    // Delete the `isConnected()` check in `session` and this fails: the same
+    // dead object comes back and `coldStart` stays at 1.
+    assert.notEqual(second, first, 'a fresh session replaced the dead one');
+    assert.equal(second.isConnected?.(), true, 'and the replacement is usable');
+    assert.equal(driver.callsOf('coldStart').length, 2, 'it was genuinely re-acquired');
+  });
+});
+
+test('a live memoised session is still handed back, so nothing re-acquires per verb', async () => {
+  await withStore(async (store) => {
+    const driver = new FakeBrowserDriver();
+    const provider = browserSessionProvider({
+      ...environmentFor(store),
+      driver,
+      isRunning: () => Promise.resolve(undefined),
+    });
+
+    const first = await provider.session('private');
+    const second = await provider.session('private');
+
+    // The guard against over-correcting: invert the `isConnected()` condition
+    // and this fails. Re-acquiring per verb would re-enter a race the store
+    // has already decided and open a connection per page call.
+    assert.equal(second, first, 'the same session came back');
+    assert.equal(driver.callsOf('coldStart').length, 1);
+  });
+});
+
+test('a session source that cannot report its connection is assumed usable', async () => {
+  await withStore(async (store) => {
+    // A driver whose sessions predate `isConnected` — which is the reason the
+    // member is optional. Such a session has **observed nothing** about its
+    // connection, and the standing rule in this module is that an
+    // observation which could not be made never concludes the negative:
+    // `liveness` returns `unknown` rather than `gone` for exactly this
+    // reason.
+    const inner = new FakeBrowserDriver();
+    const stripped: BrowserDriver = {
+      attach: async (browser, record) => withoutIsConnected(await inner.attach(browser, record)),
+      coldStart: async (request) => withoutIsConnected(await inner.coldStart(request)),
+    };
+    const provider = browserSessionProvider({
+      ...environmentFor(store),
+      driver: stripped,
+      isRunning: () => Promise.resolve(undefined),
+    });
+
+    const acquired = await provider.session('private');
+    assert.equal(acquired.isConnected, undefined, 'this source cannot answer the question');
+
+    // Treat absence as disconnected and this fails: every call re-acquires,
+    // for a source that never said anything was wrong.
+    const again = await provider.session('private');
+    assert.equal(again, acquired, 'the memo was kept');
+    assert.equal(inner.callsOf('coldStart').length, 1, 'nothing re-acquired');
+  });
+});
+
+/** The same session with the optional member absent, as a source may leave it. */
+function withoutIsConnected(session: BrowserSession): BrowserSession {
+  const { isConnected, ...rest } = session;
+  // Read so that dropping it is a decision the compiler can see rather than
+  // an unused-variable warning somebody silences later.
+  void isConnected;
+  return rest;
+}
+
+test('the dead connection is dropped for that browser alone', async () => {
+  await withStore(async (store) => {
+    const driver = new FakeBrowserDriver();
+    const provider = browserSessionProvider({
+      ...environmentFor(store),
+      driver,
+      isRunning: () => Promise.resolve(undefined),
+    });
+
+    const privateFirst = await provider.session('private');
+    const regularFirst = await provider.session('regular');
+
+    driver.disconnect('private');
+
+    // Keyed per browser, which is what the field reports observed: one
+    // browser served pages over the tool surface while the other was inert in
+    // the same process, seconds apart. Drop both entries unconditionally here
+    // and the second assertion fails.
+    assert.notEqual(await provider.session('private'), privateFirst);
+    assert.equal(await provider.session('regular'), regularFirst);
   });
 });

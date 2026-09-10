@@ -974,6 +974,43 @@ export interface BrowserSession extends TabOperations {
   readonly ensureKeeperTab: () => Promise<TabHandle>;
 
   /**
+   * Whether **this process's connection** is still usable, asked of the
+   * connection itself rather than of the machine.
+   *
+   * ── Why this is a different question from "is the browser running" ──────
+   *
+   * `BrowserSessions.liveness` already answers the machine's question: it
+   * reads the discovery record and asks the endpoint who it is, which
+   * establishes that *a browser process exists and is the one on record*. A
+   * connection is a second thing that can end independently of that — the
+   * browser can restart, a target can close, a protocol socket can drop —
+   * and when it does, the browser answers `live` while every page verb
+   * performed over the dead connection fails with `Target page, context or
+   * browser has been closed`.
+   *
+   * Those are two halves of one state, and conflating them is what lets a
+   * dead connection be handed out for the life of a long-running process. So
+   * this asks the only party that knows: the connection.
+   *
+   * ── Optional, and absence means "assume usable" ─────────────────────────
+   *
+   * A session that cannot answer has **observed nothing**, and the standing
+   * rule in this codebase is that a failed or unavailable observation never
+   * concludes the negative — `liveness` returns `unknown` rather than `gone`
+   * for exactly this reason. A caller therefore treats an absent
+   * implementation as *connected*, which keeps a session source that predates
+   * this member behaving as it always did instead of being evicted on every
+   * call.
+   *
+   * **It must not perform input/output or throw.** It is consulted on the hot
+   * path before every page verb, so it reads a flag the connection already
+   * maintains; a check that talked to the browser would put a round trip in
+   * front of every call and could itself fail in the state it exists to
+   * detect.
+   */
+  readonly isConnected?: () => boolean;
+
+  /**
    * End this process's connection. Non-destructive, and the browser is
    * unaffected — see this interface's own note above.
    */
