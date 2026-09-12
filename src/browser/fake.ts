@@ -313,6 +313,37 @@ interface SeededFailure {
  * members and there is nothing here that invents a third.
  */
 export class FakeBrowserDriver implements BrowserDriver {
+  /**
+   * A way to end each handed-out session's connection, without ending the
+   * browser.
+   *
+   * ── Why the fake needs to be able to do this at all ─────────────────────
+   *
+   * A connection and the browser it points at have **independent lifetimes**,
+   * and the failure this models is the asymmetry: the browser is running and
+   * answers every liveness question truthfully, while the connection one
+   * process holds has ended. Nothing else in this fake can produce that state
+   * — seeding a failure makes an operation reject, which is a different thing
+   * and one the existing eviction path already handles.
+   *
+   * A test drives it with {@link FakeBrowserDriver.disconnect}; the fake's
+   * own tabs and recorded calls are deliberately left untouched, because the
+   * browser is unaffected.
+   */
+  readonly #disconnectors: { browser: BrowserId; end: () => void }[] = [];
+
+  /**
+   * End the connection on every session handed out for one browser, leaving
+   * the browser itself — its tabs, its call log — exactly as it was.
+   */
+  disconnect(browser: BrowserId): void {
+    for (const entry of this.#disconnectors) {
+      if (entry.browser === browser) {
+        entry.end();
+      }
+    }
+  }
+
   readonly #calls: DriverCall[] = [];
   readonly #options: FakeDriverOptions;
   readonly #openTabs = new Map<BrowserId, Set<string>>();
@@ -543,6 +574,15 @@ export class FakeBrowserDriver implements BrowserDriver {
   #session(browser: BrowserId, mode?: BrowserMode): BrowserSession {
     const description = this.#describe(browser, mode);
 
+    // Every session this fake hands out starts connected, and only
+    // {@link FakeBrowserDriver.disconnect} changes that. It is per-session
+    // rather than per-browser deliberately: the state under test is *this
+    // connection ended while the browser carried on*, so a later acquisition
+    // for the same browser must come back connected, exactly as a real
+    // re-attach would.
+    let connected = true;
+    this.#disconnectors.push({ browser, end: () => (connected = false) });
+
     const openTab = (name: DriverCallName): Promise<TabHandle> => {
       const driverTabId = `fake-tab-${String(this.#nextTabNumber++)}`;
       const failure = this.#enter({ name, browser, tab: { browser, driverTabId } });
@@ -556,6 +596,11 @@ export class FakeBrowserDriver implements BrowserDriver {
 
     return {
       describe: () => description,
+
+      // Reads the flag above and asks nothing, which is the contract
+      // {@link BrowserSession.isConnected} states: it is consulted before
+      // every page verb, so it must not perform input/output or throw.
+      isConnected: () => connected,
 
       openTab: () => openTab('openTab'),
 

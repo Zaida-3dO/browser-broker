@@ -1503,6 +1503,19 @@ class RealBrowserSession implements BrowserSession {
   }
 
   /**
+   * Whether this process's connection is still usable.
+   *
+   * Delegates to the flag the driving package already maintains — its
+   * `isConnected()` is declared `(): boolean` and its implementation is a
+   * bare field read (`return this._isConnected`), so this performs no
+   * input/output and cannot throw. That is what {@link BrowserSession.isConnected}
+   * requires of it, because it is consulted before every page verb.
+   */
+  isConnected(): boolean {
+    return this.#connection.isConnected();
+  }
+
+  /**
    * End this process's connection. **The browser is unaffected.**
    *
    * Measured: attaching and detaching are non-destructive to tabs, cookies and
