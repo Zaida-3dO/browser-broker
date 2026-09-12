@@ -255,9 +255,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'browser_navigate',
     operation: 'navigate',
     description:
-      'Point your tab at an address. Returns the final address after redirects, the title, the ' +
-      'status, and a path to the accessibility snapshot taken on arrival — a path, because a ' +
-      'snapshot is thousands of tokens and you usually want one part of it.',
+      'Point your tab at an address. Returns the final address after redirects — which is not ' +
+      'always the address you asked for, and is the field to check when you need to know ' +
+      'whether something sent you elsewhere — plus the title and the status. ' +
+      'It does NOT take a snapshot: use browser_read for one.',
     arguments: [
       LEASE_KEY,
       {

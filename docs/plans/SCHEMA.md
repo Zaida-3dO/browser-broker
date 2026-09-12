@@ -817,6 +817,16 @@ other way. The reasoning:
   and the absence of a diff is visible in the shape of the result. A caller that branches on
   `changed` sees no diff, not a wrong one.
 
+  **That last sentence is a requirement on the shape, and it is met by omitting the findings rather
+  than zeroing them.** On a result carrying `diffed: false`, the fields `changed`,
+  `changed_pixels` and `changed_ratio` are **absent**. They are not `false` and `0`, because that
+  pair is precisely what a comparison that *ran* and found nothing returns — so emitting it here
+  would make "I could not find the capture you named" and "the page is identical" the same answer to
+  anything reading the fields, which is the confusion this whole section exists to prevent. A caller
+  that reads `changed` without checking `diffed` first therefore gets nothing, which is unmistakable,
+  instead of a plausible all-clear for a comparison that never happened. The reason it did not run is
+  in the explanation, because a caller told *why* can act and a caller told `false` cannot.
+
 **There is no retention on any of this, which is what makes the situation rare.** Capture files are
 not swept and crop files are not swept — there is no expiry schedule for either (§6.2). The service
 either finds the image the caller named or it does not, and the ordinary reason it does not is that

@@ -328,7 +328,11 @@ test('a capture identifier that does not exist returns an explanation, never a r
     });
 
     assert.equal(result.diffed, false);
-    assert.equal(result.changed, false);
+    // **Absent, not `false`.** `changed: false` is what a comparison that ran
+    // and found nothing returns, so returning it here would make "the
+    // identifier found nothing" indistinguishable from "the page is
+    // unchanged" to anything reading the field.
+    assert.equal(result.changed, undefined, 'no comparison ran, so there is no finding to report');
     assert.notEqual(result.explanation, null);
     assert.match(result.explanation ?? '', /a-capture-that-was-never-taken/);
 
@@ -571,6 +575,236 @@ test('a viewport capture whose height differs produces no diff', async () => {
     assert.equal(result.diffed, false);
     assert.equal(result.widthMismatch, false);
     assert.equal(harness.written.length, 0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// A comparison that did not run reports no finding at all
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The one property every no-diff path has to hold, asserted on all four of
+ * them at once.
+ *
+ * **What this is protecting against.** `changed: false` with
+ * `changedPixels: 0` is the exact pair a comparison that ran and found nothing
+ * returns. Emitting the same pair when no comparison ran hands a caller a
+ * confident all-clear for work that never happened — and the two are
+ * indistinguishable at the point of reading, so a caller doing
+ * visual-regression work acts on a result it never received. The remedy is
+ * that the keys are **absent**, so the same caller reads `undefined`.
+ *
+ * **Why `Object.hasOwn` and not `assert.equal(x, undefined)`.** A field
+ * explicitly set to `undefined` compares equal to an absent one, so the
+ * equality form would pass against a constructor that had put the key back
+ * with an undefined value — a different shape once it is serialised onto a
+ * wire. Asserting on the key itself is the assertion that matches the claim.
+ *
+ * **Why every branch rather than one.** `noDiff` is a single constructor as
+ * this is written, but that is an implementation fact rather than a guarantee:
+ * a later change giving one branch its own object literal would restore the
+ * defect on that branch alone and leave a single-branch test green. Each case
+ * below reaches `runComparison` the way a caller reaches it — a real store,
+ * real rows, real files — so none of it asserts against a hand-built object.
+ */
+test('no comparison ran, so no finding is reported — on every path that produces one', async () => {
+  // The four ways §1.9 says a diff can fail to run, each built the way the
+  // dedicated test for it above builds it.
+  const branches: readonly {
+    readonly name: string;
+    readonly run: (
+      harness: Harness & { readonly rawDb: Parameters<typeof insertClaim>[0] },
+    ) => Promise<Awaited<ReturnType<typeof runComparison>>>;
+  }[] = [
+    {
+      name: 'the identifier names no capture',
+      run: async (harness) => {
+        const current = await insertCapture(harness.rawDb, {
+          claimId: harness.claimId,
+          tabId: harness.tabId,
+          image: filled(400, 300, WHITE),
+          artifacts: harness.artifacts,
+        });
+        return runComparison({
+          capture: current,
+          captureBytes: await harness.source.readBytes(current),
+          targetCaptureId: 'no-such-capture',
+          source: harness.source,
+          settings: DEFAULT_DIFF_SETTINGS,
+          artifacts: harness.artifacts,
+          writeRow: harness.writeRow,
+        });
+      },
+    },
+    {
+      name: 'the capture belongs to another lease',
+      run: async (harness) => {
+        const otherClaim = insertClaim(harness.rawDb);
+        const otherTab = insertTab(harness.rawDb, otherClaim);
+        const image = filled(400, 300, WHITE);
+        const theirs = await insertCapture(harness.rawDb, {
+          claimId: otherClaim,
+          tabId: otherTab,
+          image,
+          artifacts: harness.artifacts,
+        });
+        const mine = await insertCapture(harness.rawDb, {
+          claimId: harness.claimId,
+          tabId: harness.tabId,
+          image,
+          artifacts: harness.artifacts,
+        });
+        return runComparison({
+          capture: mine,
+          captureBytes: await harness.source.readBytes(mine),
+          targetCaptureId: theirs.id,
+          source: harness.source,
+          settings: DEFAULT_DIFF_SETTINGS,
+          artifacts: harness.artifacts,
+          writeRow: harness.writeRow,
+        });
+      },
+    },
+    {
+      name: 'the file behind the capture is gone',
+      run: async (harness) => {
+        const image = filled(400, 300, WHITE);
+        const target = await insertCapture(harness.rawDb, {
+          claimId: harness.claimId,
+          tabId: harness.tabId,
+          image,
+          artifacts: harness.artifacts,
+        });
+        const current = await insertCapture(harness.rawDb, {
+          claimId: harness.claimId,
+          tabId: harness.tabId,
+          image,
+          artifacts: harness.artifacts,
+        });
+        await fs.rm(harness.artifacts.resolve(target.path));
+        return runComparison({
+          capture: current,
+          captureBytes: await harness.source.readBytes(current),
+          targetCaptureId: target.id,
+          source: harness.source,
+          settings: DEFAULT_DIFF_SETTINGS,
+          artifacts: harness.artifacts,
+          writeRow: harness.writeRow,
+        });
+      },
+    },
+    {
+      name: 'the two captures are different widths',
+      run: async (harness) => {
+        const target = await insertCapture(harness.rawDb, {
+          claimId: harness.claimId,
+          tabId: harness.tabId,
+          image: filled(400, 300, WHITE),
+          artifacts: harness.artifacts,
+        });
+        const current = await insertCapture(harness.rawDb, {
+          claimId: harness.claimId,
+          tabId: harness.tabId,
+          image: filled(600, 300, WHITE),
+          artifacts: harness.artifacts,
+        });
+        return runComparison({
+          capture: current,
+          captureBytes: await harness.source.readBytes(current),
+          targetCaptureId: target.id,
+          source: harness.source,
+          settings: DEFAULT_DIFF_SETTINGS,
+          artifacts: harness.artifacts,
+          writeRow: harness.writeRow,
+        });
+      },
+    },
+  ];
+
+  for (const branch of branches) {
+    await withHarness(async (harness) => {
+      const result = await branch.run(harness);
+
+      // The precondition. Without it, a branch that quietly started diffing
+      // would satisfy every assertion below for entirely the wrong reason.
+      assert.equal(result.diffed, false, branch.name + ': no comparison should have run');
+
+      for (const field of ['changed', 'changedPixels', 'changedRatio'] as const) {
+        assert.equal(
+          Object.hasOwn(result, field),
+          false,
+          branch.name +
+            ': ' +
+            field +
+            ' must be ABSENT when no comparison ran — a caller reading it would get a ' +
+            'value meaning "compared, and identical", which is a finding this call never made',
+        );
+      }
+
+      // The reason is what makes the absence actionable: a caller told *why*
+      // nothing was compared can fix its call; one told nothing cannot.
+      assert.ok(
+        result.explanation !== null && result.explanation.length > 0,
+        branch.name + ': a diff that did not run must say why in plain words',
+      );
+
+      // And the physical consequence, per this file's own standard: nothing
+      // was compared, so nothing was recorded.
+      assert.equal(harness.written.length, 0, branch.name + ': no row may be written');
+      assert.equal(result.comparisonId, null, branch.name + ': and none is reported');
+    });
+  }
+});
+
+/**
+ * The other half of the same claim, and the reason the test above cannot be
+ * satisfied by dropping the fields outright.
+ *
+ * A comparison that *did* run must carry all three, or the change would have
+ * removed the finding rather than the falsehood — and a caller that correctly
+ * branches on `diffed` first would then find `undefined` where the real answer
+ * belongs.
+ */
+test('a comparison that DID run carries all three findings', async () => {
+  await withHarness(async (harness) => {
+    const before = filled(400, 300, WHITE);
+    const after = withRectangle(before, { x: 100, y: 100, width: 80, height: 40 }, BLACK);
+
+    const target = await insertCapture(harness.rawDb, {
+      claimId: harness.claimId,
+      tabId: harness.tabId,
+      image: before,
+      artifacts: harness.artifacts,
+    });
+    const current = await insertCapture(harness.rawDb, {
+      claimId: harness.claimId,
+      tabId: harness.tabId,
+      image: after,
+      artifacts: harness.artifacts,
+    });
+
+    const result = await runComparison({
+      capture: current,
+      captureBytes: await harness.source.readBytes(current),
+      targetCaptureId: target.id,
+      source: harness.source,
+      settings: DEFAULT_DIFF_SETTINGS,
+      artifacts: harness.artifacts,
+      writeRow: harness.writeRow,
+    });
+
+    assert.equal(result.diffed, true, 'the comparison must have run, or this test proves nothing');
+    for (const field of ['changed', 'changedPixels', 'changedRatio'] as const) {
+      assert.equal(
+        Object.hasOwn(result, field),
+        true,
+        field +
+          ' must be PRESENT when a comparison ran — omitting it everywhere would satisfy ' +
+          'the absence test by removing the answer along with the falsehood',
+      );
+    }
+    assert.equal(result.changed, true, 'and it carries the real finding, not merely the key');
+    assert.ok((result.changedPixels ?? 0) > 0, 'with a real count behind it');
   });
 });
 

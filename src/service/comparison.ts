@@ -65,18 +65,37 @@ export interface ComparedAgainst {
  * Collapsing them would make "could not find the capture you named" and
  * "nothing moved" the same answer, which is the exact confusion §1.9 spends a
  * section preventing.
+ *
+ * **The three findings are absent, not defaulted, when `diffed` is false**, and
+ * that is the property this shape exists to hold. A caller that reads `changed`
+ * without branching on `diffed` first is the caller most likely to be doing
+ * visual-regression work, and `changed: false` is the exact value meaning "I
+ * compared them and they are identical" — so returning it for "no comparison
+ * happened" hands back a confident negative for work that never ran, and the
+ * two answers are indistinguishable at the reading. Omitted, the same caller
+ * reads `undefined`, which no amount of not-reading-the-docs can mistake for an
+ * all-clear. The reason is separately in `explanation`, because a caller told
+ * *why* nothing was compared can act on it and a caller told `false` cannot.
  */
 export interface ComparisonResult {
   /** Did a comparison actually run? */
   readonly diffed: boolean;
   /**
    * True when at least one region survives filtering — **not** when any pixel
-   * differs (§1.9). Always false when `diffed` is false.
+   * differs (§1.9).
+   *
+   * **Absent when `diffed` is false**, so that no comparison having run can
+   * never be read as one having run and found nothing.
    */
-  readonly changed: boolean;
-  /** The raw count and its share, before regions are worked out (§1.9). */
-  readonly changedPixels: number;
-  readonly changedRatio: number;
+  readonly changed?: boolean;
+  /**
+   * The raw count and its share, before regions are worked out (§1.9).
+   *
+   * **Both absent when `diffed` is false**, for the reason `changed` is: zero
+   * changed pixels out of zero is a measurement, and no measurement was taken.
+   */
+  readonly changedPixels?: number;
+  readonly changedRatio?: number;
   /** One entry per changed area, ordered largest first. */
   readonly regions: readonly ComparisonRegion[];
   /** The new capture with the changed regions outlined. Relative to the root. */
@@ -155,17 +174,37 @@ export interface ComparisonRow {
   readonly truncated: boolean;
 }
 
-/** A result carrying no diff, with the sentence saying why. */
+/**
+ * A result carrying no diff, with the sentence saying why.
+ *
+ * **`changed`, `changedPixels` and `changedRatio` are not set here at all** —
+ * not to `false`, not to `0`. Every path into this function is a path on which
+ * no comparison ran, so there is no finding to report, and the shape says so by
+ * having no field rather than by having a field whose value happens to be the
+ * one a real all-clear also produces. `false` and `0` are what a comparison
+ * that ran and found nothing returns; emitting them here would make the two
+ * cases identical to anything reading the fields directly.
+ *
+ * `regions` stays an empty array and `truncated` stays `false` because those
+ * describe the *output listing* rather than a finding about the page: an empty
+ * list of regions is honest about a call that produced no regions, and neither
+ * can be misread as an assertion that the page is unchanged.
+ */
 function noDiff(
   settings: DiffSettings,
   explanation: string,
-  extra: Partial<ComparisonResult> = {},
+  // **Typed to exclude the three findings**, rather than a bare
+  // `Partial<ComparisonResult>`. The spread below is the one way a caller could
+  // put `changed` back into a no-diff result, so the parameter that feeds it
+  // does not accept those keys and a future call site trying to pass one is a
+  // build failure instead of a silently restored defect.
+  extra: Omit<
+    Partial<ComparisonResult>,
+    'diffed' | 'changed' | 'changedPixels' | 'changedRatio'
+  > = {},
 ): ComparisonResult {
   return {
     diffed: false,
-    changed: false,
-    changedPixels: 0,
-    changedRatio: 0,
     regions: [],
     overlayPath: null,
     truncated: false,
