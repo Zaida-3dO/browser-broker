@@ -80,6 +80,10 @@ function redirectingSession(
       pid: 1,
       discovery: { endpoint: 'endpoint' },
     }),
+    // The connection is live for the whole of this fixture's life: what these
+    // tests exercise is where a navigation lands, which says nothing about
+    // whether the connection behind it has ended.
+    isConnected: () => true,
     openTab: async () =>
       await Promise.resolve({ browser: 'regular' as const, driverTabId: 'fresh-tab' }),
     listTabs: async () => await Promise.resolve([handle]),
