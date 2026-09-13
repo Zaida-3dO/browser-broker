@@ -333,7 +333,144 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     operation: 'capture',
     seed: withALiveLease,
     input: {},
-    expect: { outcome: 'accepted' },
+    // §3.11's promised response, asserted as a response rather than as a row
+    // in a database. All three of `sourceWidth`, `sourceHeight` and `tier`
+    // were promised by §3.11 — *"the dimensions written, the dimensions
+    // before shrinking, the file size, the tier"* — computed by the pipeline,
+    // written to the `captures` table, and then **dropped by the service layer
+    // that builds the caller's reply**, for the whole life of the feature.
+    //
+    // Nothing caught it because nothing anywhere compared a response against
+    // the specification that promised it: `check:operations` proves the
+    // binaries reach the service, `check:argument-refusals` polices refusals,
+    // and neither walks from a documented response field to the code meant to
+    // populate it. Naming the fields here is the narrow, non-brittle version
+    // of that check — it binds the spec to the code at the one point both
+    // agree on, without a parser trying to read §3.x's English.
+    expect: {
+      outcome: 'accepted',
+      //
+      // ── Why these ten are not the list, and what bounds it ──────────────
+      //
+      // §3.11 promises more than this case names: an estimated token cost and
+      // how many captures this lease has taken are both in its sentence. They
+      // are deliberately absent here because they are **not in the reply the
+      // caller receives**: `estimatedTokens`, `capturesThisLease` and
+      // `escalation` are fields of the *pipeline's* `CaptureResult`, and
+      // `pages.ts` reshapes that into the `written` object without them. An
+      // assertion naming them would fail against correct code, which is the
+      // one failure a conformance case must never manufacture.
+      //
+      // That gap is real and it is item 557fdcd6's remaining half — a
+      // response still owes §3.11 two fields it does not carry. It is not
+      // closed here, because closing it means changing the response rather
+      // than the test, and this row is about the checks. Named so the next
+      // reader finds a known gap rather than an oversight.
+      //
+      // Spelled `capture.*` because the reply is an envelope: `capture` renews
+      // the lease it was called on, so the value carries `claimId`, `tabId`,
+      // `expiresAt` and `pageDriven` with the picture nested under `capture`.
+      // Naming the path asserts that nesting too.
+      valueFields: [
+        'capture.captureId',
+        'capture.path',
+        'capture.width',
+        'capture.height',
+        'capture.bytes',
+        // The three §3.11 promised and the shipped response omitted for the
+        // whole life of the feature. They are the reason this list exists.
+        'capture.sourceWidth',
+        'capture.sourceHeight',
+        'capture.tier',
+      ],
+    },
+  },
+  {
+    name: 'capture: an escalated tier changes the picture that comes back',
+    operation: 'capture',
+    // ── The assertion `check:argument-reachability` cannot make ───────────
+    //
+    // `tier` was read at the bridge, validated, packed into a request object,
+    // and then dropped at the single `takeCapture` call site, which spread
+    // only `fullPage` and `selector`. Every capture was taken at the default
+    // rung whatever was asked for, and `tier: "max"` charged the caller a
+    // written 8-200 character justification for it. The static check passed
+    // throughout, exactly as its own table says it must: *"a branch that reads
+    // an argument and drops it on the floor passes this."*
+    //
+    // So this case asserts the thing that actually failed: that passing the
+    // argument **changes what comes back**. The runner drives the operation a
+    // second time with `tier` and `reason` removed and requires the two
+    // readings to differ, so a `tier` hard-wired to `"max"` fails here rather
+    // than passing as a constant.
+    //
+    // `max` rather than `detail` because it is the rung that costs a reason,
+    // which puts both arguments on the same case: `reason` is recorded only on
+    // this tier (`pipeline.ts` — *"a reason attached to a capture nobody had to
+    // justify would put noise into the one column the resolution study
+    // reads"*), so the two travel together or not at all.
+    //
+    // ── What this case asserts about `reason`, stated honestly ───────────
+    //
+    // **It asserts that passing `reason` does not prevent the escalation, and
+    // nothing more.** `reason` is genuinely **not observable** from any route:
+    // it is written to the `captures` row and read back by no operation the
+    // conformance suite can reach (`capture-store.ts` exposes `recordCapture`
+    // and `capturesTakenBy`, and neither returns it). So there is no response
+    // field and no driver call in which a dropped `reason` would show.
+    //
+    // It is named in `arguments` regardless, because the baseline must remove
+    // it: `max` without a reason is **refused**, so a baseline that dropped
+    // only `tier` would be measuring a refusal rather than the default rung.
+    // Removing both is what makes the comparison a comparison.
+    //
+    // The one assertion that would close `reason` is a read path to the
+    // capture's own record, which does not exist and is not invented here.
+    seed: withALiveLease,
+    input: {
+      tier: 'max',
+      reason: 'conformance: proving an escalated tier reaches the pipeline that acts on it',
+    },
+    expect: {
+      outcome: 'accepted',
+      effects: [
+        {
+          arguments: ['tier', 'reason'],
+          expect: [
+            {
+              field: 'capture.tier',
+              value: 'max',
+              // The rung a caller lands on with no tier (`DEFAULT_TIER`).
+              withoutArgument: 'default',
+            },
+            {
+              // The **physical** consequence, not merely the label. `tier`
+              // could be echoed back by a service that did nothing with it;
+              // the width cannot. The fake produces 1280x720, so the default
+              // rung's 1024 long edge shrinks it to 1024x576 while `max`'s
+              // 2576 leaves it alone — never upscaled (`image.ts`: *"a picture
+              // smaller than the rung is written as it is"*).
+              //
+              // This is the field that would have failed on the shipped
+              // defect: every capture came back 1024 wide however it was
+              // asked for.
+              field: 'capture.width',
+              value: 1280,
+              withoutArgument: 1024,
+            },
+            {
+              // The height, for the same reason as the width and as a
+              // separate reading: the shrink is taken on the **long edge**,
+              // so a change to `TIER_LONGEST_EDGE` that moved only one
+              // dimension would leave the other's assertion standing.
+              field: 'capture.height',
+              value: 720,
+              withoutArgument: 576,
+            },
+          ],
+        },
+      ],
+    },
   },
   {
     name: 'capture: a selector and a full page together are refused',

@@ -354,6 +354,179 @@ test('CONTROL — a WRITE route may not buy its way out with waivers', async () 
   assert.match(finding.detail, /may not waive/u);
 });
 
+test('CONTROL — an accepted value missing a field its case names is caught', async () => {
+  // The response-conformance assertion, shown able to fail. §3.11 promised
+  // `sourceWidth`, `sourceHeight` and `tier` and the shipped response carried
+  // none of them for the whole life of capture, because nothing compared a
+  // response against its own specification.
+  //
+  // The field is **stripped from a real accepted value** rather than invented
+  // on a fixture: the value has to travel the route and arrive short, which is
+  // the shape the defect actually had.
+  const dropsAField: ConformanceDriver = {
+    adapter: cliConformanceDriver.adapter,
+    run: async (service, testCase, observe) => {
+      const observation = await cliConformanceDriver.run(service, testCase, observe);
+      if (observation.outcome.outcome !== 'accepted') {
+        return observation;
+      }
+      const value = { ...observation.outcome.value };
+      const capture = value['capture'];
+      if (typeof capture === 'object' && capture !== null) {
+        // Deleted rather than destructured-and-discarded: the binding for a
+        // dropped key is unused by construction, and naming one only to
+        // ignore it trades a lint suppression for no added clarity.
+        const rest = { ...(capture as Record<string, unknown>) };
+        delete rest['sourceWidth'];
+        value['capture'] = rest;
+      }
+      return { ...observation, outcome: { ...observation.outcome, value } };
+    },
+  };
+
+  const report = await runConformance({ ...baseline, drivers: driversWith(dropsAField) });
+
+  const finding = report.findings.find((entry) => entry.kind === 'accepted-value-missing-a-field');
+  assert.ok(finding, 'a response missing a promised field was not caught');
+  assert.match(finding.detail, /sourceWidth/u);
+});
+
+test('CONTROL — an argument that is read and then dropped is caught, which the static check cannot do', async () => {
+  // ── The assertion this whole mechanism exists for ────────────────────
+  //
+  // `tier` was read at the bridge, validated, packed into a request object and
+  // then dropped at the single `takeCapture` call site. `check:argument-
+  // reachability` passed throughout, exactly as its own table says it must.
+  //
+  // The mutation is applied to the **outcome** rather than to the service, so
+  // the control is hermetic: the route returns a capture whose tier is always
+  // the default, which is precisely what the defect produced.
+  const dropsTheTier: ConformanceDriver = {
+    adapter: cliConformanceDriver.adapter,
+    run: async (service, testCase, observe) => {
+      const observation = await cliConformanceDriver.run(service, testCase, observe);
+      if (observation.outcome.outcome !== 'accepted') {
+        return observation;
+      }
+      const value = { ...observation.outcome.value };
+      const capture = value['capture'];
+      if (typeof capture === 'object' && capture !== null) {
+        // The inert-argument signature: the rung is whatever it would have
+        // been with no tier passed at all.
+        value['capture'] = { ...(capture as Record<string, unknown>), tier: 'default' };
+      }
+      return { ...observation, outcome: { ...observation.outcome, value } };
+    },
+  };
+
+  const report = await runConformance({ ...baseline, drivers: driversWith(dropsTheTier) });
+
+  const finding = report.findings.find((entry) => entry.kind === 'argument-had-no-effect');
+  assert.ok(finding, 'an argument read and then dropped was not caught');
+  assert.match(finding.detail, /capture\.tier/u);
+});
+
+test('CONTROL — an argument hard-wired to the expected value is still caught as inert', async () => {
+  // The guard against a constant, and the reason `withoutArgument` is
+  // required. An expectation naming only the wanted value is satisfiable by a
+  // service that ignores the argument and always returns it — the argument
+  // would be as inert as ever while the assertion went green.
+  //
+  // So: force the tier to `max` on **every** capture, including the baseline
+  // taken without the argument. Both readings then match the wanted value
+  // individually, and only the comparison between them can tell that passing
+  // the argument changed nothing.
+  const alwaysMax: ConformanceDriver = {
+    adapter: cliConformanceDriver.adapter,
+    run: async (service, testCase, observe) => {
+      const observation = await cliConformanceDriver.run(service, testCase, observe);
+      if (observation.outcome.outcome !== 'accepted') {
+        return observation;
+      }
+      const value = { ...observation.outcome.value };
+      const capture = value['capture'];
+      if (typeof capture === 'object' && capture !== null) {
+        value['capture'] = {
+          ...(capture as Record<string, unknown>),
+          tier: 'max',
+          width: 1280,
+          height: 720,
+        };
+      }
+      return { ...observation, outcome: { ...observation.outcome, value } };
+    },
+  };
+
+  const report = await runConformance({ ...baseline, drivers: driversWith(alwaysMax) });
+
+  // **Caught on the baseline reading**, and the wording matters to the claim:
+  // the without-argument run comes back on the top rung, which is not what a
+  // capture with no tier returns. So the finding names the *baseline* as
+  // wrong rather than the measured value — the hard-wiring is visible
+  // precisely because the second reading was taken at all.
+  //
+  // Asserted by field and by the `without` phrasing rather than by count,
+  // because the same mutation fires once per route.
+  assert.ok(
+    report.findings.some(
+      (entry) =>
+        entry.kind === 'argument-had-no-effect' &&
+        /^without tier, reason, "capture\.tier"/u.test(entry.detail),
+    ),
+    'a hard-wired constant satisfied the effect assertion, so the baseline is decorative',
+  );
+});
+
+test('CONTROL — an argument whose two readings agree is caught as inert, even when both are the expected value', async () => {
+  // ── The constant-guard proper, reached on purpose ────────────────────
+  //
+  // The control above never reaches it: forcing the rung makes the baseline
+  // disagree with `withoutArgument`, and that branch reports first. But the
+  // guard is the whole reason {@link ArgumentEffect.withoutArgument} is
+  // required, so it needs a control of its own or it is a line nobody has
+  // watched fail.
+  //
+  // This case declares an effect whose two readings are **expected to be the
+  // same value**. Both comparisons against the expectations therefore pass,
+  // and the only thing that can produce a finding is the identity check
+  // between the readings — which is exactly the inert-argument shape: the
+  // field reads the same whether or not the argument was passed.
+  const inertByConstruction: ConformanceCase = {
+    name: 'a case whose declared effect does not actually change anything',
+    operation: 'capture',
+    seed: CONFORMANCE_CASES.find(
+      (entry) => entry.operation === 'capture' && entry.expect.outcome === 'accepted',
+    )?.seed,
+    input: { full_page: true },
+    expect: {
+      outcome: 'accepted',
+      effects: [
+        {
+          // Removing `full_page` does not change the rung, so `capture.tier`
+          // reads `default` in both runs.
+          arguments: ['full_page'],
+          expect: [{ field: 'capture.tier', value: 'default', withoutArgument: 'default' }],
+        },
+      ],
+    },
+  };
+
+  const report = await runConformance({
+    ...baseline,
+    drivers: driversWith(cliConformanceDriver),
+    cases: [inertByConstruction],
+  });
+
+  assert.ok(
+    report.findings.some(
+      (entry) =>
+        entry.kind === 'argument-had-no-effect' &&
+        /"capture\.tier" is "default" whether or not full_page is passed/u.test(entry.detail),
+    ),
+    'two identical readings were accepted, so the constant-guard never fires',
+  );
+});
+
 test('CONTROL — a waiver that says nothing is refused', async () => {
   const emptyWaiver = driverOver({
     ...cliConformanceDriver.adapter,

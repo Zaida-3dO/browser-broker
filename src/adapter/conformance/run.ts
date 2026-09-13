@@ -1,8 +1,52 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import { ADAPTER_IDS, type AdapterId } from '../contract.ts';
 import { isWriteOperation, OPERATION_NAMES, type OperationName } from '../operations.ts';
-import type { BrokerService, RuleRegistry } from '../service-seam.ts';
+import type { BrokerService, OperationOutcome, RuleRegistry } from '../service-seam.ts';
 import type { ConformanceCase, ObservedDriverCall } from './case.ts';
 import type { ConformanceDrivers } from './driver.ts';
+
+/**
+ * Structural comparison for effect assertions.
+ *
+ * `isDeepStrictEqual` rather than `===`, because an effect may name a
+ * structured field, and rather than `assert.deepStrictEqual`, because this
+ * runner reports findings instead of throwing (see the header).
+ */
+const deepEqual = (a: unknown, b: unknown): boolean => isDeepStrictEqual(a, b);
+
+/**
+ * Read a field out of an accepted value, following a dotted path.
+ *
+ * ── Why a path and not a plain key ──────────────────────────────────────
+ *
+ * An accepted value is not flat. `capture` returns the lease's own fields —
+ * `claimId`, `tabId`, `expiresAt`, `pageDriven` — with **the capture itself
+ * nested under `capture`**, because the operation renews the lease it was
+ * called on and the reply says both things. `SCHEMA.md` §3.11's promises are
+ * about the capture object, so a case naming `width` flatly would read
+ * `undefined` from the envelope and report a missing field on a response that
+ * carries it — a finding that is wrong in the most expensive direction, since
+ * it accuses correct code.
+ *
+ * The path is resolved rather than the case being handed the sub-object,
+ * because the envelope is part of what the route returns: a case naming
+ * `capture.tier` asserts the nesting too, and an adapter that quietly
+ * flattened or re-keyed the reply would fail here rather than passing.
+ *
+ * Returns `undefined` for any path that does not resolve, which is the same
+ * answer as a field explicitly set to `undefined` — deliberately, because
+ * both mean "the caller cannot read this" and the assertions are about what
+ * a caller can read.
+ */
+function fieldAt(value: Readonly<Record<string, unknown>>, path: string): unknown {
+  let current: unknown = value;
+  for (const step of path.split('.')) {
+    if (typeof current !== 'object' || current === null) return undefined;
+    current = (current as Record<string, unknown>)[step];
+  }
+  return current;
+}
 
 /**
  * The conformance run: every assertion `SCHEMA.md` §8 lists, over the cross
@@ -43,7 +87,26 @@ export type FindingKind =
   /** The rule registry is empty, so every rule assertion passes vacuously. */
   | 'rule-registry-empty'
   /** The case table has no cases, so the matrix is empty. */
-  | 'case-table-empty';
+  | 'case-table-empty'
+  /**
+   * An accepted value omitted a field the case named — the response-conformance
+   * failure. §3.11 promised `sourceWidth`, `sourceHeight` and `tier` and the
+   * shipped response carried none of them, because nothing compared a response
+   * against its own specification.
+   */
+  | 'accepted-value-missing-a-field'
+  /**
+   * A declared argument did not change what came back — the inert-argument
+   * failure, one layer below where the static reachability check can see. The
+   * argument was read; the result is the same as if it had not been.
+   */
+  | 'argument-had-no-effect'
+  /**
+   * The without-argument baseline could not be taken, so the effect assertion
+   * would have been vacuous. Raised rather than skipped: a silently-skipped
+   * effect is indistinguishable from a passing one.
+   */
+  | 'argument-effect-baseline-failed';
 
 export interface Finding {
   readonly kind: FindingKind;
@@ -241,6 +304,110 @@ export async function runConformance(options: ConformanceRunOptions): Promise<Co
               caseName: testCase.name,
               detail: `expected ${testCase.expect.code} / ${testCase.expect.rule}, got ${outcome.code} / ${outcome.rule}`,
             });
+          }
+        }
+
+        // ── Response conformance and argument effect ──────────────────────
+        //
+        // Both are assertions about the **accepted value**, which is why they
+        // sit together and why they are checked here rather than in a unit
+        // test: the value has crossed the route boundary by this point, so a
+        // field the service produced and the adapter dropped fails here and
+        // passes everywhere else.
+        if (outcome.outcome === 'accepted' && testCase.expect.outcome === 'accepted') {
+          for (const field of testCase.expect.valueFields ?? []) {
+            if (fieldAt(outcome.value, field) === undefined) {
+              findings.push({
+                kind: 'accepted-value-missing-a-field',
+                adapter: adapterId,
+                operation: testCase.operation,
+                caseName: testCase.name,
+                detail: `the accepted value has no "${field}" (it carries ${Object.keys(outcome.value).join(', ') || 'nothing'})`,
+              });
+            }
+          }
+
+          for (const effect of testCase.expect.effects ?? []) {
+            // The same operation, driven again with the effect's arguments
+            // removed. A fresh subject, because the first run consumed a lease
+            // and moved the capture count — reusing it would measure the
+            // second call's accounting rather than the argument.
+            const baselineInput = Object.fromEntries(
+              Object.entries(seeded.input).filter(([key]) => !effect.arguments.includes(key)),
+            );
+            const baselineSubject = await options.makeService();
+            let baseline: OperationOutcome | undefined;
+            try {
+              const baselineSubstitutions =
+                (await testCase.seed?.apply(baselineSubject.service)) ?? {};
+              const baselineCase: ConformanceCase = {
+                ...testCase,
+                name: `${testCase.name} (without ${effect.arguments.join(', ')})`,
+                input: { ...baselineInput, ...baselineSubstitutions },
+              };
+              baseline = (
+                await driver.run(baselineSubject.service, baselineCase, {
+                  driverCalls: baselineSubject.driverCalls,
+                  liveClaimCount: baselineSubject.liveClaimCount,
+                })
+              ).outcome;
+            } finally {
+              await baselineSubject.dispose?.();
+            }
+
+            if (baseline.outcome !== 'accepted') {
+              // Never silently skipped. An effect whose baseline refused would
+              // otherwise report the same green as one that held.
+              findings.push({
+                kind: 'argument-effect-baseline-failed',
+                adapter: adapterId,
+                operation: testCase.operation,
+                caseName: testCase.name,
+                detail: `dropping ${effect.arguments.join(', ')} was refused (${baseline.code} / ${baseline.rule}), so the effect of those arguments could not be measured`,
+              });
+              continue;
+            }
+
+            for (const expectation of effect.expect) {
+              const actual = fieldAt(outcome.value, expectation.field);
+              const without = fieldAt(baseline.value, expectation.field);
+
+              if (!deepEqual(actual, expectation.value)) {
+                findings.push({
+                  kind: 'argument-had-no-effect',
+                  adapter: adapterId,
+                  operation: testCase.operation,
+                  caseName: testCase.name,
+                  detail: `with ${effect.arguments.join(', ')}, "${expectation.field}" should be ${JSON.stringify(expectation.value)} but was ${JSON.stringify(actual)}`,
+                });
+                continue;
+              }
+
+              if (!deepEqual(without, expectation.withoutArgument)) {
+                findings.push({
+                  kind: 'argument-had-no-effect',
+                  adapter: adapterId,
+                  operation: testCase.operation,
+                  caseName: testCase.name,
+                  detail: `without ${effect.arguments.join(', ')}, "${expectation.field}" should be ${JSON.stringify(expectation.withoutArgument)} but was ${JSON.stringify(without)}`,
+                });
+                continue;
+              }
+
+              // The guard against a constant. Both readings can be individually
+              // right and the argument still inert — if the two agree, passing
+              // the argument changed nothing, whatever the field happens to
+              // hold. This is the assertion the whole shape exists for.
+              if (deepEqual(actual, without)) {
+                findings.push({
+                  kind: 'argument-had-no-effect',
+                  adapter: adapterId,
+                  operation: testCase.operation,
+                  caseName: testCase.name,
+                  detail: `"${expectation.field}" is ${JSON.stringify(actual)} whether or not ${effect.arguments.join(', ')} is passed, so the argument is inert`,
+                });
+              }
+            }
           }
         }
 
