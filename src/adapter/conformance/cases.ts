@@ -333,7 +333,106 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     operation: 'capture',
     seed: withALiveLease,
     input: {},
-    expect: { outcome: 'accepted' },
+    // §3.11's promised response, asserted as a response rather than as a row
+    // in a database. All three of `sourceWidth`, `sourceHeight` and `tier`
+    // were promised by §3.11 — *"the dimensions written, the dimensions
+    // before shrinking, the file size, the tier"* — computed by the pipeline,
+    // written to the `captures` table, and then **dropped by the service layer
+    // that builds the caller's reply**, for the whole life of the feature.
+    //
+    // Nothing caught it because nothing anywhere compared a response against
+    // the specification that promised it: `check:operations` proves the
+    // binaries reach the service, `check:argument-refusals` polices refusals,
+    // and neither walks from a documented response field to the code meant to
+    // populate it. Naming the fields here is the narrow, non-brittle version
+    // of that check — it binds the spec to the code at the one point both
+    // agree on, without a parser trying to read §3.x's English.
+    expect: {
+      outcome: 'accepted',
+      valueFields: [
+        'captureId',
+        'path',
+        'width',
+        'height',
+        'bytes',
+        'sourceWidth',
+        'sourceHeight',
+        'tier',
+        'estimatedTokens',
+        'capturesThisLease',
+      ],
+    },
+  },
+  {
+    name: 'capture: an escalated tier changes the picture that comes back',
+    operation: 'capture',
+    // ── The assertion `check:argument-reachability` cannot make ───────────
+    //
+    // `tier` was read at the bridge, validated, packed into a request object,
+    // and then dropped at the single `takeCapture` call site, which spread
+    // only `fullPage` and `selector`. Every capture was taken at the default
+    // rung whatever was asked for, and `tier: "max"` charged the caller a
+    // written 8-200 character justification for it. The static check passed
+    // throughout, exactly as its own table says it must: *"a branch that reads
+    // an argument and drops it on the floor passes this."*
+    //
+    // So this case asserts the thing that actually failed: that passing the
+    // argument **changes what comes back**. The runner drives the operation a
+    // second time with `tier` and `reason` removed and requires the two
+    // readings to differ, so a `tier` hard-wired to `"max"` fails here rather
+    // than passing as a constant.
+    //
+    // `max` rather than `detail` because it is the rung that costs a reason,
+    // which puts both arguments on the same case: `reason` is recorded only on
+    // this tier (`pipeline.ts` — *"a reason attached to a capture nobody had to
+    // justify would put noise into the one column the resolution study
+    // reads"*), so the two travel together or not at all.
+    seed: withALiveLease,
+    input: {
+      tier: 'max',
+      reason: 'conformance: proving an escalated tier reaches the pipeline that acts on it',
+    },
+    expect: {
+      outcome: 'accepted',
+      effects: [
+        {
+          arguments: ['tier', 'reason'],
+          expect: [
+            {
+              field: 'tier',
+              value: 'max',
+              // The rung a caller lands on with no tier (`DEFAULT_TIER`).
+              withoutArgument: 'default',
+            },
+            {
+              // The **physical** consequence, not merely the label. `tier`
+              // could be echoed back by a service that did nothing with it;
+              // the width cannot. The fake produces 1280x720, so the default
+              // rung's 1024 long edge shrinks it to 1024x576 while `max`'s
+              // 2576 leaves it alone — never upscaled (`image.ts`: *"a picture
+              // smaller than the rung is written as it is"*).
+              //
+              // This is the field that would have failed on the shipped
+              // defect: every capture came back 1024 wide however it was
+              // asked for.
+              field: 'width',
+              value: 1280,
+              withoutArgument: 1024,
+            },
+            {
+              // §3.11's escalation guidance is present *exactly* when the
+              // caller landed on the default rung, "because that is exactly
+              // the caller who has not been told what the alternatives are".
+              // Its disappearance is a third independent reading of the same
+              // argument arriving.
+              field: 'escalation',
+              value: undefined,
+              withoutArgument: escalationGuidance(),
+            },
+          ],
+        },
+      ],
+    },
   },
   {
     name: 'capture: a selector and a full page together are refused',

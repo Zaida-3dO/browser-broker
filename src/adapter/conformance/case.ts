@@ -48,9 +48,99 @@ export interface CaseSeed {
   ) => Promise<Readonly<Record<string, unknown>> | void> | Readonly<Record<string, unknown>> | void;
 }
 
+/**
+ * One claim about the value an accepted operation returned.
+ *
+ * ── Why an argument's *effect* is a first-class expectation ─────────────
+ *
+ * `check-argument-reachability.mjs` proves a declared argument is **read at
+ * the bridge**. That is necessary and it is not sufficient, and the gap is not
+ * theoretical: `tier` was read at the bridge, validated, packed into a request
+ * object, and then dropped at the single `takeCapture` call site, which spread
+ * only `fullPage` and `selector`. Every capture was taken at the default rung
+ * regardless of what was asked for — while `tier: "max"` charged the caller a
+ * written 8–200 character justification for the privilege. The static check
+ * passed for the whole life of the feature, and its own table says why: *"the
+ * value read is forwarded correctly to the driver — NOT checked."*
+ *
+ * So the assertion that closes it is not *"was the argument read"* but
+ * **"did the argument change what came back"**. An argument that is read and
+ * then dropped produces a result identical to the one produced by not passing
+ * it, and that identity is exactly what {@link ArgumentEffect} refuses to let
+ * pass.
+ *
+ * ── Why it lives on the case rather than in a unit test ────────────────
+ *
+ * Because a case is crossed with **every route**, so one declaration asserts
+ * the effect survives the CLI's argv-and-JSON round trip and the tool
+ * surface's, not merely the service's own call. `tests/capture/pipeline.test.ts`
+ * already exercises tiers, but its rig calls `takeCapture(...)` directly —
+ * below the seam where this defect lived — so it could not have caught it, and
+ * did not.
+ */
+export interface ArgumentEffect {
+  /**
+   * The field of the accepted value this effect is about.
+   *
+   * Spelled as the **service** spells it. Adapters shape presentation, but the
+   * conformance drivers all read the value back as a record, so the field name
+   * is the one place the routes already agree.
+   */
+  readonly field: string;
+  /**
+   * What that field must be when the case's input is sent.
+   *
+   * Compared with `deepStrictEqual`, so a structured field is compared whole
+   * rather than by identity.
+   */
+  readonly value: unknown;
+  /**
+   * What the field is when the argument is **not** sent — the baseline the
+   * effect is measured against.
+   *
+   * **Required, and it is the entire point.** An expectation naming only the
+   * wanted value is satisfiable by a constant: if `tier` were hard-wired to
+   * `"max"` and the argument ignored, `{field: 'tier', value: 'max'}` alone
+   * would pass while the argument remained as inert as it ever was. Naming
+   * what the field is *without* the argument forces the two to differ, so the
+   * assertion is about the argument's effect rather than about the field's
+   * contents.
+   *
+   * The runner therefore drives the operation **twice** — once with the case's
+   * input, once with the effect's arguments removed — and requires both
+   * readings.
+   */
+  readonly withoutArgument: unknown;
+}
+
 /** The case expects the operation to be allowed. */
 export interface AcceptExpectation {
   readonly outcome: 'accepted';
+  /**
+   * Fields the accepted value must carry, named and checked.
+   *
+   * Separate from {@link AcceptExpectation.effects} because presence is a
+   * weaker and different claim: it says the response **conforms to what
+   * `SCHEMA.md` §3.x promises**, without saying any argument caused it.
+   * `sourceWidth`, `sourceHeight` and `tier` were promised by §3.11 and absent
+   * from the shipped response for the entire life of capture, because nothing
+   * anywhere compared a response against its own specification.
+   *
+   * A field listed here must be present and not `undefined`. The value is not
+   * constrained — that is {@link AcceptExpectation.effects}' job.
+   */
+  readonly valueFields?: readonly string[];
+  /**
+   * Arguments whose effect on the returned value is asserted.
+   *
+   * Each names the input keys it owns, so the runner can re-drive the
+   * operation without them to establish the baseline.
+   */
+  readonly effects?: readonly {
+    /** Input keys removed to produce the without-argument reading. */
+    readonly arguments: readonly string[];
+    readonly expect: readonly ArgumentEffect[];
+  }[];
 }
 
 /**

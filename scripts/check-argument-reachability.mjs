@@ -50,10 +50,46 @@
  * typed methods, {@link BrokerService} is one method over an opaque record,
  * and bridging them "is therefore translation work with a home of its own".
  * Every wire-spelled name becomes a typed field there and nowhere else, always
- * through the same `argument(args, …)` reader. That is what makes the strong
- * question answerable statically rather than merely gestured at: there is one
- * place to look, and an argument that is not read there cannot be read at all,
- * because the record it arrived in does not travel any further.
+ * through the same `argument(args, …)` reader. That is what makes the question
+ * answerable statically rather than merely gestured at: there is one place to
+ * look, and an argument that is not read there cannot be read **anywhere
+ * downstream**, because the record it arrived in does not travel any further.
+ *
+ * ── What that does and does not license, stated precisely ───────────────
+ *
+ * Being read at the bridge is **necessary and not sufficient**, and the
+ * difference is not pedantry — it is the whole of what this check can be
+ * relied upon for. An earlier version of this paragraph said *"an argument
+ * that is not read there cannot be read at all"*, which reads as though the
+ * converse held too, and **it does not**.
+ *
+ * `tier` is the counter-example, and it is this repository's own:
+ *
+ *   `tier` WAS read at the bridge — `src/service/bridge.ts`, under
+ *   `case 'capture'`, `const tier = argument(args, 'tier')` — was validated,
+ *   was packed into a request object, and was then **dropped at the single
+ *   `takeCapture` call site**, which spread only `fullPage` and `selector`.
+ *   Every capture was taken at the default rung regardless of what was asked
+ *   for, `tier: "max"` charged the caller a written 8–200 character
+ *   justification for it, and **this check passed throughout.**
+ *
+ * It compiled silently because TypeScript's excess-property check does not
+ * apply to conditionally-spread properties, so the bridge could assemble a
+ * field the seam below it had no home for and nothing said a word.
+ *
+ * So the honest statement of the seam argument is the contrapositive only:
+ * **not read at the bridge ⇒ dead. Read at the bridge ⇒ nothing yet.** The
+ * value has to survive every layer below, and this check watches none of them.
+ * The table under "WHAT THIS PROVES, AND WHAT IT CANNOT" has always said so in
+ * its last two rows; this prose used to contradict it, and the prose is what
+ * people read. A check that overstates its reach is worse than one that admits
+ * its limit, because a reader who believes the overstatement stops looking —
+ * which is, precisely and literally, what happened to `tier`.
+ *
+ * What covers the rest of the journey is named under "Why this is static" at
+ * the foot of this header: a runtime assertion that the argument **changes the
+ * observable result**. That instrument now exists for capture — see
+ * `argumentEffects` in `src/adapter/conformance/cases.ts`.
  *
  * Three properties make this more than a second grep:
  *
@@ -119,11 +155,12 @@
  * | Every argument on the tool surface is read at the bridge, in its own operation's branch | **Checked**, over the whole declaration table |
  * | Every declared environment variable is read outside the file that declares it | **Checked**, over the whole declaration table |
  * | A newly declared argument is covered without anybody adding a case | **Yes** — the check ranges over the declaration, not over a list kept beside it |
- * | The value read is *forwarded correctly* to the driver | **NOT checked.** A branch that reads an argument and drops it on the floor passes this |
+ * | The value read is *forwarded correctly* to the driver | **NOT checked here.** A branch that reads an argument and drops it on the floor passes this — `tier` did, for the whole life of capture. Covered for capture by `argumentEffects` in `src/adapter/conformance/cases.ts`, and by nothing for any other operation |
  * | The value read is the *right* one | **NOT checked.** Reading `selector` and passing it as `compareTo` passes this |
  *
  * **The last two rows are the honest limit, and they are why this is a floor
- * rather than a ceiling.** This proves an argument is not *inert*; it does not
+ * rather than a ceiling.** This proves an argument is not *inert* **at the
+ * bridge**; it does not prove it survives the layers below, and it does not
  * prove it is *correct*. The instrument for correctness already exists and is
  * strictly stronger per argument — the conformance harness carries `detail` on
  * driver calls precisely so "a route that forwards an argument" and "one that
@@ -150,8 +187,17 @@
  * test. Every argument is covered the moment it is declared, including the one
  * added in the same commit as the omission. Runtime is the better assertion;
  * static is the better census, and the class needs a census. The two compose:
- * a conformance case proving `reason` reaches its destination would be a
- * genuine strengthening, and would not make this redundant.
+ * a conformance case proving `reason` reaches its destination is a genuine
+ * strengthening, and does not make this redundant.
+ *
+ * **That case now exists.** `argumentEffects` in
+ * `src/adapter/conformance/cases.ts` asserts that `tier` and `reason` change
+ * the observable result — across every adapter the conformance matrix covers,
+ * because the effect is declared once per operation and crossed with each
+ * route. It closes the forwarding half for capture specifically. It does
+ * **not** generalise by itself: an argument with no effect declared for it is
+ * still covered only by the census below. The two together are the floor and
+ * the ceiling, and neither is the other.
  *
  * ── The seeded violation ────────────────────────────────────────────────
  *
