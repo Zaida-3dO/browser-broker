@@ -69,6 +69,27 @@ export interface CaseSeed {
  * it, and that identity is exactly what {@link ArgumentEffect} refuses to let
  * pass.
  *
+ * ── What this can and cannot reach, which is not the same for every name ─
+ *
+ * It reaches an argument whose effect is **visible in the response**. `tier`
+ * qualifies: it selects the rung the image is shrunk to, so it shows in
+ * `capture.tier` and, physically, in `capture.width`.
+ *
+ * **It does not reach `reason`, and the reason is worth stating rather than
+ * leaving as an omission somebody later reads as an oversight.** `reason` is
+ * written to the `captures` row and returned by nothing — no operation a case
+ * can drive reads it back. Nor does it reach the driver: the capture seam
+ * takes `{fullPage, selector, mask}` and `driver.ts` says so in as many words
+ * — *"No tier and no resolution. The driver takes the picture the page can
+ * give."* `tier` is applied **after** the shutter, by the downscale. So for
+ * these two names there is no driver call in which a dropped value would
+ * show, and the phrase *"forwarded to the driver"* names something that does
+ * not happen for either of them.
+ *
+ * What would close `reason` is a read path to a capture's own record. That is
+ * a change to the service rather than to this harness, and it is not invented
+ * here.
+ *
  * ── Why it lives on the case rather than in a unit test ────────────────
  *
  * Because a case is crossed with **every route**, so one declaration asserts
@@ -85,6 +106,12 @@ export interface ArgumentEffect {
    * Spelled as the **service** spells it. Adapters shape presentation, but the
    * conformance drivers all read the value back as a record, so the field name
    * is the one place the routes already agree.
+   *
+   * **A dotted path**, resolved a step at a time, because an accepted value is
+   * an envelope rather than a flat record: `capture` renews the lease it was
+   * called on, so the picture is nested under `capture` beside `claimId` and
+   * `expiresAt`. Naming `capture.tier` therefore asserts the shape of the
+   * reply as well as the value in it.
    */
   readonly field: string;
   /**
@@ -128,6 +155,10 @@ export interface AcceptExpectation {
    *
    * A field listed here must be present and not `undefined`. The value is not
    * constrained — that is {@link AcceptExpectation.effects}' job.
+   *
+   * **Dotted paths**, for the reason {@link ArgumentEffect.field} gives: the
+   * accepted value is an envelope, and §3.x's promises are about the object
+   * nested inside it.
    */
   readonly valueFields?: readonly string[];
   /**

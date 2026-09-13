@@ -349,17 +349,39 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     // agree on, without a parser trying to read §3.x's English.
     expect: {
       outcome: 'accepted',
+      //
+      // ── Why these ten are not the list, and what bounds it ──────────────
+      //
+      // §3.11 promises more than this case names: an estimated token cost and
+      // how many captures this lease has taken are both in its sentence. They
+      // are deliberately absent here because they are **not in the reply the
+      // caller receives**: `estimatedTokens`, `capturesThisLease` and
+      // `escalation` are fields of the *pipeline's* `CaptureResult`, and
+      // `pages.ts` reshapes that into the `written` object without them. An
+      // assertion naming them would fail against correct code, which is the
+      // one failure a conformance case must never manufacture.
+      //
+      // That gap is real and it is item 557fdcd6's remaining half — a
+      // response still owes §3.11 two fields it does not carry. It is not
+      // closed here, because closing it means changing the response rather
+      // than the test, and this row is about the checks. Named so the next
+      // reader finds a known gap rather than an oversight.
+      //
+      // Spelled `capture.*` because the reply is an envelope: `capture` renews
+      // the lease it was called on, so the value carries `claimId`, `tabId`,
+      // `expiresAt` and `pageDriven` with the picture nested under `capture`.
+      // Naming the path asserts that nesting too.
       valueFields: [
-        'captureId',
-        'path',
-        'width',
-        'height',
-        'bytes',
-        'sourceWidth',
-        'sourceHeight',
-        'tier',
-        'estimatedTokens',
-        'capturesThisLease',
+        'capture.captureId',
+        'capture.path',
+        'capture.width',
+        'capture.height',
+        'capture.bytes',
+        // The three §3.11 promised and the shipped response omitted for the
+        // whole life of the feature. They are the reason this list exists.
+        'capture.sourceWidth',
+        'capture.sourceHeight',
+        'capture.tier',
       ],
     },
   },
@@ -387,6 +409,23 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     // this tier (`pipeline.ts` — *"a reason attached to a capture nobody had to
     // justify would put noise into the one column the resolution study
     // reads"*), so the two travel together or not at all.
+    //
+    // ── What this case asserts about `reason`, stated honestly ───────────
+    //
+    // **It asserts that passing `reason` does not prevent the escalation, and
+    // nothing more.** `reason` is genuinely **not observable** from any route:
+    // it is written to the `captures` row and read back by no operation the
+    // conformance suite can reach (`capture-store.ts` exposes `recordCapture`
+    // and `capturesTakenBy`, and neither returns it). So there is no response
+    // field and no driver call in which a dropped `reason` would show.
+    //
+    // It is named in `arguments` regardless, because the baseline must remove
+    // it: `max` without a reason is **refused**, so a baseline that dropped
+    // only `tier` would be measuring a refusal rather than the default rung.
+    // Removing both is what makes the comparison a comparison.
+    //
+    // The one assertion that would close `reason` is a read path to the
+    // capture's own record, which does not exist and is not invented here.
     seed: withALiveLease,
     input: {
       tier: 'max',
@@ -399,7 +438,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
           arguments: ['tier', 'reason'],
           expect: [
             {
-              field: 'tier',
+              field: 'capture.tier',
               value: 'max',
               // The rung a caller lands on with no tier (`DEFAULT_TIER`).
               withoutArgument: 'default',
@@ -415,19 +454,18 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
               // This is the field that would have failed on the shipped
               // defect: every capture came back 1024 wide however it was
               // asked for.
-              field: 'width',
+              field: 'capture.width',
               value: 1280,
               withoutArgument: 1024,
             },
             {
-              // §3.11's escalation guidance is present *exactly* when the
-              // caller landed on the default rung, "because that is exactly
-              // the caller who has not been told what the alternatives are".
-              // Its disappearance is a third independent reading of the same
-              // argument arriving.
-              field: 'escalation',
-              value: undefined,
-              withoutArgument: escalationGuidance(),
+              // The height, for the same reason as the width and as a
+              // separate reading: the shrink is taken on the **long edge**,
+              // so a change to `TIER_LONGEST_EDGE` that moved only one
+              // dimension would leave the other's assertion standing.
+              field: 'capture.height',
+              value: 720,
+              withoutArgument: 576,
             },
           ],
         },

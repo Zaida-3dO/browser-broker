@@ -16,6 +16,39 @@ import type { ConformanceDrivers } from './driver.ts';
 const deepEqual = (a: unknown, b: unknown): boolean => isDeepStrictEqual(a, b);
 
 /**
+ * Read a field out of an accepted value, following a dotted path.
+ *
+ * ── Why a path and not a plain key ──────────────────────────────────────
+ *
+ * An accepted value is not flat. `capture` returns the lease's own fields —
+ * `claimId`, `tabId`, `expiresAt`, `pageDriven` — with **the capture itself
+ * nested under `capture`**, because the operation renews the lease it was
+ * called on and the reply says both things. `SCHEMA.md` §3.11's promises are
+ * about the capture object, so a case naming `width` flatly would read
+ * `undefined` from the envelope and report a missing field on a response that
+ * carries it — a finding that is wrong in the most expensive direction, since
+ * it accuses correct code.
+ *
+ * The path is resolved rather than the case being handed the sub-object,
+ * because the envelope is part of what the route returns: a case naming
+ * `capture.tier` asserts the nesting too, and an adapter that quietly
+ * flattened or re-keyed the reply would fail here rather than passing.
+ *
+ * Returns `undefined` for any path that does not resolve, which is the same
+ * answer as a field explicitly set to `undefined` — deliberately, because
+ * both mean "the caller cannot read this" and the assertions are about what
+ * a caller can read.
+ */
+function fieldAt(value: Readonly<Record<string, unknown>>, path: string): unknown {
+  let current: unknown = value;
+  for (const step of path.split('.')) {
+    if (typeof current !== 'object' || current === null) return undefined;
+    current = (current as Record<string, unknown>)[step];
+  }
+  return current;
+}
+
+/**
  * The conformance run: every assertion `SCHEMA.md` §8 lists, over the cross
  * product of the case table and the mounted routes.
  *
@@ -283,7 +316,7 @@ export async function runConformance(options: ConformanceRunOptions): Promise<Co
         // passes everywhere else.
         if (outcome.outcome === 'accepted' && testCase.expect.outcome === 'accepted') {
           for (const field of testCase.expect.valueFields ?? []) {
-            if (outcome.value[field] === undefined) {
+            if (fieldAt(outcome.value, field) === undefined) {
               findings.push({
                 kind: 'accepted-value-missing-a-field',
                 adapter: adapterId,
@@ -336,8 +369,8 @@ export async function runConformance(options: ConformanceRunOptions): Promise<Co
             }
 
             for (const expectation of effect.expect) {
-              const actual = outcome.value[expectation.field];
-              const without = baseline.value[expectation.field];
+              const actual = fieldAt(outcome.value, expectation.field);
+              const without = fieldAt(baseline.value, expectation.field);
 
               if (!deepEqual(actual, expectation.value)) {
                 findings.push({

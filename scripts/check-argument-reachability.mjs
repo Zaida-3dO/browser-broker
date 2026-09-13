@@ -89,7 +89,8 @@
  * What covers the rest of the journey is named under "Why this is static" at
  * the foot of this header: a runtime assertion that the argument **changes the
  * observable result**. That instrument now exists for capture — see
- * `argumentEffects` in `src/adapter/conformance/cases.ts`.
+ * `ArgumentEffect` in `src/adapter/conformance/case.ts`, declared on a case as
+ * `expect.effects`.
  *
  * Three properties make this more than a second grep:
  *
@@ -155,7 +156,7 @@
  * | Every argument on the tool surface is read at the bridge, in its own operation's branch | **Checked**, over the whole declaration table |
  * | Every declared environment variable is read outside the file that declares it | **Checked**, over the whole declaration table |
  * | A newly declared argument is covered without anybody adding a case | **Yes** — the check ranges over the declaration, not over a list kept beside it |
- * | The value read is *forwarded correctly* to the driver | **NOT checked here.** A branch that reads an argument and drops it on the floor passes this — `tier` did, for the whole life of capture. Covered for capture by `argumentEffects` in `src/adapter/conformance/cases.ts`, and by nothing for any other operation |
+ * | The value read is *forwarded correctly* to its consumer | **NOT checked here.** A branch that reads an argument and drops it on the floor passes this — `tier` did, for the whole life of capture. Covered for capture's `tier` by the `expect.effects` case in `src/adapter/conformance/cases.ts`, and by nothing for any other argument |
  * | The value read is the *right* one | **NOT checked.** Reading `selector` and passing it as `compareTo` passes this |
  *
  * **The last two rows are the honest limit, and they are why this is a floor
@@ -190,14 +191,24 @@
  * a conformance case proving `reason` reaches its destination is a genuine
  * strengthening, and does not make this redundant.
  *
- * **That case now exists.** `argumentEffects` in
- * `src/adapter/conformance/cases.ts` asserts that `tier` and `reason` change
- * the observable result — across every adapter the conformance matrix covers,
+ * **That case now exists, for `tier`.** The `expect.effects` declaration in
+ * `src/adapter/conformance/cases.ts` asserts that `tier` changes the
+ * observable result — across every adapter the conformance matrix covers,
  * because the effect is declared once per operation and crossed with each
- * route. It closes the forwarding half for capture specifically. It does
- * **not** generalise by itself: an argument with no effect declared for it is
- * still covered only by the census below. The two together are the floor and
- * the ceiling, and neither is the other.
+ * route.
+ *
+ * **`reason` is a different matter, and saying so is the point of this
+ * header.** It cannot be asserted the same way, because it is not observable
+ * from any route: it is written to the `captures` row and read back by no
+ * operation a case can reach. A conformance case can only require that
+ * passing it does not prevent the escalation it accompanies. Closing it
+ * properly needs a read path to a capture's own record, which does not exist.
+ * That is a smaller and more honest claim than "proving `reason` reaches its
+ * destination", and it is the one that is true.
+ *
+ * None of this generalises by itself: an argument with no effect declared for
+ * it is still covered only by the census below. The two together are the
+ * floor and the ceiling, and neither is the other.
  *
  * ── The seeded violation ────────────────────────────────────────────────
  *
