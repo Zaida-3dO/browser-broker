@@ -38,6 +38,7 @@ import { describe, it } from 'node:test';
 import {
   BRIDGE_SOURCE,
   TOOLS_SOURCE,
+  WAIVERS,
   bridgeReadsByOperation,
   checkArguments,
   checkConfiguration,
@@ -104,7 +105,7 @@ describe('the check is green on the current tree', () => {
       `only ${String(result.checkedArguments)} arguments were parsed, so the surface is not being read`,
     );
     assert.ok(
-      result.checkedVariables >= 10,
+      result.checkedVariables >= 9,
       `only ${String(result.checkedVariables)} variables were parsed`,
     );
   });
@@ -223,27 +224,69 @@ describe('the configuration half cannot pass vacuously', () => {
     assert.deepEqual(environmentFieldsFor('BROKER_REGULAR_BROWSERS', source), ['regularBrowsers']);
   });
 
-  it('would report a variable whose field nothing outside the declaration reads', () => {
-    // The positive control for the half above: with the waiver in place the
-    // tree is green, so this asserts the mechanism by checking that the one
-    // waived variable is genuinely unread rather than merely excused.
+  it('resolves the field of a variable declared as an enum, not only a number or a list', () => {
+    // The configuration half is only as good as its field resolution, and the
+    // three assembling forms are resolved by three different patterns. A
+    // variable read through the `getSeconds`-style getter is the inline form,
+    // and losing it would make the half cry wolf on a setting the service
+    // reads everywhere — the failure mode that gets a gate switched off.
     const source = readFileSync(ENVIRONMENT_SOURCE, 'utf8');
-    const fields = environmentFieldsFor('BROKER_PRIVATE_BROWSER_ENGINE', source);
-    assert.deepEqual(fields, ['privateBrowserEngine']);
-    const configuration = checkConfiguration();
-    assert.ok(
-      configuration.waived.some((entry) => entry.startsWith('BROKER_PRIVATE_BROWSER_ENGINE')),
-      'the waived variable should be reported as waived, not silently skipped',
+    assert.deepEqual(environmentFieldsFor('BROKER_LEASE_SECONDS', source), ['leaseSeconds']);
+  });
+
+  it('would report a variable whose field nothing outside the declaration reads', () => {
+    // ── The positive control, and why it is synthesised ──────────────────
+    //
+    // This half has to be shown capable of failing, or "green" and "cannot
+    // fail" are indistinguishable — the exact property this whole file exists
+    // to deny.
+    //
+    // The unread variable is fabricated rather than borrowed from the
+    // declaration table. A control that points at a real declared-but-unread
+    // variable is hostage to the configuration around it: it holds only while
+    // that variable stays both declared and unread, and it stops controlling
+    // the moment somebody reads it or stops declaring it — silently, while
+    // still reporting success. `environmentFieldsFor` reads a source it is
+    // handed, so a table carrying a declaration nothing assembles is a
+    // complete input, and the assertion is about the mechanism rather than
+    // about any particular setting. It cannot rot.
+    const declaredButNeverAssembled = `
+      const DECLARATIONS = [
+        { key: 'BROKER_INVENTED_SETTING', kind: 'enum', fallback: 'a', allowed: ['a', 'b'] },
+      ];
+      return {
+        leaseSeconds: getNumber('BROKER_LEASE_SECONDS'),
+      };
+    `;
+    assert.deepEqual(
+      environmentFieldsFor('BROKER_INVENTED_SETTING', declaredButNeverAssembled),
+      [],
+      'a variable the record never assembles must resolve no field, which is what the check reports on',
     );
   });
 
-  it('reports the waiver on every run rather than hiding it', () => {
+  it('keeps the waiver list empty, so no declared variable is excused', () => {
+    // The waiver facility exists and takes no entries. An empty list is the
+    // state worth pinning: a waiver is the temporary third ending for an
+    // unread variable, next to the two honest ones (become read, or stop
+    // being declared), and a list that quietly grows is where the next inert
+    // setting hides. Adding an entry should be a deliberate act that fails
+    // this test and makes somebody argue for it in review.
+    assert.deepEqual(WAIVERS, [], 'a new waiver needs its reasoning argued, not defaulted into');
     const configuration = checkConfiguration();
-    assert.equal(configuration.waived.length, 1, 'exactly one waiver is expected');
-    assert.match(
-      configuration.waived[0],
-      /architectural|won.t-do/u,
-      'a waiver must carry the reason it exists, per the external-ref-ok convention',
+    assert.deepEqual(configuration.waived, [], 'every declared variable answers the rule itself');
+  });
+
+  it('refuses a waiver that names a variable the build does not declare', () => {
+    // The stale-excuse guard, which is what makes an empty list safe to trust:
+    // an entry outliving its variable would sit here as a hole under a name
+    // somebody later reuses. Asserted through the real entry point with a
+    // fabricated waiver, so it exercises the branch rather than restating it.
+    const stale = [{ what: 'BROKER_NOT_DECLARED_ANYWHERE', why: 'fabricated for this test' }];
+    const configuration = checkConfiguration({ waivers: stale });
+    assert.ok(
+      configuration.failures.some((failure) => failure.includes('BROKER_NOT_DECLARED_ANYWHERE')),
+      'a waiver naming an undeclared variable must fail the check, not be ignored',
     );
   });
 });

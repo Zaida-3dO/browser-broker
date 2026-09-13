@@ -52,16 +52,6 @@ test('with nothing set there is one browser of each kind, named after its kind',
   assert.deepEqual([...environment.privateBrowsers], ['private']);
 });
 
-test('with nothing set both engines are msedge', () => {
-  // §6.3's changed default. Edge is present on every Windows machine, which is
-  // why the name was chosen — but naming an engine decides nothing while
-  // per-engine executable resolution is unbuilt: the launch falls through to the
-  // automation library's own Chromium, and a machine still fetches that once.
-  const environment = read({});
-  assert.equal(environment.regularBrowserEngine, 'msedge');
-  assert.equal(environment.privateBrowserEngine, 'msedge');
-});
-
 // ── The lists ───────────────────────────────────────────────────────────
 
 test('a list of names is read in the order it was written', () => {
@@ -130,23 +120,6 @@ test('the cap is per list, not a shared total — three and three is accepted', 
   });
   assert.equal(environment.regularBrowsers.length, 3);
   assert.equal(environment.privateBrowsers.length, 3);
-});
-
-test('an unknown engine is refused, naming the value and listing the accepted words', () => {
-  const refusal = refusalFrom({ BROKER_REGULAR_BROWSER_ENGINE: 'firefox' });
-  assert.match(refusal.message, /firefox/);
-  assert.match(refusal.message, /chrome/);
-  assert.match(refusal.message, /brave/);
-  assert.match(refusal.message, /msedge/);
-});
-
-test('the two engines are independent, and may differ', () => {
-  const environment = read({
-    BROKER_REGULAR_BROWSER_ENGINE: 'chrome',
-    BROKER_PRIVATE_BROWSER_ENGINE: 'brave',
-  });
-  assert.equal(environment.regularBrowserEngine, 'chrome');
-  assert.equal(environment.privateBrowserEngine, 'brave');
 });
 
 test('an empty entry is refused rather than read as a shorter list', () => {

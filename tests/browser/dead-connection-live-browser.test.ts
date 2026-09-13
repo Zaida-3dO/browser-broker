@@ -73,7 +73,6 @@ test(
       // thing relaxed and it cannot mask the defect: waiting longer for a
       // browser that is starting says nothing about a connection that ended.
       driver: new RealBrowserDriver({
-        engine: temp.environment.regularBrowserEngine,
         launch: { readinessTimeoutMs: 60_000 },
       }),
     });

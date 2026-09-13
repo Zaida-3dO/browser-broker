@@ -22,11 +22,11 @@
  * **An argument that quietly does nothing does not merely fail to help: it
  * manufactures evidence, and the evidence is not marked as manufactured.**
  *
- * The class has produced more than one member. `BROKER_PRIVATE_BROWSER_ENGINE`
- * was declared, validated against three accepted words, and read by nothing —
- * the same defect wearing configuration's clothes rather than an argument's.
- * So this check ranges over both registries, for the reason given under
- * "Why configuration is checked by the same rule" below.
+ * The class is not confined to tool arguments. A declared environment
+ * variable, validated against a set of accepted words and then read by
+ * nothing, is the same defect wearing configuration's clothes rather than an
+ * argument's. So this check ranges over both registries, for the reason given
+ * under "Why configuration is checked by the same rule" below.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * WHAT "READ BY SOMETHING" MEANS HERE, WHICH IS THE WHOLE JUDGEMENT
@@ -457,13 +457,13 @@ export function bridgeReadsByOperation(rawSource = readFileSync(BRIDGE_SOURCE, '
 /**
  * Declared things this check knowingly passes, each with the reason.
  *
- * ── Why a waiver exists at all, having argued against a waiver list ──────
+ * ── Why the facility exists at all, having argued against a waiver list ──
  *
  * The rule for *arguments* needs no exceptions and has none: the
  * surface-consumed category dissolves, so every declared argument is expected
- * to be read and none is excused. This list is for the configuration half, it
- * has one entry, and the distinction it turns on is worth stating because it
- * is what stops the list growing.
+ * to be read and none is excused. The facility is for the configuration half,
+ * and the distinction it turns on is worth stating because it is what stops
+ * the list growing.
  *
  * **A waiver records that the defect is real and unfixed here — never that it
  * is acceptable.** It is the `external-ref-ok` convention: the reason is
@@ -471,37 +471,19 @@ export function bridgeReadsByOperation(rawSource = readFileSync(BRIDGE_SOURCE, '
  * absence they would have to notice. An entry whose reason does not name why
  * the fix is out of reach, and what would close it, does not belong.
  *
+ * **The list is empty, and an empty list is the state to defend.** A declared
+ * variable that nothing reads has two honest endings — it becomes read, or it
+ * stops being declared — and a waiver is only ever the temporary third. The
+ * check refuses a waiver naming a variable absent from the declaration table
+ * (see {@link checkConfiguration}), so an entry cannot outlive the thing it
+ * excuses and sit here as a hole under a name somebody later reuses.
+ *
  * **A waiver is not available for a tool argument.** The argument half takes
  * no exceptions, deliberately: the historical defect was an argument, and a
  * check that could be quieted on the exact class it exists for would be worth
  * nothing. Adding a waiver facility to that half is the change to refuse.
  */
-export const WAIVERS = [
-  {
-    what: 'BROKER_PRIVATE_BROWSER_ENGINE',
-    // The defect is genuine — this is the second member of the class the check
-    // was written for, and it is not being disputed. What blocks it is that
-    // honouring it is an architectural change rather than a missed line:
-    // `engine` is an option on the *driver*, resolved once in
-    // `RealDriverOptions`, and one driver instance serves every browser in a
-    // process. Nothing at the launch site distinguishes the two kinds —
-    // `ColdStartRequest` carries `mode`, which is headed/headless and not
-    // regular/private — so honouring a per-kind engine means threading the
-    // kind through the driver seam and giving up one-driver-per-process.
-    //
-    // It is waived rather than deleted because `.env.example`, `README.md` and
-    // `DECISIONS.md` §13i all publish it, and `DECISIONS.md` states the
-    // promise it does not keep in as many words: "may differ". Quietly
-    // dropping a documented setting is a user-facing change that belongs in
-    // its own row with its own reasoning, not folded into a build rule.
-    //
-    // Closing it means either implementing the per-kind engine or removing the
-    // variable and every published mention of it. Tracked as subtask
-    // 58f88352, which was closed won't-do — so this entry is the record that
-    // the declaration outlived that decision.
-    why: 'declared and validated, but a per-kind engine cannot be honoured while one driver serves every browser in the process; the fix is architectural or a documented removal, and subtask 58f88352 closed won’t-do',
-  },
-];
+export const WAIVERS = [];
 
 /**
  * Every environment variable the build declares, from the declaration table.
@@ -561,9 +543,8 @@ export function environmentFieldsFor(variable, source) {
  * Whether any file in the tree, other than the declaring one, reads a field.
  *
  * The declaring file is excluded because a variable read only where it is
- * declared is exactly the defect: `privateBrowserEngine` appeared twice in the
- * whole of `src`, and both appearances were its own type field and its own
- * assignment.
+ * declared is exactly the defect: a setting whose every appearance in `src` is
+ * its own type field and its own assignment reaches nothing that acts on it.
  */
 function fieldIsReadOutsideDeclaration(field, sources) {
   const pattern = new RegExp(`\\b${field}\\b`);
@@ -625,8 +606,16 @@ export function checkArguments({ toolsSource, bridgeSource } = {}) {
   return { failures, checked, declarations };
 }
 
-/** Run the configuration half: a declared variable is read outside its declaration. */
-export function checkConfiguration() {
+/**
+ * Run the configuration half: a declared variable is read outside its
+ * declaration.
+ *
+ * `waivers` is injectable so the self-test can exercise the stale-excuse
+ * branch below against a fabricated entry. The list this ships with is empty,
+ * so a test asserting that branch has nothing real to point at — and seeding
+ * it here is how that guard stays proven rather than merely present.
+ */
+export function checkConfiguration({ waivers = WAIVERS } = {}) {
   const source = readFileSync(ENVIRONMENT_SOURCE, 'utf8');
   const variables = declaredVariables(source);
   const sources = sourceFiles();
@@ -638,7 +627,7 @@ export function checkConfiguration() {
   // A waiver naming something absent from the declaration table is a stale
   // excuse, and stale excuses are how a waiver list becomes the place defects
   // hide. Failing on it costs one line to delete and keeps the list honest.
-  for (const waiver of WAIVERS) {
+  for (const waiver of waivers) {
     if (!variables.includes(waiver.what)) {
       failures.push(
         `${waiver.what} is waived by this check and is absent from the declaration table. Delete ` +

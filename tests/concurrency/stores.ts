@@ -123,8 +123,6 @@ export async function withArbitrationStore(
       launchReadinessTimeoutSeconds: 30,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
-      regularBrowserEngine: 'msedge',
-      privateBrowserEngine: 'msedge',
     };
 
     // Stepped once, here, so the children race over operations rather than
