@@ -172,8 +172,6 @@ test('processes starting together against a stepped store settle on one budget r
       launchReadinessTimeoutSeconds: 30,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
-      regularBrowserEngine: 'msedge',
-      privateBrowserEngine: 'msedge',
     });
     stepped.close();
 

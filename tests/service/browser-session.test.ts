@@ -87,8 +87,6 @@ function environmentFor(store: StoreHandle): Parameters<typeof browserSessionPro
       launchReadinessTimeoutSeconds: 30,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
-      regularBrowserEngine: 'msedge',
-      privateBrowserEngine: 'msedge',
     },
   };
 }

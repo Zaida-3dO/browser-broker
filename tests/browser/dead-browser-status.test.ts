@@ -103,7 +103,6 @@ test(
       // fails immediately rather than after a wait. A generous bound here buys
       // tolerance of a slow machine and buys nothing else.
       driver: new RealBrowserDriver({
-        engine: temp.environment.regularBrowserEngine,
         launch: { readinessTimeoutMs: 60_000 },
       }),
     });

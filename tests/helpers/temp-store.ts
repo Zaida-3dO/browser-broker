@@ -101,8 +101,6 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       launchReadinessTimeoutSeconds: options.launchReadinessTimeoutSeconds ?? 30,
       regularBrowsers: options.regularBrowsers ?? ['regular'],
       privateBrowsers: options.privateBrowsers ?? ['private'],
-      regularBrowserEngine: 'msedge',
-      privateBrowserEngine: 'msedge',
     },
     remove: () => {
       // Removed from the sweep first, so a directory this call genuinely

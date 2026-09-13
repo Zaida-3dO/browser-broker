@@ -260,51 +260,10 @@ const DECLARATIONS = [
     maximum: 3,
     browserKind: 'clean-room',
   },
-  {
-    /**
-     * Which browser binary the signed-in browsers launch (§6.2).
-     *
-     * **One engine per kind, never per browser**, for the same reason there is
-     * no per-entry private flag: an engine per entry reintroduces the
-     * per-entry attribute this configuration exists without.
-     *
-     * The three accepted words are all Chromium over the same remote-debugging
-     * protocol, which is what makes the choice a binary path rather than a
-     * second driver.
-     */
-    key: 'BROKER_REGULAR_BROWSER_ENGINE',
-    kind: 'enum',
-    fallback: 'msedge',
-    allowed: ['chrome', 'brave', 'msedge'],
-    unit: 'a browser engine',
-  },
-  {
-    /**
-     * Which browser binary the clean-room browsers launch (§6.2).
-     *
-     * **May differ from the signed-in engine**, and separate variables are
-     * what make that expressible: a person signs into the signed-in browser by
-     * hand, so which binary that is can be a matter of what they already use,
-     * while nobody signs into a clean-room browser at all.
-     */
-    key: 'BROKER_PRIVATE_BROWSER_ENGINE',
-    kind: 'enum',
-    fallback: 'msedge',
-    allowed: ['chrome', 'brave', 'msedge'],
-    unit: 'a browser engine',
-  },
 ] as const satisfies readonly Declaration[];
 
 /** Every variable this build declares. Row #9's walk test reads this. */
 export const DECLARED_VARIABLES: readonly string[] = DECLARATIONS.map((d) => d.key);
-
-/**
- * A browser binary this service knows how to launch.
- *
- * All three are Chromium over the same remote-debugging protocol, which is
- * why the choice is a path to resolve rather than a driver to write.
- */
-export type BrowserEngine = 'chrome' | 'brave' | 'msedge';
 
 export interface Environment {
   readonly databasePath: string;
@@ -358,10 +317,6 @@ export interface Environment {
   readonly regularBrowsers: readonly string[];
   /** The ephemeral, signed-in-to-nothing browsers, in configured order (§1.2). */
   readonly privateBrowsers: readonly string[];
-  /** Which binary the signed-in browsers launch (§6.2). */
-  readonly regularBrowserEngine: BrowserEngine;
-  /** Which binary the clean-room browsers launch (§6.2). */
-  readonly privateBrowserEngine: BrowserEngine;
 }
 
 export interface ReadEnvironmentOptions {
@@ -669,16 +624,6 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     return value as readonly string[];
   };
 
-  // The reader already refused anything outside the declared set, so this
-  // narrows a checked value rather than trusting one.
-  const getEngine = (key: string): BrowserEngine => {
-    const value = resolved.get(key);
-    if (value !== 'chrome' && value !== 'brave' && value !== 'msedge') {
-      throw new Error(`${key} was declared as an engine but not resolved as one`);
-    }
-    return value;
-  };
-
   const regularBrowsers = getList('BROKER_REGULAR_BROWSERS');
   const privateBrowsers = getList('BROKER_PRIVATE_BROWSERS');
 
@@ -708,7 +653,5 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     launchReadinessTimeoutSeconds: getNumber('BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS'),
     regularBrowsers,
     privateBrowsers,
-    regularBrowserEngine: getEngine('BROKER_REGULAR_BROWSER_ENGINE'),
-    privateBrowserEngine: getEngine('BROKER_PRIVATE_BROWSER_ENGINE'),
   };
 }
