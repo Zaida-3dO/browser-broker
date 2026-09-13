@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import { FakeBrowserDriver } from '../../src/browser/fake.ts';
 import type { BrowserSession } from '../../src/browser/driver.ts';
 import { run } from '../../src/cli/index.ts';
+import { formatReconciliation } from '../../src/cli/reconcile-command.ts';
 import { COMMAND_EXIT } from '../../src/cli/operations-commands.ts';
 import { recordTabOpened, reserveTab } from '../../src/service/tabs.ts';
 import { prepareStore } from '../../src/store/open.ts';
@@ -526,6 +527,132 @@ describe('broker reconcile', () => {
     } finally {
       temp.remove();
     }
+  });
+
+  it('LEADS WITH the retry instruction when it closed nothing, through the real command', async () => {
+    // The end-to-end half of the placement fix. A caller reads the first
+    // line and acts on it, so the assertion is about *position* rather than
+    // presence: the sentence predicting this caller's next failure has to
+    // arrive before the counters, not underneath them.
+    const temp = makeTempStore();
+    try {
+      const store = await prepareStore(temp.environment);
+      const driver = new FakeBrowserDriver();
+      const session = await driver.coldStart({
+        browser: 'regular',
+        profileDirectory: path.join(temp.directory, 'profiles', 'regular'),
+        mode: 'headless',
+      });
+
+      // One row mid-open and nothing this run can close: the shape that
+      // declines.
+      const claim = seedClaim(store.db, { browserId: 'regular' });
+      reserveTab(store.db, claim.claimId, 'regular');
+      store.close();
+
+      const { streams, captured } = capture();
+      const code = await run(['reconcile', 'regular'], {
+        streams,
+        env: envFor(temp.directory),
+        session: () => Promise.resolve(session),
+      });
+
+      assert.equal(code, COMMAND_EXIT.accepted, captured.err.join('\n'));
+
+      const retryAt = captured.out.findIndex((l) => /still being opened/u.test(l));
+      const firstCounterAt = captured.out.findIndex((l) => /pages open, not counting/u.test(l));
+
+      assert.notEqual(retryAt, -1, 'the retry instruction must still be printed');
+      assert.equal(
+        retryAt < firstCounterAt,
+        true,
+        `the retry instruction must precede the counters, got:\n${captured.out.join('\n')}`,
+      );
+      // And the headline must not announce a completion that did not happen.
+      assert.doesNotMatch(captured.out[0] ?? '', /^reconciled:/u);
+    } finally {
+      temp.remove();
+    }
+  });
+
+  it('does not claim completion in its headline on a run that reconciled nothing', () => {
+    // `reconciled:` is a claim about what happened. On a run that closed
+    // nothing and has to be invoked again it is not a true one, and a reader
+    // who takes it at face value stops reading there.
+    const lines = formatReconciliation('regular', {
+      pagesSeen: 2,
+      settled: [],
+      strandedSettled: 0,
+      closed: 0,
+      closeFailures: 0,
+      skippedOpening: 1,
+      skippedOpeningOwnedByCaller: 0,
+    });
+
+    assert.equal(lines[0], 'did not reconcile: regular');
+    assert.match(lines[1] ?? '', /still being opened/u);
+    assert.match(lines[1] ?? '', /Run again once they have settled/u);
+  });
+
+  it('KEEPS the completion headline, and the trailing caveat, when it did close pages', () => {
+    // The negative control, and the one that stops the fix over-reaching. A
+    // run that closed a page *did* reconcile something, so demoting its
+    // headline would trade one false report for another — and there the
+    // skipped row is a caveat on real work rather than the outcome, so it
+    // belongs after the counts.
+    const lines = formatReconciliation('regular', {
+      pagesSeen: 3,
+      settled: [],
+      strandedSettled: 0,
+      closed: 2,
+      closeFailures: 0,
+      skippedOpening: 1,
+      skippedOpeningOwnedByCaller: 0,
+    });
+
+    assert.equal(lines[0], 'reconciled: regular');
+
+    const retryAt = lines.findIndex((l) => /still being opened/u.test(l));
+    const firstCounterAt = lines.findIndex((l) => /pages open, not counting/u.test(l));
+    assert.notEqual(retryAt, -1, 'the caveat is still said on the run it happened on');
+    assert.equal(retryAt > firstCounterAt, true, 'and it sits below the counters on such a run');
+  });
+
+  it('says nothing about retrying on a clean run that simply had nothing to close', () => {
+    // A run that closed nothing because there was nothing to close is not
+    // declining. Telling that caller to run it again would send it back for
+    // an answer it already has.
+    const lines = formatReconciliation('regular', {
+      pagesSeen: 0,
+      settled: [],
+      strandedSettled: 0,
+      closed: 0,
+      closeFailures: 0,
+      skippedOpening: 0,
+      skippedOpeningOwnedByCaller: 0,
+    });
+
+    assert.equal(lines[0], 'reconciled: regular');
+    assert.doesNotMatch(lines.join('\n'), /still being opened/u);
+    assert.doesNotMatch(lines.join('\n'), /Run again/u);
+  });
+
+  it('prints the conclusion exactly once, never in both positions', () => {
+    // The two positions are fed by one function, so a future edit cannot
+    // leave the sentence printed twice or let the wordings drift apart.
+    const lines = formatReconciliation('regular', {
+      pagesSeen: 2,
+      settled: [],
+      strandedSettled: 0,
+      closed: 0,
+      closeFailures: 0,
+      skippedOpening: 1,
+      skippedOpeningOwnedByCaller: 1,
+    });
+
+    assert.equal(lines.filter((l) => /still being opened/u.test(l)).length, 1);
+    // The ownership remedy survives being moved to the top.
+    assert.match(lines[1] ?? '', /1 of them belongs to your own lease/u);
   });
 
   it('is discoverable: the command table lists it, so `broker --help` prints it', async () => {
