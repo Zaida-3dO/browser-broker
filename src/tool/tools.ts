@@ -386,7 +386,11 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         required: false,
         description:
           '"detail" or "max" for a higher resolution. Omit for the default — there is no way to ' +
-          'ask for the default by name. "max" also requires reason.',
+          'ask for the default by name. "max" also requires reason. **A tier raises the LONGEST ' +
+          'edge, not the width**, so on a full_page capture of a page taller than it is wide the ' +
+          'height takes the whole budget and the width stays small at every rung — a 1030px-wide ' +
+          'page 6400px tall is about 165px wide by default and about 414px wide at "max". For ' +
+          'legible text on a tall page, capture a selector instead, or read the page as text.',
       },
       {
         name: 'reason',
