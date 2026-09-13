@@ -691,7 +691,7 @@ test('a memoised session whose connection has ended is not handed back', async (
     // Delete the `isConnected()` check in `session` and this fails: the same
     // dead object comes back and `coldStart` stays at 1.
     assert.notEqual(second, first, 'a fresh session replaced the dead one');
-    assert.equal(second.isConnected?.(), true, 'and the replacement is usable');
+    assert.equal(second.isConnected(), true, 'and the replacement is usable');
     assert.equal(driver.callsOf('coldStart').length, 2, 'it was genuinely re-acquired');
   });
 });
