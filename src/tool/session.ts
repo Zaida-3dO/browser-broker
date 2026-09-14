@@ -10,7 +10,7 @@ import {
   type ProtocolRequest,
   type ProtocolResponse,
 } from './protocol.ts';
-import { TOOLS_BY_NAME, TOOL_DEFINITIONS } from './tools.ts';
+import { TOOLS_BY_NAME, TOOL_DEFINITIONS, type ToolDefinition } from './tools.ts';
 
 /**
  * One session on the tool surface: read a line, answer it, exit when the
@@ -130,6 +130,13 @@ export function listTools(): Readonly<Record<string, unknown>> {
         required: tool.arguments
           .filter((argument) => argument.required)
           .map((argument) => argument.name),
+        // **The schema says what the surface enforces.** `handleRequest`
+        // refuses a call carrying a name the tool does not declare, so the
+        // schema advertising anything less would describe a more permissive
+        // surface than the one that answers — and a validating client would
+        // forward a call it could have caught itself. Saying it here lets the
+        // contract be read rather than discovered by refusal.
+        additionalProperties: false,
       },
     })),
   };
@@ -263,6 +270,95 @@ function asContent(value: unknown): readonly TextContentBlock[] {
  * them there with its own name carried alongside the integer. That design is
  * untouched.
  */
+/**
+ * Names a tool call carries that the tool does not declare.
+ *
+ * Returns them in the order the caller wrote them, so the message names what
+ * the caller can see in its own request rather than a re-sorted set.
+ */
+function undeclaredArguments(tool: ToolDefinition, args: unknown): readonly string[] {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+    return [];
+  }
+  const declared = new Set(tool.arguments.map((argument) => argument.name));
+  return Object.keys(args).filter((key) => !declared.has(key));
+}
+
+/**
+ * Refuse a call carrying arguments the tool does not declare.
+ *
+ * ── Why this is a refusal rather than silent acceptance ─────────────────
+ *
+ * The record of arguments reaches the bridge as an opaque set of names, and
+ * the bridge reads the ones its operation knows. **A name no tool declares is
+ * therefore invisible to every layer that could object to it** — so without
+ * this guard it is dropped without a word while the call answers `accepted`.
+ *
+ * The shape that makes the cost concrete: `browser_evaluate` sent a `resize`
+ * alongside its `expression`. `resize` is not a capability that failed — the
+ * tool declares exactly `lease_key` and `expression`, so it is a name the
+ * tool has never had. Unguarded, the evaluation runs against the viewport the
+ * page already has, the reply says `accepted`, and the caller reads a number
+ * produced by a resize that never happened.
+ *
+ * That is the defect `scripts/check-argument-reachability.mjs` exists to
+ * prevent, arriving from the other side. Its header states the cost in this
+ * repository's own words: an inert argument "does not merely fail to help: it
+ * **manufactures evidence, and the evidence is not marked as manufactured**".
+ * There, a *declared* name was read by nothing; here, an *undeclared* name is
+ * accepted by everything. Both hand a caller a truthful-looking success for a
+ * request that was partly ignored, and a caller cannot tell either from a
+ * call that worked. The reachability check guards the first direction
+ * statically; this guards the second at the only point that can see it.
+ *
+ * **The alternative — accept and warn — was rejected deliberately.** A
+ * warning rides on a response whose `outcome` still reads `accepted` and
+ * whose `isError` is still false, so a caller that branches on those two
+ * fields — which is how a client decides whether its request happened —
+ * cannot see the warning at all, and the false conclusion survives.
+ * The one caller a warning reaches is a caller already reading the prose,
+ * which is the caller least likely to have made the mistake. This surface's
+ * premise is that a refusal is the service working (§5.6) and that the tool
+ * list is the contract a caller discovers by trying — an argument name that
+ * is not rejected cannot be distinguished from one that is supported.
+ *
+ * **The compatibility cost is real and is accepted.** 0.3.1 is published, so
+ * a caller sending a stray key gets a refusal where it got a success. That
+ * caller's stray key was doing nothing then either: the behaviour it believed
+ * it had is the behaviour it never had, and the refusal is the first time it
+ * is told. Nothing that sends only declared names changes at all, and the
+ * conformance case table — authored in the service's spelling — is entirely
+ * within the declared names, so no in-tree caller moves.
+ *
+ * ── The message names the keys, because a refusal that does not is the
+ * defect ───────────────────────────────────────────────────────────────────
+ *
+ * It lists the offending names **and** what the tool does declare. A caller
+ * that mistyped sees its typo beside the word it meant, and one that invented
+ * a capability sees the whole of what is on offer, which is the fact it
+ * needed. Neither has to call `tools/list` to act on this.
+ */
+function undeclaredArgumentRefusal(
+  tool: ToolDefinition,
+  offending: readonly string[],
+): ToolCallResult {
+  const plural = offending.length === 1 ? 'argument' : 'arguments';
+  const declared = tool.arguments.map((argument) => argument.name);
+  const offered =
+    declared.length === 0
+      ? `${tool.name} takes no arguments.`
+      : `${tool.name} takes: ${declared.join(', ')}.`;
+  return refusalResult({
+    code: 'malformed_call',
+    rule: 'call.arguments_declared',
+    message:
+      `${tool.name} does not take the ${plural} ${offending.map((key) => `"${key}"`).join(', ')}. ` +
+      `${offered} An undeclared argument is refused rather than ignored, because a call that ` +
+      `silently dropped it would report success for a request that did not happen.`,
+    details: { tool: tool.name, undeclared: offending, declared },
+  });
+}
+
 function refusalResult(refusal: {
   readonly code: string;
   readonly rule: string;
@@ -335,6 +431,14 @@ export async function handleRequest(
         message: `There is no tool named "${name}". Call ${METHODS.listTools} for the twelve this surface offers.`,
       },
     };
+  }
+
+  // Checked before the service is called, so an undeclared name cannot reach
+  // an operation and be dropped there. See {@link undeclaredArgumentRefusal}
+  // for why this refuses rather than warns, and what that costs.
+  const undeclared = undeclaredArguments(tool, params['arguments']);
+  if (undeclared.length > 0) {
+    return { id: request.id, result: undeclaredArgumentRefusal(tool, undeclared) };
   }
 
   const outcome = await toolStdioAdapter.invoke(options.service, tool.operation, {
