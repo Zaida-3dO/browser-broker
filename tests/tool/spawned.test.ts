@@ -562,3 +562,143 @@ test('the surface SERVES WITHOUT ITS MANIFEST, reporting an unknown version rath
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('AN UNDECLARED ARGUMENT IS REFUSED NAMING IT, over the real process boundary', async () => {
+  // ── Why this case is in the spawned file, which says not to add cases ───
+  //
+  // This file's header is right that a case belongs in the case table, and
+  // this case cannot live there. **The defect was in the wiring, which is the
+  // one thing the in-process matrix does not exercise.** `params.arguments`
+  // was read in `handleRequest` and handed to the adapter, which cast it to a
+  // record and passed it to the service unread — so an argument no tool
+  // declares was dropped between the protocol and the bridge, and every layer
+  // on either side was behaving correctly. A conformance case is authored in
+  // the service's vocabulary and translated *into* a tool call by
+  // `toolCallFor`, so it cannot express the thing under test here: a caller
+  // putting a name on the wire that no tool declares. That is a property of
+  // the JSON a client writes, and only a real client writing real JSON has it.
+  //
+  // ── The measurement this reproduces ────────────────────────────────────
+  //
+  // Against the published 0.3.1, holding a real lease, this exact shape
+  // answered `"outcome":"accepted"` and evaluated `window.innerWidth` to
+  // 2034 — the viewport it already had. The `resize` did nothing, the
+  // nonsense key did nothing, and the reply said neither.
+  //
+  // `browser_evaluate` declares exactly `lease_key` and `expression`
+  // (`src/tool/tools.ts`), so `resize` is not a capability that failed: it is
+  // a name the tool has never had.
+  //
+  // ── The single change that breaks this test ────────────────────────────
+  //
+  // Deleting the `undeclared.length > 0` guard in `handleRequest` — the call
+  // then reaches the service and comes back refused for the *lease* instead,
+  // failing the `rule` assertion below. Dropping either name from the message
+  // breaks it too, which is what stops the refusal regressing into one that
+  // does not say what to fix.
+  const result = await spawnSession([
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'browser_evaluate',
+        arguments: {
+          lease_key: 'a-key-that-names-no-lease',
+          expression: 'window.innerWidth',
+          resize: { width: 800, height: 600 },
+          totally_made_up_key: 'xyzzy',
+        },
+      },
+    }),
+  ]);
+
+  assert.equal(result.code, 0, `the session did not exit cleanly: ${result.err}`);
+  const [line] = result.out.trim().split('\n');
+  assert.ok(line !== undefined, 'the surface answered an undeclared argument with silence');
+
+  const response = JSON.parse(line) as {
+    error?: unknown;
+    result?: {
+      isError?: boolean;
+      content?: { type: string; text: string }[];
+      structuredContent?: {
+        outcome?: string;
+        rule?: string;
+        message?: string;
+        details?: { undeclared?: string[] };
+      };
+    };
+  };
+
+  // A refusal is a successful response carrying a refusal, never a protocol
+  // error — the taxonomy `session.ts` keeps deliberately. Answering this as a
+  // protocol error would tell a caller it had mistyped the *method*.
+  assert.equal(response.error, undefined, 'an undeclared argument came back as a protocol error');
+
+  const structured = response.result?.structuredContent;
+  assert.equal(structured?.outcome, 'refused', 'the undeclared arguments were ACCEPTED');
+  assert.equal(structured?.rule, 'call.arguments_declared');
+  assert.equal(response.result?.isError, true, 'the refusal was not marked for a model to see');
+
+  // **The refusal names the offending keys.** A refusal that does not say
+  // what to fix is the defect this repository is least willing to ship, so
+  // both names are asserted by name rather than by count.
+  const message = structured?.message ?? '';
+  assert.ok(message.includes('resize'), `the refusal did not name "resize": ${message}`);
+  assert.ok(
+    message.includes('totally_made_up_key'),
+    `the refusal did not name "totally_made_up_key": ${message}`,
+  );
+  // And it names what the tool does take, so the caller can act without a
+  // second round trip to tools/list.
+  assert.ok(message.includes('expression'), `the refusal did not say what is on offer: ${message}`);
+  assert.deepEqual(structured?.details?.undeclared, ['resize', 'totally_made_up_key']);
+
+  // The human half carries it too, since that is the half a model reads.
+  const text = response.result?.content?.[0]?.text ?? '';
+  assert.ok(text.includes('resize'), `the rendered text did not name the key: ${text}`);
+});
+
+test('a call carrying ONLY DECLARED ARGUMENTS still reaches the service, over the real boundary', async () => {
+  // The other half of the guard, and the one that makes the test above mean
+  // something. A guard that refused everything would pass the first test
+  // while breaking the surface — so this proves a well-formed call is
+  // untouched by it and still gets through to a real operation.
+  //
+  // `browser_feedback` is used for the same reason the content test uses it:
+  // it needs no lease and reaches no browser, so it genuinely SUCCEEDS
+  // against a fresh store in a spawned process. A refusal here would not
+  // distinguish "the guard let it through" from "the guard stopped it".
+  //
+  // The single change that breaks this test: making the guard compare against
+  // anything other than the tool's own declared names — for instance checking
+  // a fixed list, which would refuse `session_id` on this tool.
+  const result = await spawnSession([
+    JSON.stringify({
+      jsonrpc: JSONRPC_VERSION,
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'browser_feedback',
+        arguments: {
+          rating: 4,
+          category: 'worked-well',
+          note: 'Asserting a call using only declared argument names is not caught by the undeclared-argument guard.',
+          session_id: 'spawned-declared-arguments-test',
+        },
+      },
+    }),
+  ]);
+
+  assert.equal(result.code, 0, `the session did not exit cleanly: ${result.err}`);
+  const [line] = result.out.trim().split('\n');
+  const response = JSON.parse(line ?? '') as {
+    result?: { structuredContent?: { outcome?: string; rule?: string } };
+  };
+  assert.equal(
+    response.result?.structuredContent?.outcome,
+    'accepted',
+    `a call using only declared names was refused: ${line}`,
+  );
+});
