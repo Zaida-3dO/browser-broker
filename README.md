@@ -92,9 +92,17 @@ every run — so a published release arrives without anything being pulled or re
 }
 ```
 
-Weigh that against spawning a checkout directly: `npx` costs a registry round-trip on every spawn,
-which is several seconds against a fraction of one for a path on disk. A machine that develops this
-service is better off pointing at its own tree; a machine that only *uses* it is better off here.
+`npx` costs a registry round-trip on every spawn — **measured at ~1.1s warm and ~3.7s cold**, against
+~0.4s for a path on disk. Against a typical 30s MCP connect timeout that is ample headroom, so prefer
+this form even on a machine that develops the service: a config file shared between machines cannot
+carry an absolute path that is correct on all of them.
+
+⚠️ **If handshakes start timing out, prune the npx cache before blaming npx.** An unpruned 837MB
+`_npx` cache once pushed spawn cost to 9.7–33.2s and blew a 30s connect timeout outright. The cost is
+the cache, not the mechanism. Two related traps: `--prefer-offline` can serve a packument that
+predates a release, so npx resolves a version it then cannot fetch (`ETARGET`); and the local npm
+cache lags the registry independently, so `npm cache clean --force` is the fix when `npm view` and
+`npx` disagree about what exists.
 
 ### From a checkout
 
