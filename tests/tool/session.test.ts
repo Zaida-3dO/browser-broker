@@ -623,3 +623,48 @@ test('an error response carries the numeric code AND the internal name, on the s
   assert.equal(encoded.error.code, JSONRPC_ERROR_CODES.internalError);
   assert.equal(encoded.error.data.code, 'unexpected_failure');
 });
+
+/**
+ * The advertised schema must close itself to undeclared arguments.
+ *
+ * ── Why this is asserted over every tool rather than spot-checked ───────
+ *
+ * `handleRequest` refuses a call carrying a name the tool does not declare.
+ * `additionalProperties: false` in the advertised `inputSchema` is what makes
+ * the published contract say so, and PR #92 added it for exactly that reason:
+ * without it the surface advertises a *more permissive* contract than it
+ * honours, so a schema-validating client is told a stray key is legal,
+ * forwards it, and receives a refusal for something the schema permitted.
+ *
+ * It was shipped uncovered. Deleting the line from `listTools()` left all 65
+ * tool tests green, which is the whole reason this test exists.
+ *
+ * Asserting it over **every** tool rather than one pins the advertised-vs-
+ * enforced match for the entire surface at once, and fails loudly the day a
+ * thirteenth tool is added without it — which a spot check on a named tool
+ * could not do.
+ */
+test('every advertised inputSchema refuses undeclared arguments', () => {
+  const listed = listTools() as {
+    tools: { name: string; inputSchema: Record<string, unknown> }[];
+  };
+
+  // Non-vacuity, and it is not ceremony: every assertion below is inside the
+  // loop, so an empty or missing tool list would satisfy them all without
+  // checking anything. Pinned to the same count the handshake test asserts.
+  assert.equal(
+    listed.tools.length,
+    TOOL_DEFINITIONS.length,
+    'the advertised tool list does not cover every defined tool, so the loop below proves nothing',
+  );
+  assert.ok(listed.tools.length > 0, 'no tools were advertised at all — the check is vacuous');
+
+  for (const tool of listed.tools) {
+    assert.equal(
+      tool.inputSchema['additionalProperties'],
+      false,
+      `${tool.name} advertises a schema that permits undeclared arguments, but handleRequest ` +
+        'refuses them — the published contract is more permissive than the answering surface',
+    );
+  }
+});

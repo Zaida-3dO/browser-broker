@@ -8,7 +8,7 @@ import type {
   TabHandle,
 } from '../../browser/driver.ts';
 import { append, type EventKind } from '../events.ts';
-import { extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
+import { claimIdForKey, extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
 import { resolveOwnedTabOrRefuse } from '../ownership.ts';
 import {
   disposeEvaluationResult,
@@ -1193,6 +1193,27 @@ export interface CaptureInput extends TabOperationInput {
    */
   readonly compareTo?: string;
   /**
+   * The lease key of an **earlier claim of the caller's own**, presented to
+   * prove that a `compareTo` capture taken before a release is its own
+   * (item b0d1d20d) — `--compare-to-key` on the command line.
+   *
+   * ── Why a caller has to hand this over at all ──────────────────────────
+   *
+   * A release ends a claim and a re-claim mints a new one, so the key in hand
+   * says nothing about the earlier claim. Nothing stored links the two: the
+   * only column that could is `session_id`, and it is unauthenticated text
+   * (`claim.ts`), so trusting it would mean any caller could read any other
+   * caller's captures by naming their session. That earlier key is the one thing
+   * the caller has that a stranger cannot forge — so presenting it *is* the
+   * proof, and the caller keeping it is what makes the proof available after
+   * the lease it belonged to has ended.
+   *
+   * Absent, unrecognised, or belonging to a claim that does not own the named
+   * capture all end the same way: the ordinary non-disclosing sentence, which
+   * is what keeps §1.9 intact for everyone who cannot produce a key.
+   */
+  readonly compareToKey?: string;
+  /**
    * The five numbers that decide a diff's output (§6.2).
    *
    * Supplied by the caller that read the environment once, rather than read
@@ -1532,8 +1553,23 @@ export function decideCapture(
           width: taken.width,
           height: taken.height,
         };
+        // The earlier claim the caller proved is its own, if it presented a
+        // key for one. Resolved here rather than inside the comparison
+        // because `db.import_isolated` (§7.3) keeps the store in the service
+        // layer, and because this is where the handle is.
+        //
+        // A key that matches nothing yields `null` and therefore an empty
+        // set, which is the same position a caller who presented no key is in
+        // — so a wrong key is not a distinguishable outcome, and probing with
+        // guessed keys tells an attacker nothing it did not already know.
+        const provenClaimId =
+          input.compareToKey === undefined || input.compareToKey.length === 0
+            ? null
+            : claimIdForKey(scope.db, input.compareToKey);
+
         compared = await runComparison({
           capture: justTaken,
+          ...(provenClaimId === null ? {} : { provenClaimIds: new Set([provenClaimId]) }),
           // **Read back through the seam rather than kept from the pipeline.**
           // `takeCapture` returns `bytes` as a *file size*, not the image, and
           // deliberately so — §3.11 is emphatic that a capture result carries

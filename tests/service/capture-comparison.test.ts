@@ -720,3 +720,148 @@ test('a capture through the route with no compare_to runs no comparison', async 
     assert.equal(committedComparisons(fixture).length, 0, 'and no row is written');
   });
 });
+
+/**
+ * Comparing across a release: the caller's own baseline, proven rather than
+ * asserted (item b0d1d20d).
+ *
+ * The three tests below are one decision seen from three sides, and they have
+ * to be read together. The widening is only sound because the second and third
+ * hold: a caller may reach its own history, and **only** by producing a secret
+ * only it can have.
+ */
+
+test('a caller compares against its OWN earlier capture across a release, by proving that claim', async () => {
+  const clean = cleanPair();
+
+  await withBroker(async (fixture) => {
+    // The baseline, taken under a claim the caller then gives back — which is
+    // exactly what callers are told to do promptly, and what used to destroy
+    // their ability to diff against what they had just seen.
+    const before = await grantedLease(fixture);
+    const beforeDriver = imageServingSession([clean.earlier], 'before');
+    const baseline = await fixture.broker.capture({
+      key: before.key,
+      tabId: before.tabId,
+      session: () => beforeDriver.session,
+      artifacts: fixture.artifacts,
+    });
+    assert.ok(baseline.capture !== undefined);
+
+    await fixture.broker.release({ key: before.key });
+
+    // A new claim: a different lease, a different key, and nothing stored
+    // linking it to the one above.
+    const after = await grantedLease(fixture);
+    const afterDriver = imageServingSession([clean.current], 'after');
+    const result = await fixture.broker.capture({
+      key: after.key,
+      tabId: after.tabId,
+      session: () => afterDriver.session,
+      artifacts: fixture.artifacts,
+      compareTo: baseline.capture.captureId,
+      // The proof. The key of the released claim, which the caller still has
+      // because it was handed to it and never stored here.
+      compareToKey: before.key,
+    });
+
+    // Asserted first, for the reason the cross-lease test above gives: a
+    // capture that died in after-commit work also returns no comparison, and
+    // without this the test could pass for a reason unrelated to ownership.
+    assert.equal(
+      result.pageDriven,
+      true,
+      'the capture itself must have succeeded, or a missing comparison proves nothing',
+    );
+
+    const comparison = result.comparison;
+    assert.ok(comparison !== undefined);
+    assert.equal(
+      comparison.diffed,
+      true,
+      'a caller could not compare against its own earlier capture even holding that claim’s key',
+    );
+  });
+});
+
+test('a stranger’s capture is STILL refused, even presenting a key — the key must own the capture', async () => {
+  const clean = cleanPair();
+
+  await withBroker(async (fixture) => {
+    const mine = await grantedLease(fixture);
+    const theirs = await grantedLease(fixture);
+    const theirDriver = imageServingSession([clean.earlier], 'theirs');
+    const myDriver = imageServingSession([clean.current], 'mine');
+
+    const theirCapture = await fixture.broker.capture({
+      key: theirs.key,
+      tabId: theirs.tabId,
+      session: () => theirDriver.session,
+      artifacts: fixture.artifacts,
+    });
+    assert.ok(theirCapture.capture !== undefined);
+
+    const result = await fixture.broker.capture({
+      key: mine.key,
+      tabId: mine.tabId,
+      session: () => myDriver.session,
+      artifacts: fixture.artifacts,
+      compareTo: theirCapture.capture.captureId,
+      // **A key the caller genuinely holds — its own.** This is the attack the
+      // widening has to survive: presenting a valid key does not make a
+      // capture yours, only presenting the key of the claim that TOOK it does.
+      // A check that merely asked "was a key supplied" would pass this.
+      compareToKey: mine.key,
+    });
+
+    assert.equal(
+      result.pageDriven,
+      true,
+      'the capture itself must have succeeded, or the missing comparison proves nothing about ownership',
+    );
+
+    const comparison = result.comparison;
+    assert.ok(comparison !== undefined);
+    assert.equal(comparison.diffed, false, 'another lease’s capture became readable');
+    // The identical non-disclosing sentence, unchanged by the widening.
+    assert.match(comparison.explanation ?? '', /no capture with the identifier/i);
+  });
+});
+
+test('an unrecognised key proves nothing and is answered exactly like no key at all', async () => {
+  const clean = cleanPair();
+
+  await withBroker(async (fixture) => {
+    const mine = await grantedLease(fixture);
+    const theirs = await grantedLease(fixture);
+    const theirDriver = imageServingSession([clean.earlier], 'theirs');
+    const myDriver = imageServingSession([clean.current], 'mine');
+
+    const theirCapture = await fixture.broker.capture({
+      key: theirs.key,
+      tabId: theirs.tabId,
+      session: () => theirDriver.session,
+      artifacts: fixture.artifacts,
+    });
+    assert.ok(theirCapture.capture !== undefined);
+
+    const result = await fixture.broker.capture({
+      key: mine.key,
+      tabId: mine.tabId,
+      session: () => myDriver.session,
+      artifacts: fixture.artifacts,
+      compareTo: theirCapture.capture.captureId,
+      // A guess. It resolves to no claim at all, so it adds nothing to the
+      // proven set — which is what makes probing with invented keys useless
+      // rather than merely difficult.
+      compareToKey: 'not-a-key-anybody-was-ever-issued',
+    });
+
+    assert.equal(result.pageDriven, true, 'the capture itself must have succeeded');
+
+    const comparison = result.comparison;
+    assert.ok(comparison !== undefined);
+    assert.equal(comparison.diffed, false, 'an invented key unlocked a capture');
+    assert.match(comparison.explanation ?? '', /no capture with the identifier/i);
+  });
+});
