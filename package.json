@@ -21,6 +21,7 @@
     "check:injected-tests": "node scripts/check-injected-tests.mjs",
     "check:argument-reachability": "node scripts/check-argument-reachability.mjs",
     "check:pinned-install": "node scripts/check-pinned-install.mjs",
+    "check:browser-tests": "node scripts/check-browser-tests.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",

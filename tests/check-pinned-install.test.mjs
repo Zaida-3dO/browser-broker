@@ -34,7 +34,7 @@ const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url));
  *
  * **What it does not mean:** that the install command actually installs a
  * working browser, that every install instruction in the repository is
- * covered (only the two files in `SCANNED_FILES` are scanned — see the
+ * covered (only the files in `SCANNED_FILES` are scanned — see the
  * script's header for why that is a named list rather than an inference),
  * or that `package.json`'s own pin is the *right* version to depend on. It
  * only proves the documented number cannot silently drift from the pinned
@@ -178,7 +178,53 @@ test('every install command in the shipped docs names the version package.json p
     (sum, text) => sum + installInvocationsIn(text).length,
     0,
   );
-  assert.ok(total >= 2, `expected at least one install command per scanned file, found ${total}`);
+  assert.ok(
+    total >= SCANNED_FILES.length,
+    `expected at least one install command per scanned file, found ${total}`,
+  );
 
   assert.deepEqual(driftedInstallInvocations(sources, expected), []);
+});
+
+/* ─────────────────── the workflow that RUNS the command ─────────────────── */
+
+test('THE WORKFLOW IS SCANNED, because it runs the install rather than describing it', () => {
+  // The browser-tests job installs the browser it then drives. A drift there
+  // is worse than a drift in the docs: the docs mislead a newcomer who can
+  // then read the error, while the workflow would fetch a mismatched
+  // Chromium on every run and attribute the failure to the tests.
+  assert.ok(
+    SCANNED_FILES.includes('.github/workflows/ci.yml'),
+    'the workflow must stay in the scanned set',
+  );
+
+  const workflow = readFileSync(join(ROOT_DIR, '.github/workflows/ci.yml'), 'utf8');
+  const found = installInvocationsIn(workflow);
+
+  // Delete the install step and this fails rather than passing vacuously.
+  assert.ok(found.length >= 1, 'the workflow should carry an install invocation');
+  for (const invocation of found) {
+    assert.equal(
+      invocation.version,
+      pinnedPlaywrightCoreVersion(JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8'))),
+      `${invocation.text} must name the pinned version`,
+    );
+  }
+});
+
+test('a --with-deps install is MATCHED, so an unpinned one cannot slip through unseen', () => {
+  // The workflow needs `--with-deps` for the shared libraries a bare runner
+  // image lacks. Were the pattern unable to match a flagged invocation, an
+  // unpinned one would fail to match at all and be silently approved — the
+  // gate would be green because it saw nothing, not because it saw something
+  // correct. Drop `(?:--[\w-]+\s+)*` from the pattern and this test fails.
+  const unpinned = installInvocationsIn('npx playwright-core install --with-deps chromium');
+  assert.equal(unpinned.length, 1, 'a flagged invocation must still be seen');
+  assert.equal(unpinned[0]?.version, undefined);
+
+  const pinned = installInvocationsIn(
+    'npx -p playwright-core@1.62.1 playwright-core install --with-deps chromium',
+  );
+  assert.equal(pinned.length, 1);
+  assert.equal(pinned[0]?.version, '1.62.1');
 });
