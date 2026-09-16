@@ -327,6 +327,39 @@ test('an emulate naming no preference is refused, because it would mean nothing'
   );
 });
 
+test('the shape the emulate refusal advertises is a shape the surface accepts', () => {
+  // The assertions above prove the message MENTIONS "action" and
+  // "preferences". They would pass just as happily on a flat
+  // `{"action":"emulate","preferences":{…}}` — which is precisely the shape
+  // `browser_act` refuses, because it declares no argument by that name. A
+  // refusal that confidently names an impossible call is worse than the vague
+  // text it replaced: the caller trusts it, follows it, and is refused again
+  // by the same service.
+  //
+  // So parse the example out of the message and put it through the real
+  // validator. This binds the prose to the mechanism: edit the example back
+  // to the flat form and this test fails rather than the caller finding out.
+  const refusal = refusesWith('act.emulate_preference_named', () =>
+    validateAction({ action: 'emulate' }),
+  );
+
+  const example = /`(\{.*?\})`/su.exec(refusal.message);
+  assert.ok(example, 'the refusal should carry a copyable JSON example');
+
+  const advertised = JSON.parse(example[1]) as Record<string, unknown>;
+  assert.ok(
+    'request' in advertised,
+    'the example must nest the action inside `request`, the argument that carries it',
+  );
+
+  // The nested action is what reaches validateAction once the bridge has
+  // unwrapped the passthrough, so it is the half that must validate.
+  assert.deepEqual(validateAction(advertised.request), {
+    action: 'emulate',
+    preferences: { colourScheme: 'dark' },
+  });
+});
+
 test('a preference outside its declared values is refused, and the values are named', () => {
   const refusal = refusesWith('act.emulate_preference_named', () =>
     validateAction({ action: 'emulate', preferences: { colourScheme: 'sepia' } }),
