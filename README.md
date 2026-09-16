@@ -165,6 +165,29 @@ the registry or from a checkout, because it is a fetch neither install step perf
 install mechanism the full `playwright` package would run automatically on `npm install`;
 `playwright-core` just does not run it for you.
 
+#### On a network that inspects TLS
+
+The fetch above downloads a browser build over HTTPS, so on a corporate or home network that
+re-signs traffic it fails with `SELF_SIGNED_CERT_IN_CHAIN` (or `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`).
+Node trusts a compiled-in certificate list and does not read the operating system's trust store, so a
+certificate your browser already accepts is still unknown to the fetch.
+
+Point `NODE_EXTRA_CA_CERTS` at the PEM bundle holding the CA your network re-signs with — the file
+your platform's administrators publish, which is what the browser and the rest of the machine already
+trust:
+
+```bash
+NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem \
+  npx -p playwright-core@1.62.1 playwright-core install chromium
+```
+
+It is read by Node at process start and **adds to** the built-in list, so ordinary certificates keep
+verifying. Set it in the environment if the same network fronts anything else you run.
+
+**This is environmental rather than a setting of this service** — nothing here reads the variable, and
+there is no default for it to have. It is named here because the failure lands on the first-run path,
+where the error alone does not say which fetch was blocked or what would unblock it.
+
 ### Configuring it
 
 **Nothing needs setting.** Every value is an environment variable with a working default, so the

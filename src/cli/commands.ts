@@ -119,8 +119,14 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
   {
     words: ['act'],
     operation: 'act',
-    summary:
-      'Click, type, fill, press, select, hover, check, scroll, resize, emulate, dialog, fill_form.',
+    // **Joined from `PAGE_ACTIONS`, not typed out.** This summary was a
+    // hand-written list, and it had fallen one verb behind the driver:
+    // `drag` is a real, implemented `PAGE_ACTIONS` entry that this line did
+    // not name, so `broker --help` and `broker act --help` disagreed with
+    // each other about the verb list on the same screen — the flag summary
+    // below has always derived from the same source. Two lists is one list
+    // too many; a verb added to `PAGE_ACTIONS` now reaches both.
+    summary: `${PAGE_ACTION_NAMES.join(', ')}.`,
     // **Undocumented options are unusable options**, and this command had
     // none listed at all — so `broker act --help` printed `--json` and
     // `--help` and nothing else, for the verb with the most arguments on the
