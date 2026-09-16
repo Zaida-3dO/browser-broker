@@ -250,7 +250,7 @@ export function extendLease(
  * This answers a strictly narrower question: **was this key ever the key to
  * this claim?** A released claim is precisely the interesting case — a caller
  * comparing against a baseline it took before giving the tab back is asking
- * about history, not asking to do anything with the old lease. So liveness is
+ * about history, not asking to do anything with that ended lease. So liveness is
  * not required here, and requiring it would refuse the only case this exists
  * for.
  *

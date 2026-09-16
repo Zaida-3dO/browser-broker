@@ -1203,7 +1203,7 @@ export interface CaptureInput extends TabOperationInput {
    * says nothing about the earlier claim. Nothing stored links the two: the
    * only column that could is `session_id`, and it is unauthenticated text
    * (`claim.ts`), so trusting it would mean any caller could read any other
-   * caller's captures by naming their session. The old key is the one thing
+   * caller's captures by naming their session. That earlier key is the one thing
    * the caller has that a stranger cannot forge — so presenting it *is* the
    * proof, and the caller keeping it is what makes the proof available after
    * the lease it belonged to has ended.

@@ -394,9 +394,9 @@ test('every parseFlags call site in the CLI is covered by a row above', () => {
 });
 
 /**
- * The escape the counter above used to have, pinned so it cannot reopen.
+ * An escape the counter must not have, pinned so it cannot open.
  *
- * The counter formerly required a literal `[` after `parseFlags(`, which made
+ * A counter requiring a literal `[` after `parseFlags(` would make
  * a call site passing its accepted set by NAME invisible to it. Combined with
  * a brand-new file having no `PARSERS` row, that produced a fully green run
  * for a command whose flags nothing checked against its `--help`.
@@ -424,7 +424,7 @@ test('the call-site counter sees a named-const accepted set, not only a literal 
   );
 
   // The declaration must stay out of the count, which is the constraint that
-  // made the old pattern require an array in the first place. Written with the
+  // is the reason a pattern might require an array at all. Written with the
   // real signature's shape: the parameter list has a colon where a call has a
   // comma.
   const declaration =

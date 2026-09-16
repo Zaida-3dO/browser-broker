@@ -215,7 +215,7 @@ test('ONE release that frees capacity for two waiters promotes BOTH, not just th
   // that follows drives one promotion pass into which two waiters fit.
   //
   // `ReleaseResult.promoted` is the assertion that matters and is the one no
-  // test previously made above 1.
+  // test makes above 1.
   await withBroker(
     async ({ broker, store, readCommitted }) => {
       const holderA = await broker.claim(claimInput({ sessionId: 'session-a' }));

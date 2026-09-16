@@ -46,6 +46,7 @@ if (process.platform !== 'win32') {
   process.exit(0);
 }
 
+// external-ref-ok-next-line: this repository's own sweeper, which ships beside this file in scripts/
 const script = path.join(here, 'reap-broker-browsers.ps1');
 
 // `-Execute` because a dry run here would print a report nobody reads and

@@ -731,7 +731,7 @@ test('a capture through the route with no compare_to runs no comparison', async 
  * only it can have.
  */
 
-test('a caller compares against its OWN earlier capture across a release, by proving the old claim', async () => {
+test('a caller compares against its OWN earlier capture across a release, by proving that claim', async () => {
   const clean = cleanPair();
 
   await withBroker(async (fixture) => {
