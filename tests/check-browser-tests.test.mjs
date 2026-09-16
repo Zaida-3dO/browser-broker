@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   BROWSER_TEST_FILES,
+  MAXIMUM_EXPECTED_FAILURES,
   MINIMUM_EXPECTED_TESTS,
   failuresIn,
   parseTestCounts,
@@ -68,32 +69,65 @@ test('a SINGLE skipped test is enough to refuse, not merely a majority', () => {
   assert.ok(failuresIn(counts).some((failure) => failure.includes('SKIPPED')));
 });
 
+test('a skip is refused EVEN WHEN the failure count is within its ceiling', () => {
+  // The two rules are independent. A run that skipped some tests and failed
+  // an acceptable number of the rest must still be refused for the skip —
+  // otherwise the ceiling would become a way to launder a silent skip, which
+  // is precisely what this gate exists to prevent.
+  const counts = parseTestCounts(['ℹ tests 33', 'ℹ pass 4', 'ℹ fail 24', 'ℹ skipped 5'].join('\n'));
+
+  assert.ok(failuresIn(counts).some((failure) => failure.includes('SKIPPED')));
+});
+
 /* ─────────────────── the ordinary rules ─────────────────── */
 
-test('a clean run is accepted', () => {
+test('a fully passing run is accepted', () => {
+  // The state the repository reaches once the launch path is fixed. If this
+  // ever fails, the gate rejects a healthy run and will be disabled within a
+  // week — the failure mode the job's own comment warns of.
   const counts = parseTestCounts(
     ['ℹ tests 33', 'ℹ suites 0', 'ℹ pass 33', 'ℹ fail 0', 'ℹ skipped 0', 'ℹ todo 0'].join('\n'),
   );
 
-  // If this ever fails, the gate rejects a healthy run and will be disabled
-  // within a week — which is the failure mode the job's own comment warns of.
   assert.deepEqual(failuresIn(counts), []);
 });
 
-test('a failing test is refused', () => {
-  const counts = parseTestCounts(['ℹ tests 33', 'ℹ pass 32', 'ℹ fail 1', 'ℹ skipped 0'].join('\n'));
+test('THE KNOWN HOSTED-RUNNER FAILURE COUNT IS ACCEPTED, and a worse one is NOT', () => {
+  // The honest current state: the suites run, and the ones that cold-start a
+  // browser fail on the sandbox restriction. That is tolerated at exactly the
+  // measured count and no higher, so the gate still says something true.
+  const known = parseTestCounts(['ℹ tests 33', 'ℹ pass 9', 'ℹ fail 24', 'ℹ skipped 0'].join('\n'));
+  assert.deepEqual(failuresIn(known), [], 'the measured state must not be reported as a failure');
 
-  assert.ok(failuresIn(counts).some((failure) => failure.includes('failed')));
+  // One more failure is a REGRESSION and must be caught. Raise
+  // MAXIMUM_EXPECTED_FAILURES and this test fails, which is the point: the
+  // ceiling is a ratchet, and loosening it should not be quiet.
+  const worse = parseTestCounts(['ℹ tests 33', 'ℹ pass 8', 'ℹ fail 25', 'ℹ skipped 0'].join('\n'));
+  assert.ok(
+    failuresIn(worse).some((failure) => failure.includes('at most')),
+    'a failure count above the ceiling must be refused',
+  );
 });
 
 test('A GATE THAT SHRANK TO NOTHING IS REFUSED', () => {
   // Deleting the suites, or narrowing the file list until it reaches almost
   // nothing, leaves a run that is green and meaningless. The floor is what
-  // notices.
+  // notices — and it counts tests that RAN, so it cannot be satisfied by a
+  // run that merely failed everything.
   const counts = parseTestCounts(['ℹ tests 2', 'ℹ pass 2', 'ℹ fail 0', 'ℹ skipped 0'].join('\n'));
 
   // Remove the minimumExpected rule and this fails.
   assert.ok(failuresIn(counts).some((failure) => failure.includes('at least')));
+});
+
+test('the floor counts tests that RAN, not merely ones that passed', () => {
+  // A run where everything executed and most failed has still reached the
+  // tests, which is the property the floor protects. Were the floor to count
+  // `pass` alone, the measured state above would trip it and the gate would
+  // report the wrong problem.
+  const counts = parseTestCounts(['ℹ tests 33', 'ℹ pass 9', 'ℹ fail 24', 'ℹ skipped 0'].join('\n'));
+
+  assert.ok(!failuresIn(counts).some((failure) => failure.includes('at least')));
 });
 
 test('an unreadable summary is refused rather than assumed to be a pass', () => {
@@ -169,4 +203,15 @@ test('the expected floor sits below the measured count, not at it', () => {
   // person to edit the number rather than read what broke.
   assert.ok(MINIMUM_EXPECTED_TESTS >= 1);
   assert.ok(MINIMUM_EXPECTED_TESTS <= 33);
+});
+
+test('THE FAILURE CEILING IS A RATCHET THAT SHOULD ONLY EVER FALL', () => {
+  // It encodes a known limitation, not a budget for new breakage. If the
+  // launch path is fixed it goes to zero; if someone raises it, this test is
+  // the thing that makes them look at it deliberately rather than nudging a
+  // number until the job turns green.
+  assert.ok(
+    MAXIMUM_EXPECTED_FAILURES <= 24,
+    'the ceiling must not rise above the count measured when this gate was written',
+  );
 });

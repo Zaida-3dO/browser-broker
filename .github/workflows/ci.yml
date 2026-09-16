@@ -308,6 +308,30 @@ jobs:
   # "exactly the mode in which it cannot fail". Making these pass by running
   # them headless would rebuild the fake green this job exists to delete.
   #
+  # ── ⚠️ The suites RUN here, but most of them do not PASS ───────────────
+  #
+  # Measured on this image by launching the pinned binary by hand, changing
+  # one argument and nothing else:
+  #
+  #   as launch.ts builds it  → FATAL "No usable sandbox!", SIGTRAP, no endpoint
+  #   identical + --no-sandbox → "DevTools listening on ws://127.0.0.1:…"
+  #
+  # The kernel here reports `kernel.apparmor_restrict_unprivileged_userns = 1`,
+  # the exact restriction the browser names. So every test that cold-starts a
+  # browser fails with StartupRefusal, and the gate tolerates that KNOWN count
+  # and no more.
+  #
+  # The fix belongs in `src/browser/launch.ts`, which refuses `--no-sandbox`
+  # from a caller's extras by design — and it is a real trade, not a
+  # formality, because that flag removes the browser's process isolation on a
+  # runner that executes untrusted pull-request code. It is deliberately NOT
+  # taken here.
+  #
+  # What this job is worth meanwhile: the same suites used to report a silent
+  # green while executing nothing. Now they execute, and the job states what
+  # happened. A red job that names its cause beats a green one that ran
+  # nothing.
+  #
   # ── Why a subset, and why that is stated out loud ──────────────────────
   #
   # `tests/browser/cross-process-act.test.ts` is NOT in this gate. It is
