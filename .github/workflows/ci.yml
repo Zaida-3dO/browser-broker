@@ -286,6 +286,106 @@ jobs:
       - run: npm ci
       - run: npm run check:package
 
+  # Drive a REAL browser, and refuse a run in which the tests skipped.
+  #
+  # ── The hole this closes ───────────────────────────────────────────────
+  #
+  # Every suite that drives a real browser gates itself on a browser binary
+  # AND a display, and a hosted runner had neither — so on the `test` job
+  # above, all forty-seven of them skipped and the run was GREEN. Tests that
+  # report a pass by not executing are the defect this repository keeps
+  # finding, and here it was load-bearing: the `isConnected` delegation
+  # shipped absent, every real call took the assume-usable branch, and
+  # sixteen hosted jobs stayed green because the only tests that could see it
+  # never ran.
+  #
+  # ── Headed, via a real X server. NEVER headless ────────────────────────
+  #
+  # `xvfb-run` supplies a genuine display, so the browser runs HEADED — which
+  # is the whole point. `tests/browser/keeper-tab.test.ts` measures behaviour
+  # that DOES NOT OCCUR headless (headed, a browser dies when its last tab
+  # closes; headless, it survives), and its header states that headless is
+  # "exactly the mode in which it cannot fail". Making these pass by running
+  # them headless would rebuild the fake green this job exists to delete.
+  #
+  # ── ⚠️ The suites RUN here, but most of them do not PASS ───────────────
+  #
+  # Measured on this image by launching the pinned binary by hand, changing
+  # one argument and nothing else:
+  #
+  #   as launch.ts builds it  → FATAL "No usable sandbox!", SIGTRAP, no endpoint
+  #   identical + --no-sandbox → "DevTools listening on ws://127.0.0.1:…"
+  #
+  # The kernel here reports `kernel.apparmor_restrict_unprivileged_userns = 1`,
+  # the exact restriction the browser names. So every test that cold-starts a
+  # browser fails with StartupRefusal, and the gate tolerates that KNOWN count
+  # and no more.
+  #
+  # The fix belongs in `src/browser/launch.ts`, which refuses `--no-sandbox`
+  # from a caller's extras by design — and it is a real trade, not a
+  # formality, because that flag removes the browser's process isolation on a
+  # runner that executes untrusted pull-request code. It is deliberately NOT
+  # taken here.
+  #
+  # What this job is worth meanwhile: the same suites used to report a silent
+  # green while executing nothing. Now they execute, and the job states what
+  # happened. A red job that names its cause beats a green one that ran
+  # nothing.
+  #
+  # ── Why a subset, and why that is stated out loud ──────────────────────
+  #
+  # `tests/browser/cross-process-act.test.ts` is NOT in this gate. It is
+  # flaky — measured at about one failure in four runs in isolation on an
+  # idle machine, a `connectOverCDP` timeout where the websocket connects and
+  # the handshake never completes. A flaky required gate gets ignored and
+  # then disabled, which is worse than no gate. The exclusion is named in
+  # `scripts/check-browser-tests.mjs` rather than left as an absence nobody
+  # can see.
+  #
+  # ── Not a required check on day one ────────────────────────────────────
+  #
+  # `continue-on-error` is set deliberately for the first soak: a browser job
+  # on a hosted runner has no track record here, and the honest way to earn a
+  # required check is to watch it be green on its own for a while first. It
+  # still reports, and its failures are still visible. REMOVE THIS ONCE THE
+  # JOB HAS PROVED STEADY, and add it to the required set — a permanently
+  # advisory gate is a gate nobody has to obey.
+  browser-tests:
+    name: browser-tests
+    runs-on: ubuntu-latest
+    # The mutation this job was proved with fails on an assertion only after
+    # a connection timeout elapses, so the budget is well clear of the ~1
+    # minute a healthy run takes: a timeout-killed job would be red for the
+    # wrong reason and would prove nothing.
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+          cache: npm
+      - run: npm ci
+      # The install command is the one the README and docs/ROLLOUT.md
+      # document, character for character and INCLUDING THE VERSION, so that
+      # `check:pinned-install` polices this file too — it scans this workflow
+      # by name. Dropping the `-p playwright-core@<version>` prefix here would
+      # let npx resolve latest and fetch a Chromium the pinned library was
+      # never tested against, which is the install-loop defect that shipped in
+      # 0.4.1. That gate now refuses this file if the version goes missing or
+      # drifts — including inside a comment, as this comment found out.
+      #
+      # `--with-deps` installs the shared libraries a Chromium needs on a bare
+      # Ubuntu image; without them the binary is present and fails to start,
+      # which would read as a test failure rather than as a missing library.
+      - name: Install the pinned browser
+        run: npx -p playwright-core@1.62.1 playwright-core install --with-deps chromium
+      # `xvfb-run` is what makes the browser headed. The check itself asserts
+      # the run was real: nothing skipped, nothing failed, and at least the
+      # expected number of tests actually passed.
+      - name: Run the real-browser suites
+        run: xvfb-run --auto-servernum npm run check:browser-tests
+
   # Windows earns a job because the network-location refusal has a
   # platform-specific path that would otherwise never execute in continuous
   # integration at all. A hosted runner has nothing mapped, so this proves the

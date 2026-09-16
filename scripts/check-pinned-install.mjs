@@ -43,10 +43,16 @@
  *   number in it cannot silently go stale.
  * - That every install instruction anywhere in the repository is covered.
  *   It scans a fixed, named list of files (`SCANNED_FILES` below), because
- *   the install command lives in exactly those two places and nowhere else;
- *   a third copy added elsewhere would need adding to that list, the same
+ *   the install command lives in exactly those places and nowhere else;
+ *   a further copy added elsewhere would need adding to that list, the same
  *   way `check-doc-links.mjs`'s `LINK_KEYWORDS` is a pinned, named set
- *   rather than something the script infers.
+ *   rather than something the script infers. That is precisely what happened
+ *   when continuous integration gained a job that installs the browser: the
+ *   workflow became a third place the command lives, so it was added below.
+ *   An unpinned install in the workflow is in fact WORSE than an unpinned
+ *   one in the docs — the docs mislead a newcomer who can then read the
+ *   error, while the workflow would fetch a mismatched Chromium on every run
+ *   and attribute the resulting failure to the tests.
  * - That `package.json`'s pin itself is a *caret* range would still be
  *   silently accepted by a lot of tooling; this script additionally refuses
  *   that, on the grounds that a range pin makes "the version" a moving
@@ -59,8 +65,15 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-/** The two places this repository documents the install command. */
-export const SCANNED_FILES = ['README.md', 'docs/ROLLOUT.md'];
+/**
+ * The places this repository states the install command.
+ *
+ * The first two document it for a human. The third RUNS it: the
+ * `browser-tests` job installs the browser it then drives, and a drifted pin
+ * there would silently fetch a Chromium the pinned library was never tested
+ * against on every continuous-integration run.
+ */
+export const SCANNED_FILES = ['README.md', 'docs/ROLLOUT.md', '.github/workflows/ci.yml'];
 
 /**
  * `npx` invocations that end up running `playwright-core install
@@ -68,9 +81,16 @@ export const SCANNED_FILES = ['README.md', 'docs/ROLLOUT.md'];
  * can quote it back, and a trailing capture group for an `@version` on the
  * bare `playwright-core` form so an unpinned invocation is distinguishable
  * from one this pattern does not recognise at all.
+ *
+ * Flags between `install` and `chromium` are tolerated because the workflow
+ * passes `--with-deps` (the shared libraries a Chromium needs on a bare
+ * runner image). A pattern that did not allow them would fail to MATCH that
+ * invocation rather than fail to approve it — so an unpinned install in the
+ * workflow would sail through a green gate, which is the exact shape of
+ * defect this script exists to prevent.
  */
 const NPX_INSTALL_PATTERN =
-  /npx\s+(?:-p\s+playwright-core@([\w.-]+)\s+playwright-core|playwright-core)\s+install\s+chromium/g;
+  /npx\s+(?:-p\s+playwright-core@([\w.-]+)\s+playwright-core|playwright-core)\s+install\s+(?:--[\w-]+\s+)*chromium/g;
 
 /**
  * The exact version pinned for `playwright-core` in `dependencies`.
