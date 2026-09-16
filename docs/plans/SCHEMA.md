@@ -1503,13 +1503,13 @@ surface (§3.13), never on the agent's.
 
 ### 3.1 The list, and what it costs
 
-**Twelve tools.** Every description sits in a connected session's context on every turn whether or
+**Thirteen tools.** Every description sits in a connected session's context on every turn whether or
 not anything calls it, so surface area is a standing tax and the list is short on purpose.
 
 | # | Tool | One line |
 |---|---|---|
 | 1 | `browser_claim` | Ask for a lease. Get **one tab**, or a place in the queue. **Pick the browser deliberately** (§1.2), and optionally seed storage before the first load. |
-| 2 | `browser_status` | Where your lease stands. **Extends it** — this is the keep-calling-in verb, and the one a queued caller polls with. |
+| 2 | `browser_status` | Where your lease stands. **Extends it** — this is the keep-calling-in verb, and the one a queued caller polls with. **With no key it answers about the pool instead** (§3.3). |
 | 3 | `browser_release` | Give back whatever you hold — **your tab, or your place in the queue** (§2.5). |
 | 4 | `browser_tab_replace` | Discard this lease's tab and open a fresh one in its place. **For a tab that has stopped responding.** |
 | 5 | `browser_navigate` | Point your tab at an address. |
@@ -1520,6 +1520,7 @@ not anything calls it, so surface area is a standing tax and the list is short o
 | 10 | `browser_sign_in` | **Hit a login wall? Ask, on the tab you already hold** (§5.5.2). Your lease and your tab survive the wait. |
 | 11 | `browser_sign_in_done` | The person confirmed: give the browser back, **keeping this lease and its tab**. |
 | 12 | `browser_feedback` | Record that something here helped or got in the way. **No lease needed**, written locally, and **built to be removed** (§3.16). |
+| 13 | `browser_doctor` | **Why is the browser not working?** Every precondition, reported separately with its remedy. **No lease needed, and it only looks** (§3.17). |
 
 **Plus one thing that is not a tool: the operations snapshot** (§4.5). A command generates a
 self-contained file a person opens. It is deliberately absent from this list because no agent needs
@@ -1573,10 +1574,21 @@ because there was never more than one to list.
 
 #### The lease key is explicit on every call, and that is a decision
 
-**Every tool except the first takes the lease key**, written out by the caller, and every call
+**Every tool that acts on a lease takes the lease key**, written out by the caller, and every call
 carrying the key extends the lease. There is no keyed call that does not extend — a call that did not
 would be a hole in the one rule the whole liveness model rests on, and it would produce leases that
 lapse while their caller was politely only looking.
+
+**Three tools take no key, and each for its own reason.** `browser_claim` is what issues one.
+`browser_feedback` must reach the caller whose claim was just refused (§3.16), which is the
+population a key requirement would silence. `browser_doctor` reports on the installation rather than
+on any lease (§3.17), and the caller most likely to need it is the one that cannot get a lease at
+all. `browser_status` is a fourth case and a different one: it takes the key *optionally*, because
+it answers a lease-scoped question with one and a pool-scoped question without (§3.3).
+
+**None of that weakens the rule above**, and the distinction is worth stating precisely: the rule is
+that a call *carrying* a key extends the lease it names, not that every call carries one. A call with
+no key extends nothing, because there is nothing it could extend.
 
 **Deriving the key implicitly from the session was considered and rejected.** It would have been less
 to type and it is the obvious convenience, so the reason it is refused is worth having:
@@ -1705,16 +1717,63 @@ profile, not relative to other callers on this browser*.
 
 ### 3.3 `browser_status`
 
-Takes the key. Returns the same shape without the key. **This call extends the lease**, and it is
-what a queued caller polls with — **so polling is renewing**, which is what makes one duration serve
-both states (§2.5).
+Takes the key, **optionally**. With one it answers about your lease; without one it answers about the
+pool. They are two questions rather than one question with a reduced answer.
+
+#### With a key — unchanged
+
+Returns the same shape without the key. **This call extends the lease**, and it is what a queued
+caller polls with — **so polling is renewing**, which is what makes one duration serve both states
+(§2.5).
 
 Refuses when nothing matches the key, and when the lease has ended — naming the state and when, and
-for an expired one saying plainly that the tab is gone and a fresh request is the way back.
+for an expired one saying plainly that the tab is gone and a fresh request is the way back. **A wrong
+key is still refused**; omitting the key asks a different question, presenting a bad one does not.
 
 **Like every arbitration call, this one sweeps** (§2.4). Asking where you stand expires every lapsed
 lease in the store first, which is why the answer it gives is a fact rather than a stale row — and
 why it is a write, which §1.0a explains is not incidental.
+
+#### With no key — the pool
+
+Returns, per browser, what the store records about it and how many live tabs it is holding; and
+pool-wide, the tab budget, how much of it is in use, how many callers are waiting, and a sentence
+saying what to do about it.
+
+**This half does not sweep and does not renew.** It is not an arbitration call: there is no lease to
+renew, and sweeping on behalf of a caller holding nothing would put the cheapest question on the
+surface inside the transaction every other caller waits behind. Every count is **derived** rather
+than read from the stored column (§2.4), so a lapsed-but-unswept lease is not reported as holding
+capacity.
+
+> **Why the key stopped being required.** `browser_status` is the call reached for *precisely when
+> something is already wrong*, so requiring the key made the diagnosis conditional on the thing in
+> trouble. Two sessions reported it independently: one was refused with `key.present` while trying to
+> establish why the `regular` browser was inert, and one called it with a key it knew was invalid
+> purely as a channel probe. A caller reduced to probing with a deliberately wrong key has no
+> supported way to ask the question it actually has.
+
+**What the keyless view may contain is counts, and never identities.** The objection to answering an
+unkeyed caller at all is real: a status call answerable without a key starts to look like a read of
+*other callers'* state, which is the reasoning that governs `compare_to` (§1.9) and that keeps
+`reconcile` off this surface entirely (§3.13). **That objection is right about identities and does not
+reach counts.**
+
+So the response carries no session identifier, no purpose, no claim or tab identifier, no address and
+no feedback. A caller learns the pool is full; it does not learn whose work filled it, what that work
+is for, or anything it could use to address another caller's tab. **This is not a new disclosure** —
+`browser_claim` already hands a queued caller its position and the queue depth (§2.5), which is the
+same class of fact about the same shared resource.
+
+**It is deliberately not the operations document's reader** (§4.2). That view already assembles a
+richer picture and reusing it would have been less code, but it carries exactly what this must not:
+the session identifier on every lease, the purpose on every lease and queue entry, and the text of
+callers' feedback. It stays on the operator surface.
+
+**For *why* something is broken rather than *how much* is in use, the answer is `browser_doctor`**
+(§3.17), and the keyless response says so in its own advice line when there is spare capacity —
+because free capacity means capacity is not the fault, which is the moment a caller needs pointing at
+the other tool.
 
 ### 3.4 `browser_release`
 
@@ -2193,6 +2252,7 @@ shared-fate operation, and one caller's convenience is everybody else's outage.
 | Not offered | Why |
 |---|---|
 | **Closing, restarting, reaping or deleting a browser; closing every tab; deleting profile data** | Browser-wide and destructive. One caller would end every other caller's work, and on the signed-in profile it destroys a session a person restores by hand. **Reaping and restarting do exist** — as administrative operations, on the administrative surface (§4.3) |
+| **`reconcile` — closing the pages a browser holds for leases that have ended** | The same rule, and the case most likely to be argued because the diagnosis half *is* offered (§3.17). It closes pages it has proved no live lease owns, but **the proof is over the whole browser**: a caller invoking it acts on shared state every other caller depends on, and a bug in the proof closes somebody else's tab. **Diagnosing is on the agent surface; remedying is not**, and the line between them is that one only looks |
 | **Attaching to a browser outside the two this service manages** | Attaching is the ordinary way a caller reaches a browser here (§1.2a), so the rule is not about attaching — it is about *which* browser. The service attaches to the two profiles it manages and to nothing else, and a browser somebody else is running is never inspected and never touched. This cannot be enforced at the tool layer, because an attach is a fresh connection to whatever it is pointed at; the guarantee rests on there being no operation that takes an arbitrary target, and on the automation binary being unreachable to callers |
 | **Running code inside the service itself** | A different capability from evaluating inside a page: the service's own process, its filesystem and its network. Nothing needs it and everything is reachable through it |
 | **Saving or loading whole storage state; setting a cookie; writing local storage** | Credential export and credential injection on a shared signed-in profile. The read side is already limited to names and flags |
@@ -2484,6 +2544,83 @@ a `detail` blob that could hold a rating and a note. Folding it in would add no 
 
 **What it does borrow is the ledger's cursor discipline:** a counter primary key, so reading
 "everything since I last looked" is the same one query it is everywhere else here.
+
+### 3.17 `browser_doctor` — the thirteenth tool, and the only one that does not write
+
+Takes nothing. Returns every precondition separately, each with its own status and, where it failed,
+what to do about it — the store, the schema version, the automation tool, the roots, each configured
+browser's discovery record and keeper tab, the capture surface, the sign-in session, an abandoned
+sign-in, the tab budget, and tabs stranded by a session that crashed.
+
+**It is the same `runDoctor` the command line runs** (§5.5), rendered as fields instead of lines. One
+implementation, two renderings — a second diagnosis written for this route would be a second answer
+free to drift from the first, which is exactly what §8 exists to prevent.
+
+#### Why it earns its place on a surface that charges per turn
+
+§3.1 opens by saying every description here is a standing tax paid on every turn of every session, so
+a thirteenth has to justify itself.
+
+> **The condition it answers is the one where this service's own diagnosis is unreachable to the
+> caller who needs it.** Measured on 2026-09-14: ten tabs left stranded by a crashed session made
+> *every claim succeed and every navigate fail*. Claims were granted against a browser that could not
+> serve them, and nothing in any response said why. `broker doctor` named the fault, the browser, the
+> count and the exact remedy in one call; `broker reconcile regular` settled all ten.
+
+**Both halves of that were reachable only from a shell.** A caller driving this surface over a pipe
+may have none — and the caller most likely to be stuck is precisely the one that cannot reach the
+remedy, or even the diagnosis. Being able to *read why* is what turns "the browser is broken" into a
+sentence a person can act on in one command.
+
+**The stranded-backlog condition is not exotic.** It is the ordinary residue of any crashed session,
+and every crash leaves it.
+
+#### Read-only is not a description of it, it is the condition of its admission
+
+§3.13's rule is absolute: **the agent surface exposes no browser-scoped destructive operation, ever.**
+`browser_doctor` is admissible **only** because diagnosis cannot end anybody's work, and it stays
+admissible only while that remains true.
+
+| Property | How it is held |
+|---|---|
+| It is not an arbitration path | It never opens the arbitration transaction: no registered handler, no sweep, no ledger row, no lease renewal. `arbitration.no_read_only_path` (§7.3) says no *arbitration path* answers without writing, and this is not one — the rule is untouched rather than bent |
+| The service declares it a read | It is the one operation absent from the write set, which is what the predicate was kept as a predicate for. A route may waive it **because** it is not a write; make it a write and the conformance runner refuses that waiver and the build stops |
+| It touches no browser | It takes no driver and opens no connection. A module that could attach to a browser is a module one edit away from restarting one |
+| It takes no arguments at all | There is no `fix`, no `browser`, no `close`. An invented argument is **refused rather than ignored** (`call.arguments_declared`), which is the guard that matters here: a remediation flag is the shape the barred half would arrive in |
+
+**The one write it does make, stated rather than glossed**, because a claim of "writes nothing" that
+is not literally true is worse than a precise one: the roots check writes a probe file into the
+artifact and profile roots and removes it in a `finally`. That is how it answers *"is this directory
+writable"*, which cannot be answered without trying. It touches no browser, no tab, no lease and no
+other caller's state, and nothing a later caller can observe survives the call.
+
+#### `reconcile` does not follow it here, and this section is where that is written down
+
+The two are the diagnosis and the remedy for one fault, so the obvious next edit after surfacing the
+first is to surface the second beside it. **It must not be made.**
+
+`reconcile` closes pages it has proved no live lease owns — but **the proof is over the whole
+browser**, so a caller invoking it acts on shared state every other caller depends on, and a bug in
+that proof closes somebody else's tab. That is browser-scoped and destructive, which
+`browser_scoped.never` (§7.3) makes a **build rule**: adding it does not start an argument, it fails
+the build. It stays an administrative command a person runs (§4.3, §5.4), and the ledger records that
+a person did.
+
+**The line between them is not how useful they are** — the remedy is more useful — **it is that one
+only looks.** A later edit giving `browser_doctor` a `fix: true` argument would be `reconcile`
+wearing diagnosis's clothes, and §3.1's own rule already covers it: a destructive operation keeps its
+own name rather than hiding under a parameter.
+
+#### What it is not
+
+**Not a verdict.** There is no `healthy: true` anywhere in it. §4.4 is explicit that collapsing
+preconditions into one word is what this declines to do, and a summary field here would reintroduce
+on this route exactly what the other one refuses. The caller gets every check with its own status,
+and the failure count is a count rather than a judgement.
+
+**Not `browser_status`.** Status answers *how much of the pool is in use*; this answers *which
+precondition is broken and what to do about it*. §3.3's keyless response points here when there is
+spare capacity, because spare capacity means capacity is not the fault.
 
 ---
 

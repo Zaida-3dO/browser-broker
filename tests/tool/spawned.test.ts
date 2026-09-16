@@ -100,7 +100,7 @@ test('a SPAWNED session serves its caller and EXITS WHEN THE INPUT ENDS', async 
     result: { tools: { name: string }[] };
   };
   assert.equal(response.id, 1);
-  // The twelve tools came back over a real pipe.
+  // The thirteen tools came back over a real pipe.
   assert.deepEqual(
     response.result.tools.map((tool) => tool.name),
     [
@@ -116,6 +116,7 @@ test('a SPAWNED session serves its caller and EXITS WHEN THE INPUT ENDS', async 
       'browser_sign_in',
       'browser_sign_in_done',
       'browser_feedback',
+      'browser_doctor',
     ],
   );
 });
@@ -275,10 +276,10 @@ test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () 
   const manifest = await import('../../package.json', { with: { type: 'json' } });
   assert.equal(handshake.serverInfo.version, manifest.default.version);
 
-  // `tools/list` after the handshake: the ten, reached the way a client
+  // `tools/list` after the handshake: the thirteen, reached the way a client
   // reaches them.
   const tools = (listed?.['result'] as { tools: { name: string }[] }).tools;
-  assert.equal(tools.length, 12);
+  assert.equal(tools.length, 13);
   assert.ok(
     tools.some((tool) => tool.name === 'browser_status'),
     'the tool the next message calls was not listed',

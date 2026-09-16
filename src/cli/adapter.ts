@@ -249,14 +249,30 @@ export const CLI_COMMAND_WAIVERS: readonly { readonly command: string; readonly 
   ];
 
 /**
- * Operations this route does not offer, with the reason each is absent.
+ * Operations this route does not offer *as operation commands*, with the
+ * reason each is absent.
  *
- * **Empty, and that is the claim.** §5.3: every §3 operation has a command,
- * so parity is real rather than claimed. The array exists so that a later row
- * removing a command has somewhere to write down why — and so the runner's
- * waiver rule has something to check rather than an absence to interpret.
+ * §5.3: every §3 operation that goes through the service has a command, so
+ * parity is real rather than claimed. The one entry below is not a hole in
+ * that — the command exists and a person runs it daily.
  */
-export const CLI_OPERATION_WAIVERS: readonly OperationWaiver[] = [];
+export const CLI_OPERATION_WAIVERS: readonly OperationWaiver[] = [
+  {
+    operation: 'doctor',
+    reason:
+      'The command exists and predates the tool: `broker doctor` is a standalone command rather ' +
+      'than an operation command, and it must stay one. It runs before the store is opened for ' +
+      'arbitration, opening it read-only for diagnosis instead, so that it can still report on ' +
+      'an installation whose store the service cannot open at all — which is the state it is ' +
+      'most useful in and the state a new installation begins in. Routing it through the ' +
+      'operation table would make the report depend on the store being openable, losing the ' +
+      'checks that exist precisely to say why it is not. This waiver is permitted on the merits ' +
+      'rather than by declaring this route read-only: doctor is not a write operation ' +
+      '(`isWriteOperation`), so the rule forbidding a write route from waiving a write operation ' +
+      'is not being sidestepped. Both routes run the same `runDoctor`, so the parity the suite ' +
+      'is protecting holds in substance — one implementation, two renderings.',
+  },
+];
 
 /** Every operation this route offers — all ten, from the command table. */
 export const CLI_OPERATIONS: readonly OperationName[] = OPERATION_COMMANDS.map(
@@ -270,7 +286,9 @@ export const CLI_OPERATIONS: readonly OperationName[] = OPERATION_COMMANDS.map(
  * declaration is what makes the waiver rule bite: a route exposing a write
  * operation may not waive an operation any rule can refuse
  * (`MILESTONES.md`). Declaring it read-only to buy waivers would be the
- * loophole, so the declaration is made honestly and the waiver list is empty.
+ * loophole, so the declaration is made honestly — and the one waiver the list
+ * carries is permitted **because `doctor` is not a write**, not because this
+ * route claimed to be something it is not.
  */
 export const cliAdapter: Adapter = {
   id: 'cli',

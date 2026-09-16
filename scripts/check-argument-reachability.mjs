@@ -419,7 +419,19 @@ export function helperReads(bridgeCode) {
 
   // `function nameFrom(args: …) { … }` — located by name, bounded by the next
   // top-level `function` keyword, which is how this file is laid out.
-  const boundaries = [...bridgeCode.matchAll(/\nfunction\s+([A-Za-z0-9_]+)\s*\(/g)];
+  //
+  // **`async` is matched too, and its absence was a real hole rather than a
+  // tidy-up.** A helper declared `async function` was invisible here, so the
+  // names it read counted for nothing — and the one helper in that position,
+  // `submitFeedback`, was reached only because its operation happened to be
+  // the *last* `case` in the switch, which made that branch's region run to
+  // the end of the file and swallow the helper's body wholesale. The check
+  // passed on an accident of ordering: adding any case after it moved the
+  // region boundary and five arguments that had always been read were
+  // reported inert. A gate whose result depends on the order of unrelated
+  // branches is one that will fail on somebody's unrelated edit, which is the
+  // expensive direction for a gate.
+  const boundaries = [...bridgeCode.matchAll(/\n(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/g)];
   for (const [position, match] of boundaries.entries()) {
     const name = match[1];
     const start = match.index;

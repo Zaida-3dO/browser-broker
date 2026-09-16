@@ -2,15 +2,25 @@ import { OPERATION_NAMES, type OperationName } from '../adapter/operations.ts';
 import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
 
 /**
- * The twelve tools, their descriptions, and their argument schemas.
+ * The thirteen tools, their descriptions, and their argument schemas.
  *
  * ── Surface area is a standing tax, and this file is where it is paid ────
  *
  * `SCHEMA.md` §3.1 opens with it: every description here sits in a connected
  * session's context **on every turn**, whether or not anything calls the
- * tool. Twelve descriptions is the whole agent-facing documentation of this
+ * tool. Thirteen descriptions is the whole agent-facing documentation of this
  * service and it is also a per-turn cost on every session, so each one is
  * written to be the shortest text that still prevents a wrong call.
+ *
+ * **The thirteenth had to argue for its own cost, and the argument is the
+ * condition it answers.** `browser_doctor` is the diagnosis half of a remedy
+ * whose other half is a shell command. §3.13's evidence: ten tabs stranded by
+ * a crashed session make *every claim succeed and every navigate fail*, and
+ * the thing that names that fault is the preconditions report. A caller
+ * driving this surface over a pipe may have no shell at all, so the caller
+ * most likely to be stuck is the one that cannot reach the remedy — or even
+ * the diagnosis. Being able to read *why* is what turns "the browser is
+ * broken" into a sentence a person can act on.
  *
  * **The description is the only place a calling agent reliably reads.** Not
  * `SCHEMA.md`, not a wiki, not a refusal it has not hit yet. So where a fact
@@ -52,6 +62,24 @@ import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
  * closed a caller's only tab while keeping the lease, producing a lease that
  * owned nothing and still consumed budget. It is gone rather than deprecated,
  * and it should not be reintroduced.
+ *
+ * **`reconcile` is absent, and `browser_doctor` landing here does not open a
+ * door for it.** The two are the diagnosis and the remedy for the same
+ * fault, so the obvious next edit is to surface the second beside the first,
+ * and it must not be made. `reconcile` closes pages it has proved no live
+ * lease owns — but **the proof is over the whole browser**, so a caller
+ * invoking it acts on shared state every other caller depends on, and a bug
+ * in that proof closes somebody else's tab. That is browser-scoped and
+ * destructive, which `browser_scoped.never` (§7.3) makes a **build rule**:
+ * adding it here does not start an argument, it fails the build.
+ *
+ * The line between them is not how useful they are — the remedy is more
+ * useful — it is that **one only looks**. `browser_doctor` is admissible
+ * because diagnosis cannot end anybody's work, and it stays admissible only
+ * while that remains true of it. A later edit giving it a `fix: true`
+ * argument would be `reconcile` wearing diagnosis's clothes and is the same
+ * violation; §3.1's own rule covers it, since a destructive operation keeps
+ * its own name rather than hiding under a parameter.
  */
 
 /**
@@ -156,7 +184,7 @@ export interface ToolDefinition {
   readonly arguments: readonly ToolArgument[];
 }
 
-/** Every tool takes the key except the first and the last (§3.1). */
+/** Every tool takes the key except the first, the last two (§3.1). */
 const LEASE_KEY: ToolArgument = {
   name: 'lease_key',
   type: 'string',
@@ -165,7 +193,57 @@ const LEASE_KEY: ToolArgument = {
 };
 
 /**
- * The twelve, in §3.1's order.
+ * The key on `browser_status`, where it is the one place it is optional.
+ *
+ * ── Why this one argument stops being required ──────────────────────────
+ *
+ * **`browser_status` is the call a caller reaches for precisely when
+ * something is already wrong**, and requiring the key made the diagnosis
+ * conditional on the thing in trouble. Reported independently by two
+ * sessions — one refused with `key.present` while trying to work out why the
+ * `regular` browser was inert, one running it with a deliberately invalid key
+ * just to see whether the channel was alive. Both graded it friction rather
+ * than a defect, and the second report is the telling one: a caller reduced
+ * to probing with a key it knows is wrong has no supported way to ask the
+ * question it actually has.
+ *
+ * ── What the keyless answer may and may not contain ─────────────────────
+ *
+ * The objection to answering at all is real and is the reason this is scoped
+ * rather than simply relaxed: a status call answerable without a key starts
+ * to look like a read of *other callers'* state, which is the same
+ * non-disclosure reasoning that governs `compare_to`
+ * (`src/service/comparison.ts`) and keeps `reconcile` off this surface
+ * entirely (§3.13).
+ *
+ * **So the keyless view is counts, never identities.** Per browser: whether
+ * it is there. Pool-wide: the tab budget, how much of it is in use, and how
+ * many callers are waiting. It carries no session identifier, no purpose, no
+ * claim or tab identifier and no address — nothing that says *who* is holding
+ * anything or *what for*. A caller learns that the pool is full; it does not
+ * learn whose work filled it.
+ *
+ * That is not a new disclosure. `browser_claim` already hands a queued caller
+ * its position and the queue depth (§2.5), which is the same class of fact
+ * about the same shared resource.
+ *
+ * **Passing a key is unchanged in every respect**, including that it still
+ * extends the lease. The lease-scoped answer is not reduced, reshaped or
+ * deprecated by this; a keyless call is a second question, not a replacement
+ * for the first.
+ */
+const OPTIONAL_LEASE_KEY: ToolArgument = {
+  name: 'lease_key',
+  type: 'string',
+  required: false,
+  description:
+    'Your lease key, from browser_claim — where this lease stands, and the call extends it. ' +
+    'Omit it to ask about the pool instead: which browsers are up, how much of the tab budget ' +
+    'is in use, and how many callers are waiting. Omitting it extends nothing and names nobody.',
+};
+
+/**
+ * The thirteen, in §3.1's order.
  *
  * The list is data rather than a switch statement for the same reason the
  * command table is: the conformance driver reads it to translate a neutral
@@ -229,8 +307,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description:
       'Where your lease stands — and the call that renews it. There is deliberately no separate ' +
       'renew tool: every keyed call extends the lease, and this is the one that does nothing ' +
-      'else. Call it to keep a lease alive, and to poll a queued one.',
-    arguments: [LEASE_KEY],
+      'else. Call it to keep a lease alive, and to poll a queued one. ' +
+      'Without a lease key it answers about the pool instead — which browsers are up, how much ' +
+      'of the tab budget is in use, how many are waiting — so you can still ask what is going on ' +
+      'when you hold no lease or the one you hold has stopped working. For which precondition is ' +
+      'actually broken, and what to do about it, use browser_doctor.',
+    arguments: [OPTIONAL_LEASE_KEY],
   },
   {
     name: 'browser_release',
@@ -503,6 +585,25 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           'When you hold one. It only attaches the row to a lease; it authorises nothing.',
       },
     ],
+  },
+  {
+    name: 'browser_doctor',
+    operation: 'doctor',
+    // **This is the one tool on the surface that reads and does not write**,
+    // and that is the entire reason it is allowed to exist here. See
+    // `isWriteOperation` in `../adapter/operations.ts` for the predicate, and
+    // §3.17 for the argument. The remedies it names are commands a *person*
+    // runs; naming them is not the same as offering them, and the difference
+    // is load-bearing rather than pedantic — `broker reconcile` closes pages
+    // across a whole browser, so a caller that could run it could end another
+    // caller's work.
+    description:
+      'Why is the browser not working? Checks every precondition separately — the store, the ' +
+      'browsers, their tabs, the roots, an abandoned sign-in, tabs stranded by a crashed session ' +
+      '— and reports each with what to do about it. No lease needed: the caller most likely to ' +
+      'need this is the one that cannot get a working tab. It only looks. Fixing anything it ' +
+      'finds is a command a person runs, and the report names which one.',
+    arguments: [],
   },
 ];
 

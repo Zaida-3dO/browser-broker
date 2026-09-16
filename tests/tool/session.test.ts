@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { OPERATION_NAMES } from '../../src/adapter/operations.ts';
+import { isWriteOperation, OPERATION_NAMES } from '../../src/adapter/operations.ts';
 import type { BrokerService, OperationRequest } from '../../src/adapter/service-seam.ts';
 import {
   encodeMessage,
@@ -148,7 +148,7 @@ function callIsError(response: Record<string, unknown> | undefined): unknown {
   return (response?.['result'] as Record<string, unknown> | undefined)?.['isError'];
 }
 
-test('tools/list returns the twelve tools, NAMED', () => {
+test('tools/list returns the thirteen tools, NAMED', () => {
   // Named rather than counted: `MILESTONES.md` records a hollow test that
   // "iterated a list rather than naming its entries, so deleting an entry
   // stayed green". Deleting a tool changes this list and fails here.
@@ -168,6 +168,7 @@ test('tools/list returns the twelve tools, NAMED', () => {
       'browser_sign_in',
       'browser_sign_in_done',
       'browser_feedback',
+      'browser_doctor',
     ],
   );
 });
@@ -181,7 +182,7 @@ test('every tool has a description, because the description is the only place a 
   }
 });
 
-test('the twelve tools cover the twelve operations, one each', () => {
+test('the thirteen tools cover the thirteen operations, one each', () => {
   assert.deepEqual(
     [...TOOL_DEFINITIONS.map((tool) => tool.operation)].sort((a, b) => a.localeCompare(b)),
     [...OPERATION_NAMES].sort((a, b) => a.localeCompare(b)),
@@ -209,6 +210,59 @@ test('THERE IS NO BROWSER-SCOPED DESTRUCTIVE VERB on this surface', () => {
   const names = TOOL_DEFINITIONS.map((tool) => tool.name);
   assert.equal(names.includes('browser_tab_close'), false, 'browser_tab_close is back');
   assert.equal(names.includes('browser_compare'), false, 'browser_compare is back');
+
+  // **`reconcile` is barred by name, and it is named here because
+  // `browser_doctor` is what makes it tempting.** The two are the diagnosis
+  // and the remedy for one fault, so the obvious next edit after surfacing
+  // the first is to surface the second beside it. It closes pages across a
+  // whole browser on a proof about the whole browser, so a caller invoking it
+  // acts on shared state every other caller depends on — `browser_scoped.never`
+  // (§7.3), and §3.13 puts it on the administrative surface with reap and
+  // restart. The regex above does not catch the word, so the word is asserted.
+  assert.equal(
+    names.includes('browser_reconcile'),
+    false,
+    'browser_reconcile is on the agent surface: it is browser-scoped and destructive (§3.13, §7.3)',
+  );
+});
+
+test('browser_doctor is READ-ONLY, which is the only reason it is admissible here', () => {
+  // §3.17. The tool exists because a caller whose browser is wedged could not
+  // otherwise ask what was wrong — diagnosis was reachable only from a shell,
+  // and the caller most likely to be stuck is the one with no shell.
+  //
+  // It is allowed past §3.13's bar **only** because it looks and does not
+  // touch, so that property is asserted rather than described. Three claims,
+  // because they fail independently:
+  const doctor = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_doctor');
+  assert.ok(doctor !== undefined, 'browser_doctor is not on the surface');
+
+  // 1. The service knows it as a read. This is the declaration the conformance
+  //    runner's waiver rule reads, and the one that would let a route waive it.
+  assert.equal(
+    isWriteOperation(doctor.operation),
+    false,
+    'doctor is declared a write, which would make it an arbitration path and a sweeper',
+  );
+
+  // 2. It takes no arguments at all. A `fix`, `close`, `reap` or `browser`
+  //    argument is how the remedy would arrive wearing diagnosis's clothes,
+  //    and §3.1's rule covers exactly that: a destructive operation keeps its
+  //    own name rather than hiding under a parameter.
+  assert.deepEqual(
+    doctor.arguments.map((argument) => argument.name),
+    [],
+    'browser_doctor declares an argument; a remediation flag is how the barred half arrives',
+  );
+
+  // 3. It does not go through arbitration, so it cannot sweep or renew. The
+  //    observable form of that claim: it is not in the write set, and the
+  //    operation list has it while `WRITE_OPERATIONS` does not.
+  assert.equal(
+    OPERATION_NAMES.includes(doctor.operation),
+    true,
+    'doctor is not a registered operation',
+  );
 });
 
 test('THERE IS NO SEPARATE RENEW TOOL, and browser_status says it renews', () => {
@@ -221,6 +275,108 @@ test('THERE IS NO SEPARATE RENEW TOOL, and browser_status says it renews', () =>
   const status = TOOL_DEFINITIONS.find((tool) => tool.name === 'browser_status');
   assert.ok(status !== undefined);
   assert.match(status.description, /renew/iu, 'browser_status does not say that it renews');
+});
+
+test('browser_status is CALLABLE WITH NO KEY, and still reaches the status operation', async () => {
+  // §3.3, the friction this closes: status is the call reached for when
+  // something is already wrong, and requiring the key gated the diagnosis on
+  // the thing in trouble. Two sessions reported it independently — one refused
+  // with `key.present` while trying to work out why a browser was inert.
+  //
+  // Asserted at the surface, because the surface is where the refusal used to
+  // come from: a required argument is rejected by `listTools`' schema and by
+  // the call path before any operation sees it.
+  const { service, requests } = recordingService();
+  const [response] = await serve(service, callTool('browser_status', {}));
+
+  assert.equal(
+    (response?.['result'] as Record<string, unknown> | undefined)?.['isError'],
+    undefined,
+    'a keyless status was refused; it is the one call that has to answer when things are wrong',
+  );
+  assert.equal(requests.length, 1, 'a keyless status did not reach the service');
+  assert.equal(requests[0]?.operation, 'status');
+  assert.equal(
+    requests[0]?.arguments['lease_key'],
+    undefined,
+    'a key was invented for a call that carried none',
+  );
+});
+
+test('browser_status WITH a key is unchanged — the key still arrives at the operation', async () => {
+  // The regression guard for the change above. Relaxing an argument is one
+  // edit away from dropping it, and a status that silently ignored the key
+  // would answer about the pool while the caller believed it was renewing —
+  // a lease lapsing under a caller that was politely calling in.
+  const { service, requests } = recordingService();
+  await serve(service, callTool('browser_status', { lease_key: 'a-real-key' }));
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.operation, 'status');
+  assert.equal(
+    requests[0]?.arguments['lease_key'],
+    'a-real-key',
+    'the key did not reach the operation, so a keyed status could not renew',
+  );
+});
+
+test('browser_status declares lease_key OPTIONAL in the schema a client reads', () => {
+  // The schema is what a validating client enforces before anything is sent,
+  // so a tool that accepted a keyless call while advertising the key as
+  // required would still be unreachable from a conforming client — the
+  // refusal would simply move upstream where no test here could see it.
+  const listed = listTools() as {
+    tools: { name: string; inputSchema: { required: string[]; properties: object } }[];
+  };
+  const status = listed.tools.find((tool) => tool.name === 'browser_status');
+  assert.ok(status !== undefined);
+  assert.deepEqual(status.inputSchema.required, [], 'browser_status still requires an argument');
+  assert.ok(
+    'lease_key' in status.inputSchema.properties,
+    'lease_key vanished from the schema rather than becoming optional',
+  );
+});
+
+test('browser_doctor IS REACHABLE and reaches the doctor operation carrying nothing', async () => {
+  // §3.17. The gap: `doctor` diagnosed the 2026-09-06 outage and named the
+  // remedy, and an MCP client could not call it — so the caller most likely
+  // to be stuck was the one that could not reach the diagnosis.
+  const { service, requests } = recordingService();
+  const [response] = await serve(service, callTool('browser_doctor', {}));
+
+  assert.equal(
+    (response?.['result'] as Record<string, unknown> | undefined)?.['isError'],
+    undefined,
+    'browser_doctor was refused',
+  );
+  assert.equal(requests.length, 1, 'browser_doctor did not reach the service');
+  assert.equal(requests[0]?.operation, 'doctor');
+  assert.deepEqual(
+    Object.keys(requests[0]?.arguments ?? {}),
+    [],
+    'browser_doctor carried an argument it does not declare',
+  );
+});
+
+test('browser_doctor REFUSES a remediation argument rather than ignoring it', async () => {
+  // The guard that keeps this tool read-only in practice rather than by
+  // intention. `reconcile` is the remedy for the fault doctor diagnoses and
+  // is barred from this surface (§3.13, §7.3), so the shape the barred half
+  // would arrive in is an argument on the tool that is allowed.
+  //
+  // It must **refuse** rather than drop: a call that silently ignored `fix`
+  // would answer `accepted`, and a caller reading that would believe it had
+  // repaired something it had not.
+  const { service, requests } = recordingService();
+  const [response] = await serve(service, callTool('browser_doctor', { fix: true }));
+  const result = response?.['result'] as Record<string, unknown> | undefined;
+
+  assert.equal(result?.['isError'], true, 'an invented argument was accepted on browser_doctor');
+  assert.equal(
+    (result?.['structuredContent'] as Record<string, unknown> | undefined)?.['rule'],
+    'call.arguments_declared',
+  );
+  assert.equal(requests.length, 0, 'the call reached the service despite carrying a stray name');
 });
 
 test('a tool call reaches the service as ONE operation, on this adapter', async () => {
@@ -611,7 +767,11 @@ test('the whole handshake runs in order and the session still serves tools after
     'responses did not correlate with the requests that caused them',
   );
   const listed = responses[1]?.['result'] as { tools: { name: string }[] };
-  assert.equal(listed.tools.length, 12, 'the twelve tools were not reachable after the handshake');
+  assert.equal(
+    listed.tools.length,
+    13,
+    'the thirteen tools were not reachable after the handshake',
+  );
 });
 
 test('an error response carries the numeric code AND the internal name, on the same message', () => {

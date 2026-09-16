@@ -2,6 +2,9 @@ import type { Database } from 'better-sqlite3';
 
 import type { BrokerService, OperationOutcome, OperationRequest } from '../adapter/service-seam.ts';
 import type { OperationName } from '../adapter/operations.ts';
+import { resolveAutomationProbe } from '../browser/automation-probe.ts';
+import type { Environment } from '../config/environment.ts';
+import { runDoctor } from '../doctor/report.ts';
 import { BrokerError } from '../errors.ts';
 import {
   recordFeedback,
@@ -71,6 +74,25 @@ function keyFrom(args: Readonly<Record<string, unknown>>): string {
     );
   }
   return value;
+}
+
+/**
+ * The lease key where omitting it is a question rather than a mistake.
+ *
+ * Only `status` uses this, and only because a caller asking *"is anything
+ * working"* may hold no lease — which is the state it is most often asked
+ * from (§3.3).
+ *
+ * **An empty string reads as absence**, for the reason
+ * {@link asOptionalString} gives: a shell cannot express the difference
+ * between `--lease-key ''` and no flag at all, and no lease has the empty
+ * string for a key. A caller that meant to pass one and passed nothing gets
+ * the pool answer rather than a refusal — which is a real cost, and the
+ * smaller one: the alternative is refusing the caller who correctly omitted
+ * it, on the one call that exists to be reachable when things are wrong.
+ */
+function optionalKeyFrom(args: Readonly<Record<string, unknown>>): string | undefined {
+  return asOptionalString(argument(args, 'lease_key', 'leaseKey', 'key', 'lease'));
 }
 
 /**
@@ -153,6 +175,21 @@ export interface BridgeOptions {
    * through changing.
    */
   readonly db: Database;
+  /**
+   * Where this installation keeps its store, its roots and its browsers.
+   *
+   * Needed by `doctor` alone, which reports on the installation rather than
+   * on a lease — the roots it writes to, the store it opens, the browsers it
+   * is configured for. None of that is reachable from a {@link Broker}, which
+   * is addressed by lease and by tab.
+   *
+   * **Optional, so that a caller constructing a bridge without one gets a
+   * refusal rather than a crash.** The tests that drive the service directly
+   * build a broker over a temporary store and have no environment to hand;
+   * they do not call `doctor`, and a required field would have made every one
+   * of them construct something they have no use for.
+   */
+  readonly environment?: Environment;
 }
 
 /**
@@ -162,7 +199,7 @@ export interface BridgeOptions {
  * shaping is the whole of what happens between the route and the service.
  */
 export function serviceFor(options: BridgeOptions): BrokerService {
-  const { broker, db } = options;
+  const { broker, db, environment } = options;
 
   const perform = async (request: OperationRequest): Promise<OperationOutcome> => {
     try {
@@ -205,8 +242,27 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         return { ...result };
       }
 
-      case 'status':
-        return { ...(await broker.status({ key: keyFrom(args) })) };
+      // **Two questions behind one name, chosen by whether a key arrived.**
+      // With a key: where *your* lease stands, extended by the asking, exactly
+      // as before. Without: where the *pool* stands.
+      //
+      // The key is read through `optionalKeyFrom` rather than `keyFrom`, so
+      // `check-argument-reachability` still sees `lease_key` read under this
+      // operation's own branch — the argument did not become unreachable, it
+      // became optional.
+      //
+      // **Why the keyless half is not simply `status` with the lease parts
+      // omitted:** it must not renew anything and must not sweep on a
+      // caller's behalf, so it cannot be the arbitration handler with a
+      // branch in it. It is a separate read, and `broker.poolStatus` is where
+      // it lives.
+      case 'status': {
+        const key = optionalKeyFrom(args);
+        if (key === undefined) {
+          return { ...(await broker.poolStatus()) };
+        }
+        return { ...(await broker.status({ key })) };
+      }
 
       case 'release':
         return { ...(await broker.release({ key: keyFrom(args) })) };
@@ -338,10 +394,102 @@ export function serviceFor(options: BridgeOptions): BrokerService {
 
       case 'feedback':
         return await submitFeedback(db, args);
+
+      // **The one operation that does not reach the broker**, because it does
+      // not act on a lease, a tab or a browser — it reports on the
+      // installation. It runs the same `runDoctor` the command line runs, so
+      // the two routes answer from one implementation rather than from two
+      // that could drift.
+      //
+      // Nothing here opens the arbitration transaction: no sweep, no ledger
+      // row, no renewal. That is what keeps `arbitration.no_read_only_path`
+      // (§7.3) true rather than bent — the rule is about arbitration paths,
+      // and this is deliberately not one. See `isWriteOperation`.
+      case 'doctor': {
+        if (environment === undefined) {
+          // **`unknown_operation` rather than a new code**, and it is the
+          // honest one: `arbitration.registered` covers an operation named on
+          // a surface that *this build* does not offer, which is exactly the
+          // state a service constructed without an environment is in. It is
+          // also the refusal a caller would get from a build predating this
+          // tool, so a caller branching on the code handles both alike.
+          //
+          // Unreachable from either shipped executable — `runtime.ts` reads
+          // the environment before it builds the service, so every real
+          // caller has one. It is here because the type says the field is
+          // optional and a service assembled by a test is entitled to an
+          // answer rather than a crash.
+          throw new CallRefusal(
+            'unknown_operation',
+            'This service was built without an environment, so there is nothing to report on. A doctor run reads the installation — its store, its roots and its configured browsers — rather than a lease.',
+          );
+        }
+        return doctorReport(environment, db);
+      }
     }
   };
 
   return { perform };
+}
+
+/**
+ * The preconditions report, shaped for a route rather than for a terminal.
+ *
+ * ── Why this shapes and does not diagnose ───────────────────────────────
+ *
+ * Every check is `runDoctor`'s, unchanged and un-reimplemented. `SCHEMA.md`
+ * §8 is the claim that makes that mandatory — *the same rules through every
+ * door* — and a second diagnosis written for this route would be a second
+ * answer free to drift from the command line's. So this is translation only:
+ * the same report, rendered as fields.
+ *
+ * ── What it deliberately omits, and what it deliberately keeps ──────────
+ *
+ * **No summary verdict.** §4.4 is explicit that collapsing preconditions into
+ * one word is what this command declines to do, and a `healthy: true` here
+ * would reintroduce on this route exactly what the other one refuses. The
+ * caller gets every check with its own status, and `failures` is a count
+ * rather than a judgement.
+ *
+ * **The remedies are kept**, and they are the reason this tool is worth its
+ * place on the surface. A caller that can read *"ten tabs have been waiting
+ * on a close for longer than 600 seconds — run `broker reconcile regular`
+ * from a shell"* can hand a person one command. A caller that can only see
+ * that its navigations fail reports "the browser is broken", which is what
+ * happened before this existed.
+ *
+ * **`storeLocation` is a path on the machine**, and it is included because
+ * the report is meaningless without saying what it examined — a caller
+ * looking at a report from the wrong store would draw confident wrong
+ * conclusions. It is the same path the command line prints on its first line.
+ */
+function doctorReport(
+  environment: Environment,
+  db: Database | undefined,
+): Readonly<Record<string, unknown>> {
+  // The same two probes the command line supplies at its own call site, and
+  // for the reason recorded there: both checks report `unknown` regardless of
+  // the truth when nothing supplies them, so a route that omitted them would
+  // ship a report that could not fail.
+  const report = runDoctor(environment, db, {
+    configuredTabBudget: environment.tabBudget,
+    automation: resolveAutomationProbe(),
+  });
+
+  return {
+    store: report.storeLocation,
+    exitCode: report.exitCode,
+    // Counted rather than summarised: a caller branches on whether anything
+    // failed without having to re-derive it, and still reads which.
+    failures: report.checks.filter((check) => check.status === 'failed').length,
+    checks: report.checks.map((check) => ({
+      id: check.id,
+      group: check.group,
+      status: check.status,
+      detail: check.detail,
+      ...(check.remedy === undefined ? {} : { remedy: check.remedy }),
+    })),
+  };
 }
 
 /**
