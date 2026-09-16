@@ -378,10 +378,20 @@ or this repository's own Playwright MCP tooling; see the script's own SAFETY sec
 
 ## Status
 
-Under construction — the store, the executable and the pipeline are in place, the arbitration
-surface is being built, and the one manual step is wired: `broker login` hands a person the shared
-browser and `broker doctor` reports whether the sign-in took. Read [`docs/ROLLOUT.md`](docs/ROLLOUT.md) for taking it from installed to sole route in an order that
-never leaves traffic unarbitrated, [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
+**Shipped, not under construction.** The package is published at `0.4.0`: the store, the executable,
+the pipeline and the arbitration surface — claim, queue, lease expiry, the twelve-tool MCP surface and
+its CLI parity — are all in place and covered by the test suite this repository runs in CI, not just
+planned. Usage is measured, not assumed: `SCHEMA.md` and `DECISIONS.md` cite counts pulled from 2,007
+real session transcripts (resize alone: 578 calls across 140 sessions) rather than a guess at which
+verbs matter. Over ninety pull requests have merged.
+
+What is still a runbook rather than a fact about the package: **rollout is per-install, not
+global.** Installing this repository does not by itself make it the sole route to a browser anywhere
+it is deployed — that is a deliberate, ordered migration an operator walks per environment, because a
+rollout with a window where some callers are brokered and others are not reproduces the exact failure
+this project exists to prevent. `broker doctor` reports whether a given install is healthy;
+[`docs/ROLLOUT.md`](docs/ROLLOUT.md) is the runbook for taking one from installed to sole route without
+that window. Read [`docs/plans/PLAN.md`](docs/plans/PLAN.md) for how it works,
 [`docs/plans/DECISIONS.md`](docs/plans/DECISIONS.md) for why it is shaped this way, and
 [`docs/plans/MILESTONES.md`](docs/plans/MILESTONES.md) for the work queue.
 
