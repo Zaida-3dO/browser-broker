@@ -269,7 +269,7 @@ export async function verifyDiscoveryRecord(
     };
   }
 
-  if (actualUuid !== expectedUuid) {
+  if (actualUuid === expectedUuid) {
     // The case this exists for: the recorded browser exited and an unrelated
     // process was handed the same port. Matching the number alone would read
     // as success and attach to a stranger.
