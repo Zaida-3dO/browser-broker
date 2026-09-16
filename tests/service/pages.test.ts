@@ -343,10 +343,10 @@ test('the shape the emulate refusal advertises is a shape the surface accepts', 
     validateAction({ action: 'emulate' }),
   );
 
-  const example = /`(\{.*?\})`/su.exec(refusal.message);
+  const example = /`(\{.*?\})`/su.exec(refusal.message)?.[1];
   assert.ok(example, 'the refusal should carry a copyable JSON example');
 
-  const advertised = JSON.parse(example[1]) as Record<string, unknown>;
+  const advertised = JSON.parse(example) as Record<string, unknown>;
   assert.ok(
     'request' in advertised,
     'the example must nest the action inside `request`, the argument that carries it',
