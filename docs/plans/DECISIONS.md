@@ -2006,6 +2006,55 @@ quietly launches Chromium instead is the same defect as a setting nothing reads:
 nothing and believes something false. Refuse at startup naming the engine and the machine, which is
 what §6.3 already requires of every other configuration refusal.
 
+> **↻ REVERSED IN PART (2026-09-16). The premise above is false, and it was the load-bearing one.**
+>
+> Everything above stays on the page because most of it still holds and because the reversal is only
+> legible next to it. What changed is one sentence: **"No caller has asked to name an engine."** A
+> caller has now asked — Ope, explicitly as a product capability, and explicitly *not* as
+> bot-detection or evasion (an earlier framing that reached this topic through a blocked retailer is
+> retired). The stated reasons are enterprise and managed browsers, using the browser a machine
+> already has, reusing profiles and extensions, and not fetching ~150MB per machine.
+>
+> A decision resting on *nobody wants this* does not survive somebody wanting it. So the want is
+> served — and the cost argument, which was the other half and is still correct, is what decides
+> **how**.
+>
+> **What is now built: a literal path per configured browser.** `BROKER_BROWSER_<NAME>_PATH`, keyed
+> on the browser names that already exist. A path skips every expensive thing the paragraphs above
+> priced: there is no discovery, no per-engine record location, no per-engine doctor check, and no
+> question about what a named engine does when it is absent from the machine — because the caller
+> names a file and the file is either there or it is not.
+>
+> **What is still declined, unchanged and for the reasons above:** per-operating-system executable
+> **discovery**, and engine names as a **vocabulary** (`'chrome' | 'brave' | 'msedge'`). The
+> vocabulary is the part that was deleted in #87 and it stays deleted. A path covers Island, Arc,
+> Vivaldi and a build nobody here has heard of; an enumeration covers whichever names somebody
+> thought of, and validates them into looking live.
+>
+> **The pre-condition this section set for its own reopening was met rather than waived.** "If
+> resolution is built, the fallback must not be silent" is implemented as the refusal in
+> `src/config/environment.ts`: a configured path with no file at it stops the service at startup,
+> naming the variable *and* the path it tried, and says in the same sentence that it is not falling
+> back to the bundled build. That is the whole point of the row — the silent fallback is the defect,
+> not the missing feature.
+>
+> **The caveat above that was "wrong twice" was wrong a third time, and this is the correction.** It
+> says an engine "cannot sign anyone out or move a profile", and asks whether a profile written by
+> one Chromium build is readable by another as a question for later. Later arrived, and the answer is
+> that it is **not** safe in two directions. `Local State` holds an `os_crypt.encrypted_key` the
+> operating system binds to the installing application, so a different vendor's build opens the
+> profile, runs normally, and **cannot decrypt the cookie store** — which presents as a silent
+> sign-out of the shared signed-in profile. And an older build opening a newer profile shows a modal
+> dialog and never opens a debugging endpoint at all. So an engine *can* sign someone out, by exactly
+> the route the caveat said was not available. Both are refused before the spawn, from Chromium's own
+> `Last Version` and `Last Browser` markers — read, never written, because
+> `src/browser/discovery.ts` already settled that a record kept anywhere else is a second place the
+> truth lives.
+>
+> **One limit, recorded rather than implied:** `Last Browser` is confirmed written on Windows. Where
+> it is absent the marker reads as absent, and absent proceeds — so on macOS and Linux the swap guard
+> degrades to nothing rather than to something wrong, and `.env.example` says so.
+
 > **Per-*browser* doctor coverage is a different question, and it is built (2026-09-01).** The
 > paragraph above declines per-**engine** checks and that still stands. It should not be read as
 > also declining to report on every configured **browser**: this change shipped with `doctor`

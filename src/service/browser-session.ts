@@ -243,6 +243,12 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
   const driver =
     options.driver ??
     new RealBrowserDriver({
+      // The installation's per-browser binary configuration
+      // (`BROKER_BROWSER_<NAME>_PATH`). Every path in this map has already
+      // been checked to exist — an unusable one refused the spawn back in
+      // `config/environment.ts` — so what arrives here is either a binary or
+      // nothing, and nothing means the bundled Chromium.
+      executablePathFor: (browser) => options.environment.browserPaths.get(browser),
       ...(options.artifacts === undefined
         ? {}
         : // The driver names a file; the store decided the directory. See

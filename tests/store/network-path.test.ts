@@ -332,6 +332,10 @@ test('the configured value is checked, not only the resolved one', () => {
     launchReadinessTimeoutSeconds: 30,
     regularBrowsers: ['regular'],
     privateBrowsers: ['private'],
+    // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
+    // pointed at a binary of its own, and an empty map is exactly what a
+    // default installation has.
+    browserPaths: new Map(),
   };
 
   // The resolved value alone cannot refuse: nothing about it says share.
@@ -358,6 +362,10 @@ test('a location that was never configured is still checked on its own account',
     launchReadinessTimeoutSeconds: 30,
     regularBrowsers: ['regular'],
     privateBrowsers: ['private'],
+    // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
+    // pointed at a binary of its own, and an empty map is exactly what a
+    // default installation has.
+    browserPaths: new Map(),
   };
   assert.throws(() => {
     resolveStoreLocation(environment, checksReporting({ volumeTypes: { [target]: 0x6969 } }));

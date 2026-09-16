@@ -123,6 +123,10 @@ export async function withArbitrationStore(
       launchReadinessTimeoutSeconds: 30,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
+      // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
+      // pointed at a binary of its own, and an empty map is exactly what a
+      // default installation has.
+      browserPaths: new Map(),
     };
 
     // Stepped once, here, so the children race over operations rather than

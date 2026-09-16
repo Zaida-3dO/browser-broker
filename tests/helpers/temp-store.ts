@@ -40,6 +40,13 @@ export interface TempStoreOptions {
    */
   readonly regularBrowsers?: readonly string[];
   readonly privateBrowsers?: readonly string[];
+  /**
+   * Browsers pointed at a binary of their own
+   * (`BROKER_BROWSER_<NAME>_PATH`). Overridden rather than reached for
+   * through the environment, so one test's configured binary cannot leak
+   * into another's process.
+   */
+  readonly browserPaths?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -101,6 +108,10 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       launchReadinessTimeoutSeconds: options.launchReadinessTimeoutSeconds ?? 30,
       regularBrowsers: options.regularBrowsers ?? ['regular'],
       privateBrowsers: options.privateBrowsers ?? ['private'],
+      // Empty unless a test asks otherwise, which is what a default
+      // installation has: no browser pointed at a binary of its own, so every
+      // one of them takes the bundled build.
+      browserPaths: options.browserPaths ?? new Map(),
     },
     remove: () => {
       // Removed from the sweep first, so a directory this call genuinely

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -265,6 +266,51 @@ const DECLARATIONS = [
 /** Every variable this build declares. Row #9's walk test reads this. */
 export const DECLARED_VARIABLES: readonly string[] = DECLARATIONS.map((d) => d.key);
 
+/**
+ * The per-browser binary override: `BROKER_BROWSER_<NAME>_PATH`.
+ *
+ * ── Why this family is not a row in the table above ──────────────────────
+ *
+ * Every declaration above names a key that exists before the environment is
+ * read. These do not: the set of keys is a **function of the two browser-name
+ * lists**, which are themselves read from the environment. There is no fixed
+ * list to put in `DECLARATIONS`, and inventing one would mean fixing the
+ * browser names — the thing §1.2 deliberately leaves configurable.
+ *
+ * So the family is declared as a *shape* instead, and
+ * `scripts/check-argument-reachability.mjs` is taught that shape. That
+ * matters more than it looks: the reachability gate finds declared variables
+ * by matching the literal `key: 'BROKER_…'`, so a computed key would enter
+ * the build **exempt from the one check that exists to stop inert
+ * configuration** — which is the `wait_ms` defect, rebuilt. A whole
+ * configuration surface nothing reads is exactly what that check was written
+ * for, and a surface it structurally cannot see is worse than one it fails on.
+ *
+ * ── Why a literal path, and not an engine name ───────────────────────────
+ *
+ * `DECISIONS.md` declined engine *resolution* and still does. This buys the
+ * wanted half — point the service at the browser you already have — without
+ * the expensive half: no per-operating-system discovery, no per-engine doctor
+ * check, no decision about what a named engine does when it is absent. The
+ * owner knows where their binary is. It also covers builds this project has
+ * never heard of, which an enumeration of engine names cannot.
+ */
+export const BROWSER_PATH_PREFIX = 'BROKER_BROWSER_';
+export const BROWSER_PATH_SUFFIX = '_PATH';
+
+/**
+ * The variable that overrides one browser's binary.
+ *
+ * A hyphen is legal in a browser name (`BROWSER_NAME` above) and illegal in
+ * an environment variable, so it becomes an underscore. That is a **collapse
+ * rather than a mapping**: `a-b` and `a_b` would land on one key. They cannot
+ * both exist — an underscore is not a legal browser name at all — so the
+ * collapse has no second pre-image and cannot be ambiguous.
+ */
+export function browserPathVariable(browser: string): string {
+  return `${BROWSER_PATH_PREFIX}${browser.toUpperCase().replaceAll('-', '_')}${BROWSER_PATH_SUFFIX}`;
+}
+
 export interface Environment {
   readonly databasePath: string;
   /**
@@ -317,6 +363,20 @@ export interface Environment {
   readonly regularBrowsers: readonly string[];
   /** The ephemeral, signed-in-to-nothing browsers, in configured order (§1.2). */
   readonly privateBrowsers: readonly string[];
+  /**
+   * The binary each browser was pointed at, by browser name.
+   *
+   * **A browser absent from this map takes the bundled Chromium**, which is
+   * every browser in a default installation. A browser present in it was
+   * configured deliberately and its path has already been checked to exist
+   * and to be a file — an unusable one refuses the spawn rather than reaching
+   * here, because the alternative is the silent fallback `DECISIONS.md`
+   * pre-specified as the thing not to build.
+   *
+   * A map rather than a field per browser, because the browsers are named by
+   * configuration and a field would have to fix their names.
+   */
+  readonly browserPaths: ReadonlyMap<string, string>;
 }
 
 export interface ReadEnvironmentOptions {
@@ -324,6 +384,15 @@ export interface ReadEnvironmentOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly homedir?: () => string;
   readonly platform?: NodeJS.Platform;
+  /**
+   * Whether a configured browser binary is there.
+   *
+   * Injected for the same reason the environment itself is: a test asserting
+   * that a missing binary refuses must not depend on what happens to be
+   * installed on the machine running it, in either direction. The default
+   * asks the filesystem.
+   */
+  readonly fileExists?: (candidate: string) => boolean;
 }
 
 /**
@@ -551,6 +620,71 @@ function readEnum(declaration: EnumDeclaration, raw: string | undefined): string
 }
 
 /**
+ * Read one browser's binary override, applying §6.3's table — and **refusing
+ * a path that is not there**.
+ *
+ * ── Why this refuses where `readPath` above merely resolves ──────────────
+ *
+ * The three path variables above name places this service **writes**, and it
+ * creates them when they are absent; a directory that does not exist yet is
+ * an ordinary first run rather than a mistake. This names a place it
+ * **reads**, and one it cannot create: a binary that is not there is not a
+ * first run, it is a value that will never come true.
+ *
+ * **The alternative is the defect this whole row exists to avoid.** Falling
+ * back to the bundled Chromium would hand back a working browser that is not
+ * the one the caller configured — a launch that succeeds while giving less
+ * than it appears. `DECISIONS.md` pre-specified this exact case when it
+ * declined engine resolution: *"If resolution is built, the fallback must not
+ * be silent."* A validated-then-ignored setting is worse than an absent one,
+ * because the validation is itself evidence to the caller that the mechanism
+ * is live.
+ *
+ * So the refusal **names the variable and the path it tried**, which between
+ * them are the whole of what the person has to fix — a refusal naming only
+ * the variable leaves them looking at a value they have already read and
+ * believed once.
+ *
+ * ── What is deliberately NOT checked ─────────────────────────────────────
+ *
+ * That the file is executable, and that it is a Chromium. Neither is portably
+ * knowable without running it: the executable bit does not exist on Windows,
+ * and identifying a Chromium means launching the thing. A launch failure or a
+ * missing debugging endpoint reports both of those later and reports them
+ * accurately, whereas a guess here would refuse a legitimate binary for a
+ * property this code cannot actually see. Existence is the check that is both
+ * cheap and true, so it is the one taken.
+ */
+function readBrowserPath(
+  key: string,
+  browser: string,
+  raw: string,
+  fileExists: (candidate: string) => boolean,
+): string {
+  if (raw.trim() === '') {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${key} is set but empty. Expected the path of the browser binary to launch for ${JSON.stringify(browser)}; unset it to use the bundled Chromium.`,
+    );
+  }
+  if (raw.includes('\0')) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${key} is set to a value that is not a filesystem path. Expected the path of a browser binary, found a string containing a null byte.`,
+    );
+  }
+
+  const resolved = path.resolve(raw.trim());
+  if (!fileExists(resolved)) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${key} points at ${JSON.stringify(resolved)}, and there is no file there. The browser ${JSON.stringify(browser)} will not be started from the bundled Chromium instead: a configured binary that is quietly ignored is a launch that succeeds while giving you something other than what you asked for. Correct the path, or unset ${key} to use the bundled Chromium deliberately.`,
+    );
+  }
+  return resolved;
+}
+
+/**
  * Resolve one declaration by its kind.
  *
  * A `switch` over the kind rather than a chain of ternaries, so that adding a
@@ -642,6 +776,41 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     }
   }
 
+  // Read after the two lists, because the set of keys **is** a function of
+  // them: there is no `BROKER_BROWSER_CHECKOUT_PATH` to read until a
+  // configuration has said the word `checkout`. Walked in configured order so
+  // that a configuration with two bad paths refuses on the first one a reader
+  // would meet rather than on whichever the iteration happened to reach.
+  //
+  // A variable naming a browser that is **not** configured is left alone
+  // rather than refused, exactly as any other unrecognised variable is (§6.3):
+  // this process cannot tell one of its own from anything else in an
+  // environment it shares with the whole machine, and a leftover
+  // `BROKER_BROWSER_OLD_PATH` from a renamed browser is not a reason to
+  // refuse to start.
+  const fileExists =
+    options.fileExists ??
+    ((candidate: string): boolean => {
+      try {
+        return fs.statSync(candidate).isFile();
+      } catch {
+        // Unreadable and absent are one answer here: neither is a binary this
+        // service can launch, and a caller told them apart could act on
+        // neither differently.
+        return false;
+      }
+    });
+
+  const browserPaths = new Map<string, string>();
+  for (const browser of [...regularBrowsers, ...privateBrowsers]) {
+    const key = browserPathVariable(browser);
+    const raw = env[key];
+    if (raw === undefined) {
+      continue;
+    }
+    browserPaths.set(browser, readBrowserPath(key, browser, raw, fileExists));
+  }
+
   return {
     databasePath: get('BROKER_DB'),
     configuredDatabasePath: env['BROKER_DB'],
@@ -653,5 +822,6 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     launchReadinessTimeoutSeconds: getNumber('BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS'),
     regularBrowsers,
     privateBrowsers,
+    browserPaths,
   };
 }
