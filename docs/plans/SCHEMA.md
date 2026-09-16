@@ -2116,9 +2116,18 @@ are worse than not having it.
 #### What comes back, and how to escalate
 
 **What comes back:** a path, the dimensions written, the dimensions before shrinking, the file size,
-the tier, an estimated token cost, how many captures this lease has taken, the diff when one was
-asked for, and a warning or nothing. **Never the image.** The caller opens the file only when it
-genuinely needs to *look*.
+the tier, an estimated token cost, how many captures this lease has taken, **a description of the
+reduction when the picture was shrunk**, the diff when one was asked for, and a warning or nothing.
+**Never the image.** The caller opens the file only when it genuinely needs to *look*.
+
+**On the reduction, and why it is named here rather than left to arithmetic.** The two sets of
+dimensions above are already enough to *compute* that something was shrunk, so a field describing it
+looks redundant and is not. It carries the **scale** and a **sentence saying so in words** — a
+judgement about whether text survived the downscale, which is the question a caller actually has and
+which dividing one width by another does not answer. **Its presence is the signal**: it is absent
+when the picture is the page at full size, rather than present with a scale of one, because a field
+that is always there is a field a caller stops reading. A caller reading this list and not the source
+would otherwise have no reason to look for it.
 
 **And on a default-tier capture, the response says how to escalate.** Not merely that higher tiers
 exist — **which fields to pass**, naming `tier` and its two values, **and that the top tier requires a

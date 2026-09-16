@@ -29,7 +29,12 @@ import type { ArtifactStore } from '../../artifacts/store.ts';
 import { sanitiseLabel, stampFromInstant } from '../../artifacts/names.ts';
 import { takeCapture, type CaptureRequestOptions } from '../../capture/pipeline.ts';
 import { describeReduction, type CaptureReduction, type CaptureTier } from '../../capture/tiers.ts';
-import { capturesTakenBy, recordCapture } from '../capture-store.ts';
+import {
+  capturesTakenBy,
+  priorCaptureOfSameView,
+  recordCapture,
+  type CaptureRepeat,
+} from '../capture-store.ts';
 import { captureSource } from '../capture-seam.ts';
 import { insertComparison } from '../comparison-store.ts';
 import { runComparison, type ComparisonResult } from '../comparison.ts';
@@ -1260,6 +1265,58 @@ export interface CaptureResult extends TabOperationResult {
     /** Which rung this was actually taken at — the answer, not the request. */
     readonly tier: CaptureTier;
     /**
+     * What this picture is estimated to cost to read back into a context, from
+     * the dimensions written (§6.4).
+     *
+     * Promised by §3.11 — *"an estimated token cost"* — computed by the
+     * pipeline for the whole life of the feature and dropped here, the same
+     * way `sourceWidth`/`sourceHeight`/`tier` were. It is the number the whole
+     * cost argument rests on, and a caller that cannot see it has to take the
+     * argument on faith.
+     */
+    readonly estimatedTokens: number;
+    /**
+     * How many captures this lease has now taken, this one included (§3.11).
+     *
+     * The running count, not a budget: nothing is ever refused on it
+     * (`capture/accounting.ts`). It is what lets a caller see the threshold
+     * approaching rather than only being told once it has been crossed.
+     */
+    readonly capturesThisLease: number;
+    /**
+     * **How to escalate — present exactly when this capture landed on the
+     * default rung** (§3.11): which fields to pass, `tier` and both its values,
+     * and that the top rung requires a written reason.
+     *
+     * Absent on an escalated capture, because a caller that has already
+     * escalated is not the caller this teaches.
+     *
+     * §3.11 argues for this one hardest, and the argument is why it is a
+     * response field rather than documentation: *"a caller that cannot read
+     * the fine print out of a specification it does not have open is a caller
+     * that either never escalates or escalates by trial and error, and both
+     * waste a call."* The pipeline built this string and the service layer
+     * threw it away, so the mechanism meant to teach callers to escalate
+     * reached nobody.
+     */
+    readonly escalation?: string;
+    /**
+     * The accounting warning, present on **every** capture past the threshold
+     * rather than only the first (§3.11) — *"because a warning that appears
+     * once has scrolled away by the time it matters."*
+     *
+     * **Never a refusal**, and there is no shape here that could become one:
+     * the value is a string or nothing, and the capture it describes was
+     * served (`capture/accounting.ts`). The text names the cheaper operation
+     * that answers the same question, which is the mechanism rather than
+     * decoration.
+     *
+     * This was the sharpest of the four gaps: `warned` has been persisted to
+     * the `captures` row all along, so **the database knew something the
+     * caller was never told.**
+     */
+    readonly warning?: string;
+    /**
      * **Present exactly when the image written is smaller than the page
      * measured**, carrying the scale, both sets of dimensions and a sentence
      * saying so in words.
@@ -1291,6 +1348,37 @@ export interface CaptureResult extends TabOperationResult {
      * regardless of whether this one was.
      */
     readonly compareHint: string;
+    /**
+     * **Present when this lease has already captured this same URL at this
+     * same viewport** — the repeat — carrying the prior capture's id as a
+     * ready `compare_to` argument.
+     *
+     * ── Why this exists when {@link compareHint} already does ─────────────
+     *
+     * `compareHint` was the first attempt at the same problem and it was
+     * **measured, over four clean days, not to change behaviour**: 36
+     * expensive image reads happened in sessions that had already been handed
+     * the exact pre-filled argument. Adoption stayed bimodal — two sessions in
+     * ten, five of the calls from a single session inside five minutes.
+     *
+     * The measurement's own diagnosis is what this field is shaped by.
+     * `compareHint` arrives on capture N describing what capture N+1 could do,
+     * at a moment when the caller's intent is *"record this"*; the diff intent
+     * forms one call later, by which time the hint has scrolled away.
+     * **Discoverability on the object does not beat a reflex attached to the
+     * task.** This field instead appears exactly on the call that *is* the
+     * repeat — the first moment at which "I have two pictures of this" is a
+     * true statement — so it is placed at the decision rather than one message
+     * before it.
+     *
+     * **A nudge and never a refusal.** A caller with a good reason to retake a
+     * full picture gets one, is not asked to justify it, and is not made to
+     * argue with the tool; the capture it describes has already been taken and
+     * returned. The honest position on whether *this* will move the number is
+     * in the pull request rather than asserted here — the previous attempt's
+     * failure is the reason to be careful about claiming otherwise.
+     */
+    readonly repeatOf?: CaptureRepeat;
   };
   /**
    * What the diff produced, present only when `compareTo` was supplied.
@@ -1478,6 +1566,30 @@ export function decideCapture(
         taken.tier,
       );
 
+      // ── The repeat, looked up at the moment it becomes one ───────────────
+      //
+      // **After `takeCapture`, because the URL is not known before it.** The
+      // address that identifies the view is the one the page settled on, which
+      // exists only once the picture has been taken — so this cannot be hoisted
+      // up beside `takenBefore` however much it would look tidier there.
+      //
+      // **Its own capture is excluded by id, not by ordering.** `recordCapture`
+      // above has already written this capture's row, so a query scoped only by
+      // URL and viewport would match the capture that triggered it and report
+      // every capture as a repeat of itself. Passing the id makes that
+      // impossible rather than making the order of these two statements a thing
+      // a later edit has to preserve without being told.
+      //
+      // Read outside the arbitration transaction and after the commit, like the
+      // row write above: it is a local `SELECT` on the connection already in
+      // hand, decides nothing, and can refuse nothing (§2.4b).
+      const priorView = priorCaptureOfSameView(
+        scope.db,
+        lease.claimId,
+        { url: taken.telemetry.url, viewportWidth: taken.telemetry.viewportWidth },
+        taken.captureId,
+      );
+
       written = {
         captureId: taken.captureId,
         path: taken.path,
@@ -1491,10 +1603,43 @@ export function decideCapture(
         sourceWidth: taken.sourceWidth,
         sourceHeight: taken.sourceHeight,
         tier: taken.tier,
+        // ── The four §3.11 promised and this object dropped ────────────────
+        //
+        // Every one of these was already computed by the pipeline and sitting
+        // on `taken`; nothing here recomputes anything. That is the whole
+        // shape of the defect, and it is the third time this exact one has
+        // been fixed on this object (`sourceWidth`/`sourceHeight`/`tier` were
+        // PR #85's). The conformance case in `adapter/conformance/cases.ts` is
+        // what now holds it closed, because naming the fields there is the one
+        // check that walks from §3.11's promise to the code populating it.
+        estimatedTokens: taken.estimatedTokens,
+        capturesThisLease: taken.capturesThisLease,
+        // Conditional exactly as the pipeline emits them, and for the reason
+        // `reduced` below is conditional: presence is the signal. `escalation`
+        // is absent on an already-escalated capture, and `warning` is absent
+        // below the threshold.
+        ...(taken.escalation === undefined ? {} : { escalation: taken.escalation }),
+        ...(taken.warning === undefined ? {} : { warning: taken.warning }),
         // Absent when nothing was shrunk. Its **presence** is the signal, which
         // is why it is not a `scale: 1` that a caller would learn to skip.
         ...(reduction === undefined ? {} : { reduced: reduction }),
         compareHint: `to diff a later capture against this one, pass compare_to: ${taken.captureId}`,
+        // Present only on a genuine repeat, which is what makes it a signal
+        // rather than another line to skip — the failure mode of the hint it
+        // sits beside.
+        ...(priorView === undefined
+          ? {}
+          : {
+              repeatOf: {
+                captureId: priorView,
+                hint:
+                  `you have already captured this page at this width during this lease. ` +
+                  `To see only what changed — a few hundred tokens rather than the ~90,000 ` +
+                  `an image costs to read — take this capture again with ` +
+                  `compare_to: ${priorView}. This picture was still taken and is still ` +
+                  `yours to open if you need to look.`,
+              },
+            }),
       };
 
       // ── The diff, when one was asked for (§3.11, §1.9) ──────────────────
