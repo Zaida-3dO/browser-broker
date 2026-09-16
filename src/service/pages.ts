@@ -399,7 +399,8 @@ export function validateAction(raw: unknown): ActionRequest {
         throw new PageRefusal(
           'act.emulate_preference_named',
           `An emulate sets media preferences, so it names at least one of: ${MEDIA_PREFERENCE_NAMES.join(', ')}. ` +
-            'On the MCP surface: `{"action": "emulate", "preferences": {"colourScheme": "dark"}}`. ' +
+            'On the MCP surface the preferences travel inside the `request` argument: ' +
+            '`{"request": {"action": "emulate", "preferences": {"colourScheme": "dark"}}}`. ' +
             'On the command line: `--colour-scheme dark`.',
           { action, preferences: MEDIA_PREFERENCE_NAMES },
         );
@@ -427,7 +428,8 @@ export function validateAction(raw: unknown): ActionRequest {
         throw new PageRefusal(
           'act.emulate_preference_named',
           `An emulate names at least one preference to set: ${MEDIA_PREFERENCE_NAMES.join(', ')}. ` +
-            'On the MCP surface: `{"action": "emulate", "preferences": {"colourScheme": "dark"}}`. ' +
+            'On the MCP surface the preferences travel inside the `request` argument: ' +
+            '`{"request": {"action": "emulate", "preferences": {"colourScheme": "dark"}}}`. ' +
             'On the command line: `--colour-scheme dark`.',
           { action, preferences: MEDIA_PREFERENCE_NAMES },
         );
