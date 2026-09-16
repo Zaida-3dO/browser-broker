@@ -32,6 +32,7 @@ import type {
   RequestSignInInput,
   RequestSignInResult,
 } from './operations/sign-in.ts';
+import { readPoolStatus, type PoolStatusResult } from './operations/pool-status.ts';
 import type { BrowserLiveness, StatusInput, StatusResult } from './operations/status.ts';
 import type { BrowserId } from '../browser/driver.ts';
 
@@ -54,6 +55,19 @@ import type { BrowserId } from '../browser/driver.ts';
 export interface Broker {
   claim: (input: ClaimInput) => Promise<ClaimResult>;
   status: (input: StatusInput) => Promise<StatusResult>;
+  /**
+   * Where the **pool** stands, for a caller that holds no key (§3.3).
+   *
+   * **The one method here that is not a `runArbitration` call**, and it has
+   * to be: it renews nothing, so there is no lease whose sweep it could be
+   * charged to, and sweeping on behalf of a caller that holds nothing would
+   * make an unkeyed call do work every other caller waits behind. It reads
+   * derived state and returns counts.
+   *
+   * **It discloses no identity** — see {@link PoolStatusResult}. That is the
+   * property that makes an unkeyed answer admissible at all.
+   */
+  poolStatus: () => Promise<PoolStatusResult>;
   /** **Whatever the lease holds, releasing gives it back** (§2.5, §3.4). */
   release: (input: ReleaseInput) => Promise<ReleaseResult>;
 
@@ -292,6 +306,20 @@ export function createBroker(options: BrokerOptions): Broker {
      * ordinary reason the queue exists — reporting a waiting caller as
      * expired would end a lease that has nothing wrong with it.
      */
+    /**
+     * **No `run`, and that is the whole of what distinguishes it.**
+     *
+     * Every other method here is one `runArbitration` call, which sweeps and
+     * then renews the lease the key names. This one has no key and no lease,
+     * so there is nothing to renew — and a sweep charged to a caller holding
+     * nothing would put the cheapest question on the surface inside the
+     * transaction every other caller waits behind.
+     *
+     * It is `async` only because {@link Broker} is uniformly asynchronous;
+     * the read itself is synchronous, like every other `better-sqlite3` read
+     * in this service.
+     */
+    poolStatus: () => Promise.resolve(readPoolStatus(options.store.db)),
     status: async (input) => {
       const result = await run<StatusInput, StatusResult>('status', input);
       if (result.state !== 'active' || options.checkBrowser === undefined) {

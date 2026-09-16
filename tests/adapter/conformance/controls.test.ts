@@ -8,6 +8,7 @@ import type {
   ConformanceDrivers,
 } from '../../../src/adapter/conformance/driver.ts';
 import { CONFORMANCE_CASES } from '../../../src/adapter/conformance/cases.ts';
+import { CONFORMANCE_DRIVERS } from '../../../src/adapter/conformance/drivers.ts';
 import { OPERATION_NAMES } from '../../../src/adapter/operations.ts';
 import {
   SERVICE_RULE_REGISTRY,
@@ -81,7 +82,20 @@ const baseline = {
 };
 
 test('the suite is GREEN over the real routes — the control every control below is measured against', async () => {
-  const report = await runConformance({ ...baseline, drivers: driversWith(cliConformanceDriver) });
+  // **The real driver for each route, not the command line mounted twice.**
+  // `driversWith` exists for the broken-driver controls below, where pointing
+  // every key at the driver under test is what keeps a control measuring one
+  // behaviour. This test is not one of those: its name says *the real routes*,
+  // and the baseline it establishes has to be the configuration the suite next
+  // door actually runs.
+  //
+  // It matters because one registered rule is enforced on the tool surface
+  // rather than inside the service — `call.arguments_declared`, refused in
+  // `session.ts` before a call reaches an operation. A run with the command
+  // line in both slots cannot produce it, so that rule would be reported
+  // uncovered here while being perfectly well covered in the real suite.
+  // Mounting each route's own driver is what makes this baseline honest.
+  const report = await runConformance({ ...baseline, drivers: CONFORMANCE_DRIVERS });
 
   assert.deepEqual(report.findings, [], 'the honest configuration produced findings');
   // A green run over an empty matrix is the failure mode `MILESTONES.md`
@@ -92,11 +106,25 @@ test('the suite is GREEN over the real routes — the control every control belo
   // breaking this line — a hardcoded count is a test that has to be edited
   // every time the thing it measures grows, and an edited test is one nobody
   // reads.
-  assert.equal(
-    report.pairsRun,
-    CONFORMANCE_CASES.length * ADAPTER_IDS.length,
-    'not every case ran on every mounted route',
-  );
+  //
+  // **Counted over what each route actually offers**, rather than as cases ×
+  // routes. The flat product assumed every route offers every operation, which
+  // stopped being true when `doctor` landed: the command line carries a
+  // written waiver for it, because `broker doctor` is a standalone command that
+  // runs before the store is opened for arbitration so that it can report on an
+  // installation whose store will not open at all.
+  //
+  // Derived from the drivers' own `operations` rather than written as a number
+  // or patched with a subtraction, so the bar still rises when a route lands
+  // and still falls correctly when one legitimately waives something. A
+  // hardcoded count is a test that has to be edited every time the thing it
+  // measures grows, and an edited test is one nobody reads.
+  const expectedPairs = ADAPTER_IDS.reduce((total, id) => {
+    const offered = new Set(CONFORMANCE_DRIVERS[id].adapter.operations);
+    return total + CONFORMANCE_CASES.filter((testCase) => offered.has(testCase.operation)).length;
+  }, 0);
+  assert.ok(expectedPairs > 0, 'the expected matrix size is zero');
+  assert.equal(report.pairsRun, expectedPairs, 'not every case ran on every route offering it');
 });
 
 test('CONTROL — a route reaching past the service layer is caught, because its outcome differs', async () => {
@@ -127,7 +155,21 @@ test('CONTROL — a registered rule with no case is caught', async () => {
     rules: { names: [...SERVICE_RULE_REGISTRY.names, 'a.rule_no_case_produces'] },
   });
 
-  const finding = report.findings.find((entry) => entry.kind === 'rule-without-a-case');
+  // **The seeded rule specifically, rather than the first uncovered one.**
+  // This control mounts the command-line driver alone, and one registered
+  // rule — `call.arguments_declared` — is enforced on the *tool* surface
+  // (`session.ts`), before a call reaches an operation. A run with no tool
+  // route therefore cannot produce it, so it is legitimately uncovered here
+  // and arrives as a finding of the same kind.
+  //
+  // Taking the first finding would make this control assert against whichever
+  // rule happened to sort first, which is a fact about the registry rather
+  // than about the seed. Naming the seeded rule is what keeps this a control:
+  // it fails if and only if the seeded rule goes uncaught.
+  const finding = report.findings.find(
+    (entry) =>
+      entry.kind === 'rule-without-a-case' && entry.detail?.includes('a.rule_no_case_produces'),
+  );
   assert.ok(finding, 'a rule with no case was not caught');
   assert.match(finding.detail, /a\.rule_no_case_produces/u);
 });

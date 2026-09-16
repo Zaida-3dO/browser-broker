@@ -217,7 +217,10 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
 
   let closed = false;
   return {
-    service: serviceFor({ broker, db: store.db }),
+    // The environment goes in because `doctor` reports on the installation
+    // rather than on a lease — its roots, its store and its configured
+    // browsers — and none of that is reachable from a broker.
+    service: serviceFor({ broker, db: store.db, environment }),
     broker,
     store,
     environment,

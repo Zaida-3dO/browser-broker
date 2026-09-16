@@ -3,13 +3,14 @@ import test from 'node:test';
 
 import {
   cliAdapter,
+  CLI_OPERATION_WAIVERS,
   EXIT,
   NEVER_PRINTED,
   parseArguments,
   withoutSecrets,
 } from '../../src/cli/adapter.ts';
 import { OPERATION_COMMANDS, STANDALONE_COMMANDS, parseCommand } from '../../src/cli/commands.ts';
-import { OPERATION_NAMES } from '../../src/adapter/operations.ts';
+import { isWriteOperation, OPERATION_NAMES } from '../../src/adapter/operations.ts';
 import type { BrokerService, OperationRequest } from '../../src/adapter/service-seam.ts';
 import { run } from '../../src/cli/index.ts';
 
@@ -84,13 +85,42 @@ const accepts: BrokerService = {
 
 // ── The command table ───────────────────────────────────────────────────
 
-test('every operation has a command — §5.3, ten commands for ten tools', () => {
+test('every operation has a command — §5.3, one command per service operation', () => {
   // Named rather than counted, and asserted in both directions: a count would
   // stay green if a command were renamed, and one direction alone would stay
   // green if a command were invented.
+  //
+  // **`doctor` is the one operation not on this table, and it is subtracted
+  // from the expectation rather than the assertion being loosened.** The
+  // command exists — `broker doctor`, in `STANDALONE_COMMANDS`, asserted by
+  // name in the test below — and it is standalone deliberately: `cli/index.ts`
+  // runs it *before* the store is opened for arbitration, opening it read-only
+  // for diagnosis instead, so that it still reports on an installation whose
+  // store the service cannot open at all. That is the state it is most useful
+  // in, and routing it through this table would lose exactly the checks that
+  // exist to explain why the store will not open.
+  //
+  // The subtraction is spelled as a filter on a named operation rather than
+  // as an allowance for "anything missing", so a *second* operation going
+  // missing still fails here.
+  const withCommands = OPERATION_NAMES.filter((operation) => operation !== 'doctor');
   assert.deepEqual(
     OPERATION_COMMANDS.map((command) => command.operation).sort(),
-    [...OPERATION_NAMES].sort(),
+    [...withCommands].sort(),
+  );
+
+  // And the waiver that makes that legitimate is present and attributed, so
+  // the gap above cannot be widened silently: the conformance runner accepts
+  // this waiver only because `doctor` is not a write operation.
+  assert.deepEqual(
+    CLI_OPERATION_WAIVERS.map((waiver) => waiver.operation),
+    ['doctor'],
+    'the CLI route waives an operation other than doctor, or waives nothing',
+  );
+  assert.equal(
+    isWriteOperation('doctor'),
+    false,
+    'doctor became a write, which makes the CLI waiver impermissible',
   );
 });
 

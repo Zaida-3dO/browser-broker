@@ -224,10 +224,46 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     expect: { outcome: 'accepted' },
   },
   {
-    name: 'status: a call with no key is refused',
+    name: 'status: a call with no key answers about the pool instead of refusing',
     operation: 'status',
-    // §7.1 `key.present`: every operation except requesting a lease carries a
-    // key, written out explicitly and never derived from a session (§3.1).
+    // §3.3. This case **used to assert `key.present` refused here**, and the
+    // change of expectation is the behaviour change: `browser_status` is the
+    // call reached for when something is already wrong, so gating it on the
+    // lease key gated the diagnosis on the thing in trouble.
+    //
+    // The fields are named because the answer's value is its whole point, and
+    // because naming them is what stops a later edit quietly reducing the
+    // keyless answer to an empty object that still reads `accepted`.
+    input: {},
+    expect: {
+      outcome: 'accepted',
+      valueFields: ['browsers', 'tabsInUse', 'queueDepth', 'advice'],
+    },
+  },
+  {
+    name: 'status: a key this store never issued is still refused',
+    operation: 'status',
+    // **The half of status that did NOT relax**, asserted so that the
+    // relaxation above cannot be read as "status stopped checking". Omitting
+    // the key asks a different question; presenting a wrong one is still a
+    // caller claiming a lease it does not hold, and it is refused exactly as
+    // it always was.
+    input: { lease_key: NOT_A_KEY },
+    expect: { outcome: 'refused', code: 'unrecognised_key', rule: 'key.valid' },
+  },
+  {
+    name: 'release: a call with no key is refused',
+    // **`key.present` lives here now**, and it had to move rather than be
+    // deleted: `status` was the only case producing that rule, so relaxing
+    // status alone would have left a §7.1 rule with no case at all — which
+    // §8.4 fails the build for, computed from what the service actually
+    // returned rather than from what a case declared.
+    //
+    // `release` is the right new home. It is keyed, it is not the call a
+    // stuck caller reaches for, and a release naming no lease genuinely has
+    // nothing to act on — so the rule is asserted where it is still true
+    // rather than moved somewhere convenient.
+    operation: 'release',
     input: {},
     expect: { outcome: 'refused', code: 'key_missing', rule: 'key.present' },
   },
@@ -565,6 +601,45 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
       outcome: 'refused',
       code: 'feedback.rating_in_scale',
       rule: 'feedback.rating_in_scale',
+    },
+  },
+  {
+    name: 'doctor: the preconditions are reported without a lease, and nothing is driven',
+    operation: 'doctor',
+    // **No seed and no key**, which is the case rather than an omission: a
+    // caller whose browser is wedged may hold no lease at all, and being
+    // answerable in that state is the whole of why this is on the surface.
+    input: {},
+    expect: {
+      outcome: 'accepted',
+      // Checked against what §3.17 promises a caller, rather than merely that
+      // something came back: the checks themselves, the store the report was
+      // read from, and the count a caller branches on. `valueFields` exists
+      // because §3.11's promised fields were absent from the shipped response
+      // for the whole life of capture with nothing comparing a response to
+      // its own specification.
+      valueFields: ['checks', 'store', 'failures', 'exitCode'],
+    },
+  },
+  {
+    name: 'doctor: an argument it does not declare is refused rather than ignored',
+    operation: 'doctor',
+    // **§8.3 requires a refusing case for every operation**, and this is the
+    // only refusal `doctor` has: it takes no arguments and needs no key, so
+    // there is no lease to be wrong about and nothing to be out of bounds.
+    //
+    // That is not a gap being papered over — it is the shape of a read that
+    // asks for nothing. What *can* go wrong is a caller inventing an
+    // argument, and the refusal for that is a real one with teeth: a tool
+    // that silently dropped an undeclared name would report success for a
+    // request that did not happen. A caller reaching for `fix` or `reconcile`
+    // here is exactly the caller this must refuse, and this case is where
+    // that is proved rather than assumed.
+    input: { fix: 'true' },
+    expect: {
+      outcome: 'refused',
+      code: 'malformed_call',
+      rule: 'call.arguments_declared',
     },
   },
 ];

@@ -185,7 +185,17 @@ describe('the operations check covers every operation the build registers', () =
     const covered = new Set(KEYED_COMMANDS.map(({ words }) => words.join('_')));
     // `claim` is exercised by granting rather than by being refused for a
     // key, and `feedback` takes no lease at all, so neither is in the list.
-    const expected = OPERATION_NAMES.filter((name) => name !== 'claim' && name !== 'feedback');
+    //
+    // **`doctor` is excluded on `feedback`'s grounds, not on a new one**: it
+    // is unkeyed, so there is no key for it to be refused for, and this check
+    // is specifically about the key being what refuses. It is also not an
+    // operation command on this route at all — `broker doctor` is standalone,
+    // deliberately, so that it can report on an installation whose store the
+    // service cannot open. The exclusion is spelled as three named operations
+    // rather than as a predicate, so a *fourth* unkeyed operation arriving
+    // later still fails here and has to be thought about.
+    const unkeyed = ['claim', 'feedback', 'doctor'];
+    const expected = OPERATION_NAMES.filter((name) => !unkeyed.includes(name));
 
     assert.deepEqual(
       [...covered].sort(),

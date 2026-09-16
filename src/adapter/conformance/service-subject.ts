@@ -77,6 +77,25 @@ export const SERVICE_RULE_REGISTRY: RuleRegistry = {
     'evaluate.expression_bounded',
     'capture.exclusive_mode',
     'feedback.rating_in_scale',
+    /**
+     * **Enforced on the tool surface rather than inside the service**, and it
+     * is in this registry because §7.1 lists it as a rule like any other: *"a
+     * call carries only argument names the tool it names declares"*. It is
+     * checked in `session.ts` before the call reaches an operation, because
+     * that is the only layer that can see it — an undeclared name arrives at
+     * the bridge in an opaque record and every operation reads only the names
+     * it knows, so no layer below has anything to object to.
+     *
+     * It was absent from this list until a case produced it, which is the
+     * §8.4 assertion working in the direction it was built for rather than a
+     * new rule being introduced: the registry is *"every rule the real
+     * service produces in this suite's run"*, and nothing in the table had
+     * exercised this one. `browser_doctor` is what changed that — it takes no
+     * arguments at all, so an invented argument is the only refusal it has,
+     * and the case that proves a caller cannot smuggle a `fix` past a
+     * read-only tool is the case that first drove this rule.
+     */
+    'call.arguments_declared',
     // The sign-in request's own bound. It is the only one of the three
     // §5.5.2 rules a conformance case reaches, and that is deliberate rather
     // than an omission: this registry is *"every rule the real service
