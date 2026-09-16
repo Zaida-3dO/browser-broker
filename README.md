@@ -149,8 +149,16 @@ fetch a browser on install, so a machine that has never had one fetched by some 
 none, and `broker doctor`'s automation check will genuinely fail with exit code 11 until you run:
 
 ```bash
-npx playwright-core install chromium
+npx -p playwright-core@1.62.1 playwright-core install chromium
 ```
+
+**The version must match the `playwright-core` version pinned in [`package.json`](package.json),
+exactly.** Run the install with no `-p playwright-core@<version>` at all and it resolves to
+whatever is latest on the registry, which fetches a Chromium build the pinned library was never
+tested against; the pinned library then resolves an executable path that build does not have, and
+the automation check fails with no way to tell from the error alone that the fetch itself was the
+problem. `npm run check:pinned-install` (wired into CI) fails the build if this number and the one
+above ever drift apart, so the version above is not a fact you have to remember to update by hand.
 
 Run this once per machine, before the first `broker doctor` — it applies whether you installed from
 the registry or from a checkout, because it is a fetch neither install step performs. It is the same

@@ -45,6 +45,22 @@ describe('resolveAutomationProbe', () => {
     assert.match(probe.detail ?? '', /unresolved-browser-binary/);
   });
 
+  it('echoes libraryVersion even when the browser binary path does not exist', () => {
+    // The failure path is exactly the one `checkAutomation`'s remedy reads
+    // from to name a runnable, versioned install command. The library's own
+    // version is resolvable from its installed package.json whether or not
+    // a browser binary was ever fetched, so there is no reason for this
+    // branch to withhold it the way the pre-fix code did.
+    const probe = resolveAutomationProbe({
+      resolveExecutablePath: () => 'unresolved-browser-binary',
+      pathExists: () => false,
+      libraryVersion: '1.62.1',
+    });
+
+    assert.equal(probe.present, false);
+    assert.equal(probe.version, '1.62.1');
+  });
+
   it('reports absent, with the error message, if resolving the path itself throws', () => {
     // A caller asking "is the automation tool present" is the last place
     // that question should go unanswered because of an unexpected library
@@ -59,6 +75,19 @@ describe('resolveAutomationProbe', () => {
 
     assert.equal(probe.present, false);
     assert.match(probe.detail ?? '', /driver bundle is corrupt/);
+  });
+
+  it('echoes libraryVersion even when resolving the executable path throws', () => {
+    const probe = resolveAutomationProbe({
+      resolveExecutablePath: () => {
+        throw new Error('driver bundle is corrupt');
+      },
+      pathExists: () => true,
+      libraryVersion: '1.62.1',
+    });
+
+    assert.equal(probe.present, false);
+    assert.equal(probe.version, '1.62.1');
   });
 
   it('uses the real playwright-core resolution when no dependencies are supplied', () => {

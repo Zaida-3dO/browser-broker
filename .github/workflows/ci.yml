@@ -57,6 +57,24 @@ jobs:
       # checkout with nothing installed is exactly what it needs.
       - run: npm run check:doc-links
 
+  # The pinned-install-version gate: the `playwright-core` version documented
+  # in README.md and docs/ROLLOUT.md must match the exact pin in
+  # package.json, so a version bump that touches one and not the other fails
+  # here instead of sending the next newcomer through the install-doctor-
+  # remedy loop the pin/docs mismatch used to cause.
+  pinned-install:
+    name: pinned-install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.18'
+      # No install step, deliberately: the gate reads package.json and the
+      # docs off disk — it never resolves node_modules — so a checkout with
+      # nothing installed is exactly what it needs.
+      - run: npm run check:pinned-install
+
   arbitration:
     name: arbitration
     runs-on: ubuntu-latest
