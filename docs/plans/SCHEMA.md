@@ -654,10 +654,10 @@ keeps both cheap.
 ### 1.7a Where files live on disk
 
 Browser automation produces a lot of files: a console log per tab, a network log, an accessibility
-snapshot on every navigation and after every action, downloads a page triggers, and screenshots. Left
-to itself, that lands wherever each tool happens to write. **Everything the service or the tool emits
-has a defined home here**, so nothing has to be hunted for and a finished lease can be deleted as one
-directory.
+snapshot after every action and whenever one is read for (§3.7 — navigation itself takes none),
+downloads a page triggers, and screenshots. Left to itself, that lands wherever each tool happens to
+write. **Everything the service or the tool emits has a defined home here**, so nothing has to be
+hunted for and a finished lease can be deleted as one directory.
 
 **Rooted at an environment variable**, `BROKER_ARTIFACTS_ROOT`, which defaults to a directory of the
 service's own under the per-user application-data location the platform defines. An environment
@@ -1513,7 +1513,7 @@ not anything calls it, so surface area is a standing tax and the list is short o
 | 3 | `browser_release` | Give back whatever you hold — **your tab, or your place in the queue** (§2.5). |
 | 4 | `browser_tab_replace` | Discard this lease's tab and open a fresh one in its place. **For a tab that has stopped responding.** |
 | 5 | `browser_navigate` | Point your tab at an address. |
-| 6 | `browser_act` | Click, type, fill, press, select, hover, check, scroll, **resize**, **emulate media preferences**, and answer a dialog. |
+| 6 | `browser_act` | Click, type, fill, press, select, hover, check, scroll, **resize**, **emulate media preferences**, answer a dialog, **fill a form in one call**, and **drag**. The verb list every surface shows is joined from `PAGE_ACTIONS` (§3.8). |
 | 7 | `browser_read` | The page snapshot by default; console, network or cookies on request. Written to disk, returned as a path. |
 | 8 | `browser_evaluate` | Evaluate an expression in the page and get its value. |
 | 9 | `browser_capture` | Take a picture — **and, if you name an earlier capture, the difference from it.** Returns paths, never the image. |
@@ -1769,9 +1769,28 @@ tool is gone is in §3.1.
 ### 3.7 `browser_navigate`
 
 Takes the key, a tab, an address, and optionally how long to wait for the page. Returns the final
-address after redirects, the title, the response status, and **a path to the accessibility snapshot**
-written on arrival — a path rather than the snapshot itself, because a snapshot of a real page is
-thousands of tokens and a caller usually wants one part of it.
+address after redirects, the title, and the response status. **It takes no snapshot** —
+`browser_read` (§3.9) is where a snapshot comes from, and the snapshot is that tool's default
+artefact, so asking for one costs a call and no arguments.
+
+**Settled deliberately, because the alternative is tempting and the reasoning is easy to lose.** A
+snapshot on arrival would save a caller one call, and it would cost one on *every* navigation — and
+many navigations are a step on the way somewhere whose snapshot is never read at all. The
+login-bootstrap shape measured in §3.10 (fetch a token, seed storage, navigate) navigates purely to
+arrive. §3.9's cost model is the one that decides it: an artefact is paid for once when it is written
+and again on every later turn it sits in a conversation, so producing one nobody asked for is a
+standing tax to save a single call.
+
+**`browser_act` returning a snapshot is not a precedent for this**, though it reads like one. Its
+snapshot discharges an obligation navigation does not have: an action invalidates the element
+references the caller is holding, so it has to reissue them (§3.8). Navigation leaves no such debt.
+
+**An opt-in argument was considered and is not added either.** It would express nothing that
+`navigate` followed by `read` does not already express, while costing description on every turn of
+every session under §3.1's standing tax — the test §3.8 applied to `resize`, which was admitted
+precisely because it was measured as *not* workaroundable. This one is workaroundable by
+construction. It would also give one artefact two producers, which is how two surfaces start
+disagreeing about paths, truncation and settling.
 
 Refused for an unknown tab, a closed tab, and any address that is not ordinary web traffic or a blank
 page. **A local-file address is refused specifically**: it turns a browser lease into an arbitrary
@@ -1785,8 +1804,13 @@ because the caller's next element reference has to come from the page as it is n
 reference is the most common cause of an action landing on the wrong element.
 
 The list is the ordinary page verbs — click, type, fill, press, select, hover, check, scroll — plus
-three that are argued for below, because none is obvious and two of them are the difference between
-a whole kind of review being possible and being inexpressible.
+`resize`, `emulate` and `dialog`, which are argued for below because none is obvious and two of them
+are the difference between a whole kind of review being possible and being inexpressible, plus
+`fill_form` and `drag`, whose measurements are opposite and are recorded under *Measured* below.
+
+**The authoritative list is `PAGE_ACTIONS` in the driver**, which the refusal for an unknown verb and
+`browser_act`'s own description are both built from, so a verb added there reaches every surface
+without a second list being remembered.
 
 #### `resize` — and the measurement that put it here
 
@@ -1885,16 +1909,33 @@ Refused for an unknown or closed tab; for an action that is not on the list, **l
 element reference that does not resolve, naming the snapshot it should have come from; and for a
 missing value on the actions that need one.
 
-#### Measured and deliberately not included
+#### Measured, and what each measurement bought
 
-**Recorded with the numbers, so the absence is a decision rather than an oversight.** Over the same
-month and the same **2,007 transcripts**: **drag had zero calls, drop had zero calls, and
-back-navigation had zero calls.** Not "few" — none.
+**Recorded with the numbers, so an absence is a decision rather than an oversight.**
 
-None of the three is added. Dragging and dropping are the two most awkward verbs in browser
+**`fill_form` is added on an ordinary number: 78 calls across 35 sessions.** Filling a form field by
+field is expressible without it, so this buys round trips rather than capability — but a form is the
+one place the round trips multiply by the number of fields, and the fields are filled **sequentially
+rather than concurrently** because a later field routinely depends on an earlier one having been
+filled.
+
+Over the same month and the same **2,007 transcripts**: **drag had zero calls, drop had zero calls,
+and back-navigation had zero calls.** Not "few" — none. **Those numbers stand; they are what any
+argument about these three verbs is argued against.**
+
+**`drop` and back-navigation are not added.** Dropping is among the most awkward verbs in browser
 automation to make reliable, and paying that cost for something no caller reached for once in a month
 is the clearest possible case of surface area bought with nothing. Back-navigation is expressible
 already: a caller that knows where it was navigates there.
+
+**`drag` IS implemented, and the zero is the reason it is small rather than the reason it is
+absent.** This is the clause below being exercised, not overridden: the measurement justified a low
+priority, and a low priority is not the same ruling as an exclusion. It is in `PAGE_ACTIONS`, it
+takes two element references resolved from the same snapshot, and it is refused by
+`act.drag_ends_differ` when both resolve to the same element. **It is deliberately given no more
+machinery than the one call it needs** — there is no file-from-the-desktop shape, because a lease is
+a tab and the desktop is not in it. `browser_act`'s description is joined from `PAGE_ACTIONS`, so
+every caller sees the verb on the surface it actually reads.
 
 **If any of them turns up in use, the number that justified leaving it out is written down and can be
 argued with**, which is the point of recording it rather than simply omitting the verbs.
@@ -2112,6 +2153,22 @@ later. No threshold fixes any of that: a colour tolerance is a per-pixel compari
 say about something that moved. A comparison feature that reports a change on every run of an
 unchanged page either burns the tokens it exists to save or teaches its callers to ignore it, and both
 are worse than not having it.
+
+**The cost of that line, named because it has already misled a reviewer.** Stopping animation is done
+by adding a style rule to the document, so it is **document-wide and it stays** — the tab keeps it
+after the shutter. A page that has been captured therefore reports
+`document.getAnimations().length === 0` and a computed `animation-duration` of `0s` on every element,
+**which is indistinguishable from an animation that is genuinely broken.** A reviewer inspecting a
+loading bar read exactly that and suspected the code under review before realising the capture
+machinery had stopped it.
+
+This is not a defect to fix: reproducibility is the whole point, and a caller that captures and then
+evaluates is asking two questions of one tab. It is a fact to **state on the surface**, which
+`browser_capture`, `browser_read` and `browser_evaluate` all carry, along with the only answerable
+alternative — **read the stylesheet rule** (the keyframes, or the animation shorthand in a matching
+rule), which is declarative and untouched by settling. Whether an animation is *running* is not
+observable through this surface at all, and the descriptions say so rather than leaving a caller to
+read it out of a zero.
 
 #### What comes back, and how to escalate
 
@@ -3242,7 +3299,7 @@ Each is a change rather than a clarification, and is listed so nobody reconciles
 | **`browser_tab_replace` survives for one named reason: a crashed tab** | Navigate cannot fix a page that has stopped responding, because navigating is itself a request that page will not answer. Said explicitly, or a reader reaches for it when navigate would do (§3.5) |
 | **`resize` is added as an action** | **Measured: 578 calls across 140 sessions — 58% of every session that used browser automation, and the sixth most-used verb.** It is **not workaroundable**: viewport is context-scoped, so evaluation cannot reach it. Without it the measured dominant loop — resize, navigate, evaluate, capture, per breakpoint — cannot be written, which makes responsive review inexpressible. Tab-scoped and non-destructive, so it adds no tool (§3.8) |
 | **Dialog handling is added on consequence, not frequency** | Measured at only 8 calls. **An unhandled dialog blocks its tab and burns the lease**, so it is a lease-integrity issue rather than a convenience (§3.8) |
-| **Drag, drop and back-navigation are measured and skipped** | **Zero calls each, over a month, across 2,007 transcripts.** Recorded with the number so the absence can be argued with (§3.8) |
+| **Drag, drop and back-navigation are measured; drop and back-navigation are skipped** | **Zero calls each, over a month, across 2,007 transcripts.** Recorded with the number so the ruling can be argued with — and `drag` is the case of that happening: it is implemented, with the zero explaining why it is given no more machinery than the one call it needs (§3.8) |
 | **The destructive-operations argument is reconciled, and stated more precisely** | The line is **destructive versus not**, never collapsed versus separate. Comparison is non-destructive and nothing would want to match on it, so folding it under a parameter hides nothing. The destructive operation was **deleted rather than folded** (§3.1) |
 | **`browser_read` filters, and the filter is free** | The page snapshot by default; console, network and cookies on request. Console and network are **accumulated continuously by the browsing context**, so this is a write-time filter rather than a fetch-time one and the cost of not asking is zero. **Cookies are the exception — a live query** (§3.9) |
 | **The lease key stays explicit on every call** | Implicit session-derived identity was considered and rejected. **Delegation decides it:** an orchestrator may want to hand one specific subagent the key, and implicit identity makes that either impossible or automatic for every subagent. The key is also the ownership check, and the protocol forbids using a session for authentication (§3.1) |
@@ -3314,7 +3371,7 @@ matters rather than gathered here:
 | A headed browser dying within about half a second when its last tab closes | §3.15 |
 | `resize` at 578 calls across 140 sessions — 58% of sessions using browser automation, sixth most-used verb | §3.8 |
 | Dialog handling at 8 calls | §3.8 |
-| Drag, drop and back-navigation at zero calls each, over a month, across 2,007 transcripts | §3.8 |
+| Drag, drop and back-navigation at zero calls each, over a month, across 2,007 transcripts — `drop` and back-navigation skipped on it, `drag` implemented and kept minimal | §3.8 |
 | `emulate` at 19 calls across 9 sessions, with no page-side path to media preferences | §3.8 |
 | An "execute arbitrary code" verb at 328 calls across 53 sessions — **and its arguments sampled**: 101 calls across 33 sessions exercised a shared-pool hazard, 16 of them in one session enumerating and driving other callers' tabs, 2 extracting administrative credentials from a local environment file, 49 making outbound authenticated requests from the server process | §3.10 |
 | The login-bootstrap shape at 40 calls across 25 sessions — fetch a token, seed storage, navigate | §3.2 |

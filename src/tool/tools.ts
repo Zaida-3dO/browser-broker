@@ -101,10 +101,62 @@ import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
  */
 const CAPTURE_SETTLE_CAVEAT =
   'Captures are settled — animations stopped, fonts waited for — so a page yields the same ' +
-  'pixels twice; that steadies a moving page but does not wait for one still drawing. A canvas ' +
-  'or a deferred region can be captured before it has rendered, and the picture will look like a ' +
-  'broken page rather than an early one. When a frame looks wrong, capture again with compare_to ' +
-  'and check it against the first: no difference means you are seeing the page, not a moment of it.';
+  'pixels twice; that steadies a moving page but not one still drawing. A canvas ' +
+  'or a deferred region can be captured before it has rendered, and the picture will look broken ' +
+  'rather than early. When a frame looks wrong, capture again with compare_to ' +
+  'and check it against the first: no difference means you see the page, not a moment of it. ' +
+  'That stop is document-wide and stays: judge animation by its stylesheet rule, not computed style.';
+
+/**
+ * What settling does to a page's own account of its animations, for a caller
+ * whose subject IS the animation.
+ *
+ * ── Why this is separate from the caveat above ──────────────────────────
+ *
+ * {@link CAPTURE_SETTLE_CAVEAT} answers *"is this frame the finished page"* —
+ * a question about pixel stability, whose remedy is capturing twice with
+ * `compare_to`. This answers a different one: *"is this page animating at
+ * all"* — and the remedy is the opposite, because capturing again cannot help
+ * when the thing being measured is what settling removed.
+ *
+ * ── The failure it exists to stop ────────────────────────────────────────
+ *
+ * Suppression is document-wide, so a settled page reports
+ * `document.getAnimations().length === 0` and `animationDuration: 0s` on
+ * every element — **which is exactly what a genuinely broken animation
+ * reports.** A reviewer inspecting a loading bar read those values and
+ * suspected the code under review before realising the capture machinery had
+ * stopped the animation, not the page.
+ *
+ * ── Why it outlives the capture that caused it ──────────────────────────
+ *
+ * `settlePage` adds a **style tag to the document** (`real.ts`) rather than
+ * toggling anything for the duration of one screenshot, and nothing removes
+ * it. So the suppression is a property of the *tab* from the first capture
+ * onwards, and a `read` or an `evaluate` made afterwards sees it too — which
+ * is why this caveat is on those tools and not only on `browser_capture`. A
+ * caller that evaluates first and captures second gets different answers from
+ * the same expression, with nothing in either reply marking the change.
+ *
+ * That is the dangerous shape: the surface produces a confident, wrong answer
+ * rather than an obviously missing one, so nothing prompts the caller to
+ * doubt it. The measure is correct and deliberate — it is what makes captures
+ * reproducible pixel-for-pixel — so the fix is saying so, not changing it.
+ *
+ * ── Why it names the alternative rather than only warning ───────────────
+ *
+ * A warning that stops at "you cannot trust this" leaves the caller with the
+ * same question and no route to it. The stylesheet rule is declarative and
+ * settling does not touch it, so it answers *whether an animation is defined*
+ * — which is the answerable half. **Whether it is running is not observable
+ * here at all**, and saying so plainly is better than leaving a caller to
+ * infer it from a zero.
+ */
+const ANIMATION_SUPPRESSION_CAVEAT =
+  'Capturing stops animation for the whole document and leaves it stopped, so afterwards ' +
+  'getAnimations() is empty and animationDuration reads 0s however the page really behaves — ' +
+  'identical to a broken animation. Read the stylesheet rule to confirm one is defined; whether ' +
+  'it moves is not observable here, so do not report it broken on this.';
 
 /**
  * What this tool's unit is wrong for, so a caller with the other job does not
@@ -377,7 +429,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description:
       'Read the page: the accessibility snapshot by default, or the console, network or cookies ' +
       'on request. Written to disk and returned as a path, so you pay for the part you open ' +
-      'rather than for all of it.',
+      'rather than for all of it. ' +
+      ANIMATION_SUPPRESSION_CAVEAT,
     arguments: [
       LEASE_KEY,
       {
@@ -393,7 +446,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     operation: 'evaluate',
     description:
       'Evaluate an expression in the page and get its value back. For a fact about the page that ' +
-      'the snapshot does not carry.',
+      'the snapshot does not carry. ' +
+      ANIMATION_SUPPRESSION_CAVEAT,
     arguments: [
       LEASE_KEY,
       {
@@ -411,6 +465,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       'Take a picture of the page — and, if you name an earlier capture, what changed since it. ' +
       'Returns paths, never the image itself. A selector and a full page cannot both be asked ' +
       'for. Never refused for cost. ' +
+      // The animation-suppression trap is folded into CAPTURE_SETTLE_CAVEAT
+      // rather than appended as a second constant: both describe settling, so
+      // two constants here repeated the premise twice and pushed this
+      // description past the ceiling §3.1 holds it to. `browser_read` and
+      // `browser_evaluate` carry the standalone caveat, because neither of
+      // them mentions settling at all otherwise.
       CAPTURE_SETTLE_CAVEAT +
       ' ' +
       CAPTURE_BUILD_COMPARISON_CAVEAT,
