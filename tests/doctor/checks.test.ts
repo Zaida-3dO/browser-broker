@@ -363,6 +363,36 @@ describe('the automation-tool check', () => {
     assert.ok(check.remedy, 'a failing check must say what to do about it');
   });
 
+  it('the failure remedy is a runnable, versioned install command when the probe resolved a version', () => {
+    // The defect this guards: the remedy used to point back at "the
+    // README's install section" — the same unpinned command whose failure
+    // produced this very report, closing a loop with no exit. A remedy is
+    // supposed to be something a reader can paste into a shell, not a
+    // pointer to prose.
+    const check = checkAutomation({
+      present: false,
+      version: '1.62.1',
+      detail: 'no browser binary at that path',
+    });
+    assert.match(
+      check.remedy ?? '',
+      /npx -p playwright-core@1\.62\.1 playwright-core install chromium/,
+    );
+    // And it must not still be sending the reader back to the README.
+    assert.doesNotMatch(check.remedy ?? '', /README/i);
+  });
+
+  it('the failure remedy says the version could not be resolved rather than emitting a broken command', () => {
+    // `probe.version` is not always set — `resolvePlaywrightCoreVersion` can
+    // fail to resolve the library's own package.json (see its own header).
+    // Emitting `playwright-core@undefined` would be a command a reader
+    // could paste and would then fail confusingly, which is worse than
+    // saying plainly that this process could not fill it in.
+    const check = checkAutomation({ present: false, detail: 'no browser binary at that path' });
+    assert.doesNotMatch(check.remedy ?? '', /undefined/);
+    assert.match(check.remedy ?? '', /package\.json/);
+  });
+
   it('passes once an automation tool is reported present', () => {
     const check = checkAutomation({ present: true, version: '1.2.3' });
     assert.equal(check.status, 'ok');

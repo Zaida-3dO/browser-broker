@@ -404,8 +404,24 @@ export function checkAutomation(probe: AutomationProbe): GroupedCheck {
       title: 'The automation tool is present',
       status: 'failed',
       detail: probe.detail ?? 'No automation tool could be found for this process to use.',
+      // Runnable, not a pointer to prose: pointing back at the README's
+      // install section sent a reader to the very unpinned command that
+      // produced this failure in the first place — `npx` with no version
+      // resolves to latest, which fetches a Chromium build the pinned
+      // `playwright-core` in package.json does not expect, and the README
+      // never named the version that would fix it. Naming it here, sourced
+      // from the library actually resolved for this process rather than a
+      // string duplicated in this file, means the remedy cannot drift from
+      // what is actually installed.
       remedy:
-        'Install a browser binary for the automation driver this build depends on — see the README’s install section.',
+        probe.version === undefined
+          ? 'Install a browser binary for the automation driver this build depends on: run ' +
+            '`npx -p playwright-core@<the version pinned in package.json> playwright-core install ' +
+            'chromium` — this process could not resolve that version itself, so read it from ' +
+            '`package.json` before running the command.'
+          : `Install a browser binary for the automation driver this build depends on: run ` +
+            `\`npx -p playwright-core@${probe.version} playwright-core install chromium\`. The ` +
+            `version is pinned so the fetched browser build matches what this process resolved.`,
     };
   }
   return {

@@ -118,6 +118,13 @@ export function resolveAutomationProbe(
   } catch (error) {
     return {
       present: false,
+      // The library's own version is resolvable from its installed
+      // package.json whether or not a browser binary was ever fetched — see
+      // `resolvePlaywrightCoreVersion`'s header — so it is set here too, not
+      // only on the `present: true` branch below. `checkAutomation`'s remedy
+      // needs it to name a runnable, versioned install command instead of
+      // pointing back at prose.
+      version: dependencies.libraryVersion,
       detail: `Could not resolve where the automation tool's browser binary should be: ${
         error instanceof Error ? error.message : String(error)
       }`,
@@ -127,6 +134,7 @@ export function resolveAutomationProbe(
   if (!dependencies.pathExists(executablePath)) {
     return {
       present: false,
+      version: dependencies.libraryVersion,
       detail: `No browser binary at the path the automation tool resolved (${executablePath}). This build depends on playwright-core, which does not download a browser on install.`,
     };
   }

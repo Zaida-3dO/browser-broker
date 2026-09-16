@@ -31,8 +31,13 @@ check (below) will genuinely fail with exit code 11 rather than silently reading
 that check is now wired to a real probe rather than always defaulting to absent. Fetch one with:
 
 ```bash
-npx playwright-core install chromium
+npx -p playwright-core@1.62.1 playwright-core install chromium
 ```
+
+**The version must match the `playwright-core` version pinned in [`package.json`](../package.json),
+exactly** — see the [README](../README.md#browser-binary) for why an unversioned fetch resolves a
+Chromium build the pinned library was never tested against, and does so silently. `npm run
+check:pinned-install` fails CI if this number and the pinned one ever drift apart.
 
 Run this once per machine, before `broker doctor`. It is the same install mechanism the full
 `playwright` package would run automatically on `npm install`; `playwright-core` just does not run
