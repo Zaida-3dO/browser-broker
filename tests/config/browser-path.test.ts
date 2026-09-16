@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { browserPathVariable, readEnvironment } from '../../src/config/environment.ts';
+import { absolutePath } from '../helpers/paths.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 
 /**
@@ -27,7 +28,7 @@ import { StartupRefusal } from '../../src/errors.ts';
  * happens to be installed on the machine running them — in either direction.
  */
 
-const home = (): string => path.join(path.sep, 'home', 'someone');
+const home = (): string => absolutePath('home', 'someone');
 
 /** Every path is there. */
 const anythingExists = (): boolean => true;
@@ -56,7 +57,7 @@ test('an unset path leaves the browser absent from the map — it takes the bund
 // binary never reaches a launch and the bundled one is used silently — the
 // whole defect, in the form it would actually take.
 test('a configured path is resolved and keyed by the browser it names', () => {
-  const binary = path.join(path.sep, 'opt', 'a-browser', 'browser');
+  const binary = absolutePath('opt', 'a-browser', 'browser');
   const environment = readEnvironment({
     ...base,
     env: { BROKER_BROWSER_REGULAR_PATH: binary },
@@ -71,8 +72,8 @@ test('a configured path is resolved and keyed by the browser it names', () => {
 // whole process rather than one per browser, which is the shape the driver
 // had before this row and the reason `#executablePath` took no argument.
 test('two browsers can be pointed at two different binaries at once', () => {
-  const chrome = path.join(path.sep, 'opt', 'chrome', 'chrome');
-  const edge = path.join(path.sep, 'opt', 'edge', 'edge');
+  const chrome = absolutePath('opt', 'chrome', 'chrome');
+  const edge = absolutePath('opt', 'edge', 'edge');
   const environment = readEnvironment({
     ...base,
     env: { BROKER_BROWSER_REGULAR_PATH: chrome, BROKER_BROWSER_PRIVATE_PATH: edge },
@@ -84,7 +85,7 @@ test('two browsers can be pointed at two different binaries at once', () => {
 });
 
 test('a browser named in a configured list gets its own variable', () => {
-  const binary = path.join(path.sep, 'opt', 'a-browser', 'browser');
+  const binary = absolutePath('opt', 'a-browser', 'browser');
   const environment = readEnvironment({
     ...base,
     env: {
@@ -105,7 +106,7 @@ test('a browser named in a configured list gets its own variable', () => {
 // the map. That is the silent fallback — the browser would launch the bundled
 // Chromium and nothing would say so. Under that change this test goes red.
 test('a configured path with no file at it REFUSES — it never falls back to the bundled build', () => {
-  const missing = path.join(path.sep, 'opt', 'not-installed', 'browser');
+  const missing = absolutePath('opt', 'not-installed', 'browser');
 
   assert.throws(
     () =>
@@ -131,7 +132,7 @@ test('the refusal says in so many words that it is not using the bundled build i
   try {
     readEnvironment({
       ...base,
-      env: { BROKER_BROWSER_PRIVATE_PATH: path.join(path.sep, 'nope') },
+      env: { BROKER_BROWSER_PRIVATE_PATH: absolutePath('nope') },
       fileExists: nothingExists,
     });
     assert.fail('a path with no file at it must refuse');
@@ -152,7 +153,7 @@ test('a path that exists but is a directory rather than a file refuses', () => {
     () =>
       readEnvironment({
         ...base,
-        env: { BROKER_BROWSER_REGULAR_PATH: path.join(path.sep, 'opt', 'a-directory') },
+        env: { BROKER_BROWSER_REGULAR_PATH: absolutePath('opt', 'a-directory') },
         fileExists: (candidate) => !candidate.endsWith('a-directory'),
       }),
     StartupRefusal,
@@ -202,7 +203,7 @@ test('a variable naming a browser nothing configured is ignored, not refused', (
   // would start failing on a stale value.
   const environment = readEnvironment({
     ...base,
-    env: { BROKER_BROWSER_NOTCONFIGURED_PATH: path.join(path.sep, 'nowhere') },
+    env: { BROKER_BROWSER_NOTCONFIGURED_PATH: absolutePath('nowhere') },
     fileExists: nothingExists,
   });
 

@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { LAST_BROWSER_FILE } from '../../src/browser/profile-marker.ts';
 import { RealBrowserDriver } from '../../src/browser/real.ts';
+import { absolutePath } from '../helpers/paths.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 
 /**
@@ -83,7 +84,7 @@ async function attemptColdStart(
 // path is playwright's bundled build rather than the configured one.
 test('a cold start launches the binary configured for THAT browser', async () => {
   const spawned: Spawned[] = [];
-  const configured = path.join(path.sep, 'opt', 'private-browser', 'browser');
+  const configured = absolutePath('opt', 'private-browser', 'browser');
   const driver = new RealBrowserDriver({
     executablePathFor: (browser) => (browser === 'private' ? configured : undefined),
     launch: { ...FAST, spawnImpl: recordingSpawn(spawned) },
@@ -100,8 +101,8 @@ test('a cold start launches the binary configured for THAT browser', async () =>
 // the driver had — passes the test above and fails this one.
 test('two browsers with different binaries each launch their own', async () => {
   const spawned: Spawned[] = [];
-  const regular = path.join(path.sep, 'opt', 'regular-browser', 'browser');
-  const private_ = path.join(path.sep, 'opt', 'private-browser', 'browser');
+  const regular = absolutePath('opt', 'regular-browser', 'browser');
+  const private_ = absolutePath('opt', 'private-browser', 'browser');
   const driver = new RealBrowserDriver({
     executablePathFor: (browser) =>
       browser === 'regular' ? regular : browser === 'private' ? private_ : undefined,
@@ -118,7 +119,7 @@ test('two browsers with different binaries each launch their own', async () => {
 
 test('a browser with no configured binary falls back to the flat injected one', async () => {
   const spawned: Spawned[] = [];
-  const fallback = path.join(path.sep, 'opt', 'bundled', 'browser');
+  const fallback = absolutePath('opt', 'bundled', 'browser');
   const driver = new RealBrowserDriver({
     executablePath: fallback,
     executablePathFor: () => undefined,
@@ -143,11 +144,11 @@ test('a binary swap is refused before anything is spawned', async () => {
   // Chromium's own marker, written the way Chromium writes it: UTF-16LE.
   fs.writeFileSync(
     path.join(profile, LAST_BROWSER_FILE),
-    Buffer.from(path.join(path.sep, 'opt', 'brave', 'brave'), 'utf16le'),
+    Buffer.from(absolutePath('opt', 'brave', 'brave'), 'utf16le'),
   );
 
   const driver = new RealBrowserDriver({
-    executablePathFor: () => path.join(path.sep, 'opt', 'chrome', 'chrome'),
+    executablePathFor: () => absolutePath('opt', 'chrome', 'chrome'),
     launch: { ...FAST, spawnImpl: recordingSpawn(spawned) },
   });
 
@@ -163,7 +164,7 @@ test('a binary swap is refused before anything is spawned', async () => {
 test('a profile with no marker is spawned against — a first launch is not refused', async () => {
   const spawned: Spawned[] = [];
   const driver = new RealBrowserDriver({
-    executablePathFor: () => path.join(path.sep, 'opt', 'chrome', 'chrome'),
+    executablePathFor: () => absolutePath('opt', 'chrome', 'chrome'),
     launch: { ...FAST, spawnImpl: recordingSpawn(spawned) },
   });
 
@@ -176,7 +177,7 @@ test('a profile with no marker is spawned against — a first launch is not refu
 test('the same binary reopening its own profile is spawned against', async () => {
   const spawned: Spawned[] = [];
   const profile = temporaryProfile();
-  const binary = path.join(path.sep, 'opt', 'chrome', 'chrome');
+  const binary = absolutePath('opt', 'chrome', 'chrome');
   fs.writeFileSync(path.join(profile, LAST_BROWSER_FILE), Buffer.from(binary, 'utf16le'));
 
   const driver = new RealBrowserDriver({

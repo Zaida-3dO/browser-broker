@@ -41,6 +41,44 @@ export function mountPath(...segments: string[]): string {
 }
 
 /**
+ * An absolute path **on the platform the test is running on**, for a fixture
+ * that will be compared against a value the code under test has resolved.
+ *
+ * ── Why `path.join(path.sep, …)` is the wrong way to build one ───────────
+ *
+ * It looks absolute and on Windows it is not absolute *enough*. `\opt\chrome`
+ * satisfies `path.isAbsolute` — so the mistake survives the obvious check —
+ * but it names no **drive**, and `path.resolve` therefore completes it with
+ * the drive of the current working directory. A fixture built that way keeps
+ * its own spelling while the resolved value it is compared against gains
+ * whichever drive letter the checkout happens to sit on — so the test's
+ * expected value depends on where the working directory is, which is not a
+ * property any assertion should rest on.
+ *
+ * That is not hypothetical: three tests in this repository passed on Linux
+ * and failed on a Windows runner for exactly this reason, and every
+ * platform-neutral gate — typecheck, lint, and all twelve `check:*` scripts —
+ * reported green while they did.
+ *
+ * ── Why the expectation is not simply `path.resolve`d instead ────────────
+ *
+ * Because that would compute the expected value with the same call the code
+ * under test uses, so the assertion would hold no matter what that call did.
+ * A fixture that is **already** absolute, on either platform, keeps the
+ * comparison a real equality: the code's job is to hand back the path it was
+ * given, and resolving an already-absolute path is the identity.
+ *
+ * Composed rather than written literally, like everything else in this file:
+ * the hygiene gate refuses a literal drive-letter path in a tracked file.
+ */
+export function absolutePath(...segments: string[]): string {
+  // A drive letter is what makes a Windows path absolute rather than merely
+  // rooted. `C` is the drive every Windows machine has, and the value is never
+  // opened — these fixtures name binaries that deliberately do not exist.
+  return process.platform === 'win32' ? localDrivePath('C', ...segments) : `/${segments.join('/')}`;
+}
+
+/**
  * Checks that report exactly what a test says and nothing the host platform
  * knows.
  *

@@ -12,6 +12,7 @@ import {
   readLastBrowser,
   readLastVersion,
 } from '../../src/browser/profile-marker.ts';
+import { absolutePath } from '../helpers/paths.ts';
 
 /**
  * ── What these tests are guarding, and why the fixtures are written as bytes ──
@@ -116,7 +117,7 @@ test('versions compare component by component as numbers, not as strings', () =>
 const REQUEST = {
   browser: 'regular',
   profileDirectory: 'a-profile-directory',
-  executablePath: path.join(path.sep, 'binaries', 'chrome'),
+  executablePath: absolutePath('binaries', 'chrome'),
 } as const;
 
 // The mutation this catches: dropping the binary-path comparison, or
@@ -128,7 +129,7 @@ test('a different binary than the one that wrote the profile is refused', () => 
     platform: 'linux',
     readMarker: () => ({
       version: '151.0.7922.34',
-      browserPath: path.join(path.sep, 'binaries', 'brave'),
+      browserPath: absolutePath('binaries', 'brave'),
     }),
   });
 
@@ -215,14 +216,14 @@ test('on Windows the same binary in different letter case is one binary', () => 
 // against ASCII fixtures.
 test('the guard reads real on-disk markers and refuses a genuine binary swap', () => {
   const profile = temporaryProfile();
-  const wrote = path.join(path.sep, 'binaries', 'brave');
+  const wrote = absolutePath('binaries', 'brave');
   writeLastBrowser(profile, wrote);
   writeLastVersion(profile, '151.0.7922.34');
 
   const outcome = profileCompatibility({
     browser: 'regular',
     profileDirectory: profile,
-    executablePath: path.join(path.sep, 'binaries', 'chrome'),
+    executablePath: absolutePath('binaries', 'chrome'),
     platform: 'linux',
   });
 
