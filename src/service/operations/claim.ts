@@ -931,17 +931,25 @@ function strandedBacklogNote(
   // The remedy names the browser rather than saying "the browser", so it can
   // be run as typed. `doctor` sets that standard and it is why it diagnosed
   // this in one call.
-  const remedy =
+  //
+  // **The command is always the bare, runnable form** — no English clause
+  // goes inside the backticks a caller might copy verbatim (§7's "a remedy is
+  // a runnable command, not a description of an action"). There is no MCP
+  // tool that runs `reconcile` (that gap is `1c78726b`'s to close), so an MCP
+  // caller is told plainly that this needs a shell — as a fact about who can
+  // act, not folded into the command string itself.
+  const remedy = `broker reconcile ${browserId}`;
+  const clearThem =
     adapter === 'cli'
-      ? `broker reconcile ${browserId}`
-      : `broker reconcile ${browserId}, from a shell`;
+      ? `Run \`${remedy}\` to clear them`
+      : `There is no MCP remedy for this yet — ask an operator to run \`${remedy}\` from a shell to clear them`;
 
   return {
     stranded,
     note:
       `note: ${String(stranded)} tab(s) on ${browserId} are stranded mid-close, which can leave ` +
       'this browser unable to serve the lease just granted — a page call may report the browser ' +
-      `closed. Run \`${remedy}\` to clear them, and \`broker doctor\` to confirm.`,
+      `closed. ${clearThem}, and \`broker doctor\` to confirm.`,
   };
 }
 

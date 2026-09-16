@@ -310,7 +310,16 @@ test('an emulate naming no preference is refused, because it would mean nothing'
   refusesWith('act.emulate_preference_named', () =>
     validateAction({ action: 'emulate', preferences: {} }),
   );
-  refusesWith('act.emulate_preference_named', () => validateAction({ action: 'emulate' }));
+  const refusal = refusesWith('act.emulate_preference_named', () =>
+    validateAction({ action: 'emulate' }),
+  );
+  // The message names the accepted names AND the MCP argument shape — a
+  // caller who has no shell must still be able to write a call that works.
+  // See `2026-09-10-emulate-refusal-names-the-preferences-but-not-the-mcp-
+  // argument-shape.md`: the names alone left a caller unable to converge.
+  assert.match(refusal.message, /colourScheme/u);
+  assert.match(refusal.message, /"action":\s*"emulate"/u);
+  assert.match(refusal.message, /"preferences":/u);
   // An unrecognised key is not a preference either — silently ignoring it
   // would report success for a call that changed nothing.
   refusesWith('act.emulate_preference_named', () =>
@@ -629,6 +638,13 @@ test('an absent or empty expression is refused', () => {
   refusesWith('evaluate.expression_bounded', () => validateExpression(''));
   refusesWith('evaluate.expression_bounded', () => validateExpression('   '));
   refusesWith('evaluate.expression_bounded', () => validateExpression({ toString: () => 'x' }));
+});
+
+test('the refusal for an absent expression names the argument, not only the shape', () => {
+  // A caller reading "needs an expression" cannot tell whether the key is
+  // `expression`, `expr`, `script` or `code`. Name it explicitly.
+  const refusal = refusesWith('evaluate.expression_bounded', () => validateExpression(undefined));
+  assert.match(refusal.message, /`expression`/u);
 });
 
 test('a small result comes back inline', () => {
