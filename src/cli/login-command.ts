@@ -247,11 +247,29 @@ export interface SignInWindow {
  * protected.
  */
 export function realSignInWindow(
-  options: { readonly fetchImpl?: typeof fetch } = {},
+  options: {
+    readonly fetchImpl?: typeof fetch;
+    /**
+     * The installation's per-browser binary configuration
+     * (`BROKER_BROWSER_<NAME>_PATH`).
+     *
+     * **Passed here as well as to the service, and that is the point.** This
+     * is the second place a browser is cold-started, so a sign-in window that
+     * did not honour the configuration would put the person's sign-in into a
+     * profile written by the bundled Chromium — and the service would then
+     * refuse to open that same profile with the configured binary, correctly,
+     * on the marker check. The two paths have to agree about which binary a
+     * browser is, or the guard turns into an obstacle.
+     */
+    readonly browserPaths?: ReadonlyMap<string, string>;
+  } = {},
 ): SignInWindow {
-  const driver = new RealBrowserDriver(
-    options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl },
-  );
+  const driver = new RealBrowserDriver({
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+    ...(options.browserPaths === undefined
+      ? {}
+      : { executablePathFor: (browser) => options.browserPaths?.get(browser) }),
+  });
 
   return {
     open: async (request) => {
@@ -413,7 +431,7 @@ export async function runLoginCommand(options: LoginOptions): Promise<number> {
 
   let opened: { pid: number; startedIt: boolean } | undefined;
   try {
-    const window = options.window ?? realSignInWindow();
+    const window = options.window ?? realSignInWindow({ browserPaths: environment.browserPaths });
 
     // Asked positively, and the answer is used only in the direction where it
     // is meaningful: a verified record means a browser is there to attach to.

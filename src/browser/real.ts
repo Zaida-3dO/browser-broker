@@ -26,6 +26,7 @@ import {
 import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
 import { BrokerError, StartupRefusal } from '../errors.ts';
 import { readDiscoveryRecord, verifyDiscoveryRecord } from './discovery.ts';
+import { profileCompatibility } from './profile-marker.ts';
 import type {
   ActionRequest,
   ArtifactResult,
@@ -1531,6 +1532,29 @@ class RealBrowserSession implements BrowserSession {
 export interface RealDriverOptions {
   /** Where the browser binary is. Injected so a test can point at its own. */
   readonly executablePath?: string;
+  /**
+   * Where **one named browser's** binary is, when its installation pointed it
+   * at one (`BROKER_BROWSER_<NAME>_PATH`).
+   *
+   * ── Why this is a function of the browser and not a single path ──────────
+   *
+   * One driver is built per process (`service/browser-session.ts`) while a
+   * binary is resolved per launch, so a single path on the driver could only
+   * ever describe every browser at once. Two browsers pointed at two
+   * different binaries — a signed-in Brave and a clean-room Edge, say — is a
+   * configuration the environment can express, so the driver has to be able
+   * to honour it without a driver per kind. `DECISIONS.md` named this as the
+   * expensive half of engine resolution and it is the half being paid here;
+   * passing the name that `coldStart` already has in scope is the whole cost.
+   *
+   * Returning `undefined` means *this browser was not configured with one*,
+   * which is every browser in a default installation, and the bundled
+   * Chromium is used. It does **not** mean a configured path was unusable:
+   * that refuses at startup in `config/environment.ts` and never arrives
+   * here, because a silent fall back to the bundled build is the exact defect
+   * this row exists to avoid.
+   */
+  readonly executablePathFor?: (browser: BrowserId) => string | undefined;
   readonly launch?: LaunchOptions;
   readonly fetchImpl?: typeof fetch;
   /**
@@ -1625,11 +1649,24 @@ export class RealBrowserDriver implements BrowserDriver {
     this.#options = options;
   }
 
-  #executablePath(): string {
-    // Resolved lazily rather than in the constructor: a process that only
-    // attaches never needs a binary path, and a driver that refused to
-    // construct without one would make an attach-only caller depend on a
-    // browser installation it is not going to use.
+  /**
+   * The binary to launch for one browser.
+   *
+   * Resolved lazily rather than in the constructor: a process that only
+   * attaches never needs a binary path, and a driver that refused to
+   * construct without one would make an attach-only caller depend on a
+   * browser installation it is not going to use.
+   *
+   * **Takes the browser, because the answer differs by browser.** The three
+   * sources are tried most-specific first: the installation's per-browser
+   * configuration, then the flat injected path a test uses to point the whole
+   * driver at its own binary, then the automation library's bundled build.
+   */
+  #executablePath(browser: BrowserId): string {
+    const configured = this.#options.executablePathFor?.(browser);
+    if (configured !== undefined) {
+      return configured;
+    }
     if (this.#options.executablePath !== undefined) {
       return this.#options.executablePath;
     }
@@ -1687,11 +1724,30 @@ export class RealBrowserDriver implements BrowserDriver {
    * silent-collision case that makes the distinction load-bearing.
    */
   async coldStart(request: ColdStartRequest): Promise<BrowserSession> {
+    const executablePath = this.#executablePath(request.browser);
+
+    // ── Checked before the spawn, deliberately ────────────────────────────
+    //
+    // A profile written by one Chromium build and opened by another is the
+    // hazard that arrives with a configurable binary, and both dangerous
+    // directions are cheaper to refuse than to attempt: the cross-vendor one
+    // succeeds and silently loses a sign-in, and the downgrade one opens no
+    // endpoint and costs a full readiness timeout. Refusing here means
+    // nothing was started, so there is no process to reap either.
+    const compatibility = profileCompatibility({
+      browser: request.browser,
+      profileDirectory: request.profileDirectory,
+      executablePath,
+    });
+    if (!compatibility.ok) {
+      throw new StartupRefusal('launch.explicit_profile_dir', compatibility.detail ?? '');
+    }
+
     const outcome = await coldStartDetached(
       {
         profileDirectory: request.profileDirectory,
         mode: request.mode,
-        executablePath: this.#executablePath(),
+        executablePath,
       },
       { ...this.#options.launch, fetchImpl: this.#options.fetchImpl },
     );

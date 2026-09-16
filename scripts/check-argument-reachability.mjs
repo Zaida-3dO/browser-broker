@@ -562,6 +562,117 @@ export function declaredVariables(source = readFileSync(ENVIRONMENT_SOURCE, 'utf
 }
 
 /**
+ * Configuration declared as a **family of computed keys** rather than as a
+ * literal in the declaration table.
+ *
+ * ── Why this half of the check had to be written ─────────────────────────
+ *
+ * {@link declaredVariables} finds a variable by matching the literal
+ * `key: 'BROKER_…'`. `BROKER_BROWSER_<NAME>_PATH` has no such literal and
+ * cannot have one: its keys are a function of the configured browser names,
+ * which are themselves read from the environment. So the entire per-browser
+ * binary surface would have entered the build **invisible to the one check
+ * that exists to stop inert configuration** — not passing it, but never
+ * examined by it, which is the worse of the two because the report would say
+ * green without the property having been tested.
+ *
+ * That is the `wait_ms` shape exactly: declared, validated, and read by
+ * nothing. A check that silently skips the newest configuration surface is a
+ * check that has stopped doing its job at the moment it was most needed.
+ *
+ * Each entry names the prefix that identifies the family, and the field the
+ * family is assembled into on the environment record — which is the thing
+ * that has to be read somewhere outside the declaring file for the surface to
+ * do anything at all.
+ */
+export const DECLARED_FAMILIES = [
+  {
+    what: 'BROKER_BROWSER_<NAME>_PATH',
+    // The literals the declaring file must contain for the family to exist at
+    // all. Checked, so that renaming the family in code without updating this
+    // fails the build rather than quietly emptying it.
+    markers: ["BROWSER_PATH_PREFIX = 'BROKER_BROWSER_'", "BROWSER_PATH_SUFFIX = '_PATH'"],
+    field: 'browserPaths',
+  },
+];
+
+/**
+ * The field a family is actually assembled into, read off the declaring
+ * source rather than taken from the table.
+ *
+ * A family is built by walking the configured browsers and filling a map, so
+ * the assembling form is `const <field> = new Map<string, string>()` followed
+ * by the record putting it on by shorthand. Reading the name from the source
+ * is what lets the check notice a rename that touched the declaration and not
+ * its reader — see the note at the call site for why matching the table's
+ * literal instead would pass vacuously.
+ */
+export function assembledFieldFor(family, source) {
+  const declared = new RegExp(
+    `const\\s+([A-Za-z0-9_]+)\\s*=\\s*new Map<string, string>\\(\\)`,
+  ).exec(source);
+  if (declared === null) return undefined;
+  // Only trusted when the record carries it too: a local that never reaches
+  // the environment record is not a field at all.
+  return source.includes(`\n    ${declared[1]},`) ? declared[1] : undefined;
+}
+
+/**
+ * Check the computed-key families the literal scan cannot see.
+ *
+ * **Takes no waivers.** The literal half has a waiver facility because a
+ * variable can outlive the code that read it during a migration; a family is
+ * added in one commit with its reader, so an unread one has no history to be
+ * mid-way through.
+ */
+export function checkConfigurationFamilies(source = readFileSync(ENVIRONMENT_SOURCE, 'utf8')) {
+  const sources = sourceFiles();
+  const failures = [];
+  let checked = 0;
+
+  for (const family of DECLARED_FAMILIES) {
+    checked += 1;
+    const missing = family.markers.filter((marker) => !source.includes(marker));
+    if (missing.length > 0) {
+      failures.push(
+        `${family.what} is checked as a computed-key family and ${missing
+          .map((marker) => `"${marker}"`)
+          .join(' / ')} is absent from src/config/environment.ts. Either the family was renamed ` +
+          `— update this check with it — or it was removed, in which case remove it here too. A ` +
+          `family whose markers have drifted is checked vacuously.`,
+      );
+      continue;
+    }
+    if (assembledFieldFor(family, source) === undefined) {
+      failures.push(
+        `${family.what} is declared and never assembled into the environment record as ` +
+          `"${family.field}", so nothing can read it.`,
+      );
+      continue;
+    }
+    // Read against the field the DECLARING SOURCE actually assembles, not
+    // against the literal in the table above. The two are the same in a
+    // healthy tree; they differ exactly when the field has been renamed in
+    // one place and not the other, which is the inert state being hunted.
+    // Matching the table's literal instead would find the reader spelling a
+    // name the declaration does not use, and report green — the check would
+    // pass *because* the tree is broken, which is the vacuous shape this file
+    // names as worse than an absent check.
+    const assembled = assembledFieldFor(family, source) ?? family.field;
+    if (!fieldIsReadOutsideDeclaration(assembled, sources)) {
+      failures.push(
+        `${family.what} is declared — and validated, which is worse, because a caller who sets ` +
+          `it wrongly is refused and reasonably concludes it works — but "${family.field}" is ` +
+          `read nowhere outside src/config/environment.ts. Read it where it should take effect, ` +
+          `or stop declaring it.`,
+      );
+    }
+  }
+
+  return { failures, checked };
+}
+
+/**
  * The field each declared variable becomes on the environment record.
  *
  * `BROKER_TAB_BUDGET` is assembled as `tabBudget: getNumber('BROKER_TAB_BUDGET')`,
@@ -779,11 +890,12 @@ export function seededDefect() {
 export function runReachabilityCheck() {
   const args = checkArguments();
   const configuration = checkConfiguration();
+  const families = checkConfigurationFamilies();
   return {
-    failures: [...args.failures, ...configuration.failures],
+    failures: [...args.failures, ...configuration.failures, ...families.failures],
     waived: configuration.waived,
     checkedArguments: args.checked,
-    checkedVariables: configuration.checked,
+    checkedVariables: configuration.checked + families.checked,
   };
 }
 
@@ -804,6 +916,43 @@ if (invokedDirectly) {
           'observe the defect it exists for.',
       );
       process.exitCode = 1;
+    }
+
+    // ── The same proof, for the computed-key half ──────────────────────────
+    //
+    // The family check is the newer half and the one most likely to be
+    // vacuous, because it asserts on a field name rather than on a key the
+    // scan found. So it is seeded the same way: rename the field in the
+    // declaring source and nowhere else, which is exactly what an
+    // assembled-but-unread family looks like, and require the check to notice.
+    const renamed = readFileSync(ENVIRONMENT_SOURCE, 'utf8').replaceAll(
+      'browserPaths',
+      'browserPathsNothingReads',
+    );
+    if (renamed === readFileSync(ENVIRONMENT_SOURCE, 'utf8')) {
+      console.error(
+        'Self-test FAILED: the family seed found no `browserPaths` to rename, so it reproduces ' +
+          'nothing. Fix the seed.',
+      );
+      process.exitCode = 1;
+    } else {
+      const seededFamilies = checkConfigurationFamilies(renamed);
+      const familyCaught = seededFamilies.failures.some((failure) =>
+        failure.includes('BROKER_BROWSER_<NAME>_PATH'),
+      );
+      if (familyCaught) {
+        console.log(
+          'Self-test passed: the check goes red when the per-browser path family is assembled ' +
+            'under a name nothing reads.',
+        );
+        for (const failure of seededFamilies.failures) console.log(`  would fail: ${failure}`);
+      } else {
+        console.error(
+          'Self-test FAILED: the per-browser path family was made inert and the check stayed ' +
+            'green, so the computed-key half observes nothing.',
+        );
+        process.exitCode = 1;
+      }
     }
   } else {
     const result = runReachabilityCheck();

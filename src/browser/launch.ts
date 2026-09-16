@@ -603,6 +603,18 @@ export async function coldStartDetached(
   killSpawnedProcess(pid, killImpl);
   throw new StartupRefusal(
     LAUNCH_RULES.explicitProfileDir,
-    `The browser was spawned but no debugging endpoint of its own ever answered (${lastDetail}). A launch is never inferred from the command exiting: a browser started against a profile directory already in use opens no endpoint and reports nothing, whether or not its process is still alive.`,
+    // ── Why this names more than one cause ──────────────────────────────
+    //
+    // It used to assert the profile-collision cause alone. That was wrong in
+    // a way worth recording: `lastDetail` starts at *"the record never
+    // appeared"* and is only overwritten when a record exists and fails
+    // verification, so on the commonest stall the sentence **affirmatively
+    // stated a cause it had no evidence for**. A refusal that names the wrong
+    // cause confidently is worse than one that names none, because the reader
+    // acts on it — and this path is reachable by more routes than the one it
+    // named, which is now truer still: a binary configured by
+    // `BROKER_BROWSER_<NAME>_PATH` that is present but is not a Chromium
+    // reaches exactly here.
+    `The browser was spawned but no debugging endpoint of its own ever answered (${lastDetail}). A launch is never inferred from the command exiting. Any of these produces this: a browser started against a profile directory already in use, which opens no endpoint and reports nothing whether or not its process is still alive; a binary that is not a Chromium, or is one too old to understand the debugging arguments; or a browser that started and was still not ready when the readiness timeout elapsed.`,
   );
 }
