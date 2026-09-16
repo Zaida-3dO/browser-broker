@@ -81,6 +81,36 @@ test('A GRANTED CLAIM CARRIES THE BACKLOG NOTE — the five grants that could no
   });
 });
 
+test('on the MCP adapter, the remedy code span is a bare runnable command with no prose inside it', async () => {
+  // Regression for the defect: `broker reconcile regular, from a shell` was
+  // rendered as one code span, which is not a runnable command — copying it
+  // verbatim is a shell syntax error. The command must always be bare; any
+  // adapter-specific hint belongs outside the backticks.
+  await withBroker(
+    async ({ broker, store, environment }) => {
+      seedStrandedTab(store.db, 'regular', environment.leaseSeconds + 60);
+
+      const result = await broker.claim(claimInput({ browser: 'regular' }));
+      assert.equal(result.outcome, 'granted');
+      assert.ok(result.strandedBacklog !== undefined, 'the backlog was not reported');
+
+      const note = result.strandedBacklog.note;
+      // The code span itself contains no comma and no English clause.
+      const codeSpans = [...note.matchAll(/`([^`]*)`/gu)].map((match) => match[1] ?? '');
+      assert.ok(codeSpans.includes('broker reconcile regular'), `no bare command in: ${note}`);
+      for (const span of codeSpans) {
+        assert.doesNotMatch(span, /,| from | ask /u, `prose leaked inside a code span: ${span}`);
+      }
+
+      // An MCP caller has no shell, so the note must say so honestly rather
+      // than instructing the caller to run the command itself.
+      assert.match(note, /no MCP remedy/u);
+      assert.match(note, /ask an operator/u);
+    },
+    { adapter: 'tool-http' },
+  );
+});
+
 test('a claim on a healthy browser carries no note at all', async () => {
   // The negative control, and the assertion that stops the note being
   // unconditional. Absent rather than zero-valued, so the field's presence is

@@ -399,7 +399,9 @@ export function validateAction(raw: unknown): ActionRequest {
         throw new PageRefusal(
           'act.emulate_preference_named',
           `An emulate sets media preferences, so it names at least one of: ${MEDIA_PREFERENCE_NAMES.join(', ')}. ` +
-            'For example `--colour-scheme dark`.',
+            'On the MCP surface the preferences travel inside the `request` argument: ' +
+            '`{"request": {"action": "emulate", "preferences": {"colourScheme": "dark"}}}`. ' +
+            'On the command line: `--colour-scheme dark`.',
           { action, preferences: MEDIA_PREFERENCE_NAMES },
         );
       }
@@ -426,7 +428,9 @@ export function validateAction(raw: unknown): ActionRequest {
         throw new PageRefusal(
           'act.emulate_preference_named',
           `An emulate names at least one preference to set: ${MEDIA_PREFERENCE_NAMES.join(', ')}. ` +
-            'For example `--colour-scheme dark`.',
+            'On the MCP surface the preferences travel inside the `request` argument: ' +
+            '`{"request": {"action": "emulate", "preferences": {"colourScheme": "dark"}}}`. ' +
+            'On the command line: `--colour-scheme dark`.',
           { action, preferences: MEDIA_PREFERENCE_NAMES },
         );
       }
@@ -745,7 +749,8 @@ export function validateExpression(expression: unknown): string {
   if (typeof expression !== 'string' || expression.trim() === '') {
     throw new PageRefusal(
       'evaluate.expression_bounded',
-      'An evaluation needs an expression to evaluate in the page.',
+      'An evaluation needs an expression to evaluate in the page, in the `expression` argument ' +
+        '(a string — a measurement, a computed style, some geometry to read back).',
       { maximumBytes: MAX_EXPRESSION_BYTES },
     );
   }

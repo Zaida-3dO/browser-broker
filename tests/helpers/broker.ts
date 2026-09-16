@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 
 import { ArtifactStore } from '../../src/artifacts/store.ts';
-import { createBroker, type Broker } from '../../src/service/broker.ts';
+import { createBroker, type Broker, type BrokerOptions } from '../../src/service/broker.ts';
 import type { Environment } from '../../src/config/environment.ts';
 import type { OrphanedTab } from '../../src/service/arbitration.ts';
 import { prepareStore, type StoreHandle } from '../../src/store/open.ts';
@@ -46,7 +46,7 @@ export interface BrokerFixture {
 
 export async function withBroker(
   fn: (fixture: BrokerFixture) => Promise<void> | void,
-  options: TempStoreOptions = {},
+  options: TempStoreOptions & { readonly adapter?: BrokerOptions['adapter'] } = {},
 ): Promise<void> {
   const temp = makeTempStore(options);
   try {
@@ -74,7 +74,7 @@ export async function withBroker(
         broker: createBroker({
           store,
           environment: temp.environment,
-          adapter: 'cli',
+          adapter: options.adapter ?? 'cli',
           closeTab: (tab) => {
             closed.push(tab);
           },

@@ -310,12 +310,54 @@ test('an emulate naming no preference is refused, because it would mean nothing'
   refusesWith('act.emulate_preference_named', () =>
     validateAction({ action: 'emulate', preferences: {} }),
   );
-  refusesWith('act.emulate_preference_named', () => validateAction({ action: 'emulate' }));
+  const refusal = refusesWith('act.emulate_preference_named', () =>
+    validateAction({ action: 'emulate' }),
+  );
+  // The message names the accepted names AND the MCP argument shape — a
+  // caller who has no shell must still be able to write a call that works.
+  // See `2026-09-10-emulate-refusal-names-the-preferences-but-not-the-mcp-
+  // argument-shape.md`: the names alone left a caller unable to converge.
+  assert.match(refusal.message, /colourScheme/u);
+  assert.match(refusal.message, /"action":\s*"emulate"/u);
+  assert.match(refusal.message, /"preferences":/u);
   // An unrecognised key is not a preference either — silently ignoring it
   // would report success for a call that changed nothing.
   refusesWith('act.emulate_preference_named', () =>
     validateAction({ action: 'emulate', preferences: { colorScheme: 'dark' } }),
   );
+});
+
+test('the shape the emulate refusal advertises is a shape the surface accepts', () => {
+  // The assertions above prove the message MENTIONS "action" and
+  // "preferences". They would pass just as happily on a flat
+  // `{"action":"emulate","preferences":{…}}` — which is precisely the shape
+  // `browser_act` refuses, because it declares no argument by that name. A
+  // refusal that confidently names an impossible call is worse than the vague
+  // text it replaced: the caller trusts it, follows it, and is refused again
+  // by the same service.
+  //
+  // So parse the example out of the message and put it through the real
+  // validator. This binds the prose to the mechanism: edit the example back
+  // to the flat form and this test fails rather than the caller finding out.
+  const refusal = refusesWith('act.emulate_preference_named', () =>
+    validateAction({ action: 'emulate' }),
+  );
+
+  const example = /`(\{.*?\})`/su.exec(refusal.message)?.[1];
+  assert.ok(example, 'the refusal should carry a copyable JSON example');
+
+  const advertised = JSON.parse(example) as Record<string, unknown>;
+  assert.ok(
+    'request' in advertised,
+    'the example must nest the action inside `request`, the argument that carries it',
+  );
+
+  // The nested action is what reaches validateAction once the bridge has
+  // unwrapped the passthrough, so it is the half that must validate.
+  assert.deepEqual(validateAction(advertised.request), {
+    action: 'emulate',
+    preferences: { colourScheme: 'dark' },
+  });
 });
 
 test('a preference outside its declared values is refused, and the values are named', () => {
@@ -629,6 +671,13 @@ test('an absent or empty expression is refused', () => {
   refusesWith('evaluate.expression_bounded', () => validateExpression(''));
   refusesWith('evaluate.expression_bounded', () => validateExpression('   '));
   refusesWith('evaluate.expression_bounded', () => validateExpression({ toString: () => 'x' }));
+});
+
+test('the refusal for an absent expression names the argument, not only the shape', () => {
+  // A caller reading "needs an expression" cannot tell whether the key is
+  // `expression`, `expr`, `script` or `code`. Name it explicitly.
+  const refusal = refusesWith('evaluate.expression_bounded', () => validateExpression(undefined));
+  assert.match(refusal.message, /`expression`/u);
 });
 
 test('a small result comes back inline', () => {

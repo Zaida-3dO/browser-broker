@@ -215,7 +215,31 @@ const ANIMATION_SUPPRESSION_CAVEAT =
  */
 const CAPTURE_BUILD_COMPARISON_CAVEAT =
   'For comparing two builds — not two moments of the one tab you hold — a tool reading the scene ' +
-  'or DOM directly beats this one: this surface is one lease, one tab, pixels.';
+  'or DOM directly beats this one: this surface is one lease, one tab.';
+
+/**
+ * Where a returned path is rooted, so a caller can actually find the file
+ * (§1.7a).
+ *
+ * ── The gap this closes ───────────────────────────────────────────────────
+ *
+ * `capture` and `read` never return bytes, only a path (§1.7a's own rule:
+ * never absolute, never a caller-supplied path accepted back). The database
+ * column and the code around it have always said what that path is relative
+ * to — `BROKER_ARTIFACTS_ROOT` — but that fact lived in a doc comment and in
+ * `SCHEMA.md`, neither of which a calling agent reliably reads. **The tool
+ * description is the one surface it does read**, and until this returned a
+ * path with nothing here saying what it was rooted at, a caller on a
+ * different filesystem — or simply without the environment variable — was
+ * handed a return value it could not use. Two feedback notes reported this
+ * independently, which is the signal that it is not one caller's oversight.
+ *
+ * Kept to the one fact a caller needs — the environment variable's name —
+ * rather than also pointing at `broker doctor`, which prints the same root
+ * but is reachable only from a shell and would cost per-turn context for
+ * every caller to save one that has a shell anyway.
+ */
+const ARTIFACT_ROOT_CAVEAT = 'The path is relative to BROKER_ARTIFACTS_ROOT.';
 
 /** One argument a tool takes. */
 export interface ToolArgument {
@@ -512,7 +536,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       'Read the page: the accessibility snapshot by default, or the console, network or cookies ' +
       'on request. Written to disk and returned as a path, so you pay for the part you open ' +
       'rather than for all of it. ' +
-      ANIMATION_SUPPRESSION_CAVEAT,
+      ANIMATION_SUPPRESSION_CAVEAT +
+      ' ' +
+      ARTIFACT_ROOT_CAVEAT,
     arguments: [
       LEASE_KEY,
       {
@@ -544,15 +570,22 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'browser_capture',
     operation: 'capture',
     description:
-      'Take a picture of the page — and, if you name an earlier capture, what changed since it. ' +
-      'Returns paths, never the image itself. A selector and a full page cannot both be asked ' +
-      'for. Never refused for cost. ' +
+      'Take a picture of the page — or, naming an earlier capture, what changed since it. Returns ' +
+      'paths relative to BROKER_ARTIFACTS_ROOT, never the image. Selector and full page are ' +
+      'exclusive. Never refused for cost. ' +
       // The animation-suppression trap is folded into CAPTURE_SETTLE_CAVEAT
       // rather than appended as a second constant: both describe settling, so
       // two constants here repeated the premise twice and pushed this
       // description past the ceiling §3.1 holds it to. `browser_read` and
       // `browser_evaluate` carry the standalone caveat, because neither of
       // them mentions settling at all otherwise.
+      //
+      // The artefact root is folded into "Returns paths" above for the same
+      // reason, rather than appended as ARTIFACT_ROOT_CAVEAT: this description
+      // already carries three caveats, and a fourth sentence took it to 944
+      // against the 900 ceiling. Both facts survive; only the duplicated
+      // sentence stem is gone. `browser_read` carries the standalone constant,
+      // because its own text says only "returned as a path".
       CAPTURE_SETTLE_CAVEAT +
       ' ' +
       CAPTURE_BUILD_COMPARISON_CAVEAT,
