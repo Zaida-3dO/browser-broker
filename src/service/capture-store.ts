@@ -104,3 +104,90 @@ export function capturesTakenBy(db: Database, claimId: string): number {
     .get(claimId);
   return row?.taken ?? 0;
 }
+
+/**
+ * The most recent earlier capture of **this same page at this same viewport**
+ * by this lease, or nothing.
+ *
+ * ── What this is for, and the measurement that asked for it ─────────────
+ *
+ * A diff against a prior capture costs a few hundred tokens; opening the new
+ * picture with `Read` costs around ninety thousand. The response has carried a
+ * pre-filled `compare_to` argument on every capture since the hint shipped —
+ * and it was **measured not to work**: over four clean days, 36 expensive
+ * image reads happened in sessions that had already been handed the exact
+ * argument that would have made them cheap.
+ *
+ * The diagnosis in that measurement is the design constraint here, and it is
+ * worth carrying rather than citing: **the hint arrives on capture N
+ * describing what capture N+1 could do.** At that moment the caller's intent
+ * is *"record this"*. The diff intent forms on capture N+1, by which time the
+ * hint has scrolled out of attention. The pointer was correctly placed for the
+ * **id** and misplaced for the **intent**.
+ *
+ * So this query exists to move the pointer to the moment of the repeat: the
+ * caller who has just taken the same picture twice is the caller who wants a
+ * diff, and this is what lets the response say so *then*.
+ *
+ * ── Three properties that are not incidental ────────────────────────────
+ *
+ * **Scoped to the lease**, not global. The `strandedBacklog` note on `claim`
+ * (PR #74) is the pattern: computed from data the call already has, on the
+ * connection it already holds, so an informational nudge never costs a round
+ * trip and can never be the reason a capture is slow.
+ *
+ * **A NULL `url` never matches.** The column is nullable, and SQL's `=` is
+ * already unknown against NULL — but it is written out below rather than left
+ * to that, because "two captures whose page is unrecorded" is not a repeat and
+ * an implementation relying on three-valued logic to express that reads as an
+ * accident.
+ *
+ * **Never a refusal, and structurally incapable of becoming one.** The return
+ * is an id or nothing. There is no count, no threshold and no boolean a caller
+ * upstream could branch on to deny a capture — a caller with a good reason to
+ * retake a picture must not have to argue with the tool, which is the same
+ * posture `accounting.ts` takes and for the same reason.
+ *
+ * @param excludingCaptureId the capture just taken. **Required, because this
+ *   is called after the pipeline has run** — it needs the settled URL, which
+ *   is only known once the page has loaded. Whether this runs before or after
+ *   that capture's own row is written, passing its id means the answer cannot
+ *   be the capture itself, so the ordering of the two statements stops being
+ *   load-bearing.
+ */
+export interface CaptureRepeat {
+  /** The earlier capture of this same view, ready to pass as `compare_to`. */
+  readonly captureId: string;
+  /**
+   * The nudge in words, naming the cheaper call and the argument to give it.
+   *
+   * Spelled out rather than left to be assembled, for the reason the
+   * measurement gives: the argument being *available* was never the gap. A
+   * caller reading one line has to be able to act on it without composing
+   * anything.
+   */
+  readonly hint: string;
+}
+
+export function priorCaptureOfSameView(
+  db: Database,
+  claimId: string,
+  view: { readonly url: string | undefined; readonly viewportWidth: number },
+  excludingCaptureId: string,
+): string | undefined {
+  if (view.url === undefined) return undefined;
+  const row = db
+    .prepare<[string, string, number, string], { id: string }>(
+      `SELECT id
+         FROM captures
+        WHERE claim_id = ?
+          AND url = ?
+          AND url IS NOT NULL
+          AND viewport_width = ?
+          AND id <> ?
+        ORDER BY taken_at DESC, rowid DESC
+        LIMIT 1`,
+    )
+    .get(claimId, view.url, view.viewportWidth, excludingCaptureId);
+  return row?.id;
+}

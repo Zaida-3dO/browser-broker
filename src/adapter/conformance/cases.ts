@@ -1,3 +1,4 @@
+import { CAPTURES_BEFORE_WARNING } from '../../capture/tiers.ts';
 import { OPERATION_NAMES } from '../operations.ts';
 import type { CaseSeed, ConformanceCase } from './case.ts';
 
@@ -84,6 +85,61 @@ const withALiveLease: CaseSeed = {
     // **The key is substituted into the case's input**, so the operation
     // under test is reached rather than being refused for an unknown key.
     return { lease_key: granted.value['key'] };
+  },
+};
+
+/**
+ * A live lease that has already taken enough captures that the **next** one is
+ * past the accounting threshold.
+ *
+ * ── Why `warning` needs a seed of its own ───────────────────────────────
+ *
+ * §3.11 promises a warning on every capture past the threshold, and the
+ * default-tier case above cannot assert it: that case takes a lease's *first*
+ * capture, which correctly carries no warning. Naming `capture.warning` there
+ * would fail against correct code — the one failure {@link ConformanceCase}
+ * forbids a case from manufacturing. So the threshold has to be crossed
+ * first, and crossing it is what this seed is for.
+ *
+ * **It drives exactly {@link CAPTURES_BEFORE_WARNING} captures**, so the
+ * capture the case itself takes is number `CAPTURES_BEFORE_WARNING + 1` — the
+ * first one past the line. Driven through `service.perform` rather than
+ * inserted into the `captures` table, because the count the warning reads is
+ * a query over rows the service wrote, and a seed that wrote its own rows
+ * would be asserting against a fixture rather than against the accounting
+ * path this case exists to cover.
+ *
+ * **Imported rather than written as a literal.** A hard-coded count is only
+ * correct for one value of the constant: raise the threshold and the seed
+ * stops short of it, so the case takes a capture that carries no warning and
+ * asserts nothing while staying green — which is worse than red, because it
+ * reads as coverage.
+ */
+const pastTheCaptureWarningThreshold: CaseSeed = {
+  apply: async (service) => {
+    const substitutions = await withALiveLease.apply(service);
+    const leaseKey = (substitutions as Readonly<Record<string, unknown>>)['lease_key'];
+
+    for (let taken = 0; taken < CAPTURES_BEFORE_WARNING; taken += 1) {
+      const capture = await service.perform({
+        operation: 'capture',
+        adapter: 'conformance',
+        arguments: { lease_key: leaseKey },
+      });
+      // Loud rather than silent: a seed whose captures were refused would
+      // leave the lease below the threshold, and the case would then report
+      // "the accepted value has no capture.warning" — a finding naming the
+      // response when the fault was the setup. Failing here says which.
+      if (capture.outcome !== 'accepted') {
+        throw new Error(
+          `the seed could not take capture ${String(taken + 1)} of ` +
+            `${String(CAPTURES_BEFORE_WARNING)}: ${capture.rule}. The lease is below the ` +
+            `warning threshold, so the case would measure the setup rather than the response.`,
+        );
+      }
+    }
+
+    return { lease_key: leaseKey };
   },
 };
 
@@ -386,22 +442,30 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     expect: {
       outcome: 'accepted',
       //
-      // ── Why these ten are not the list, and what bounds it ──────────────
+      // ── What bounds this list, now that the gap it named is closed ───────
       //
-      // §3.11 promises more than this case names: an estimated token cost and
-      // how many captures this lease has taken are both in its sentence. They
-      // are deliberately absent here because they are **not in the reply the
-      // caller receives**: `estimatedTokens`, `capturesThisLease` and
-      // `escalation` are fields of the *pipeline's* `CaptureResult`, and
-      // `pages.ts` reshapes that into the `written` object without them. An
-      // assertion naming them would fail against correct code, which is the
-      // one failure a conformance case must never manufacture.
+      // This comment used to record a known gap: `estimatedTokens`,
+      // `capturesThisLease` and `escalation` were promised by §3.11, computed
+      // by the *pipeline's* `CaptureResult`, and dropped when `pages.ts`
+      // reshaped that into the `written` object. Naming them here would have
+      // failed against the code as it then stood, which is the one failure a
+      // conformance case must never manufacture — so they were left out and
+      // written down instead.
       //
-      // That gap is real and it is item 557fdcd6's remaining half — a
-      // response still owes §3.11 two fields it does not carry. It is not
-      // closed here, because closing it means changing the response rather
-      // than the test, and this row is about the checks. Named so the next
-      // reader finds a known gap rather than an oversight.
+      // **They are forwarded now, so they are asserted now.** That is the
+      // whole point of having written the gap down: the note was the thing
+      // that survived long enough for somebody to close it.
+      //
+      // `escalation` belongs in *this* case specifically, and not merely in
+      // any capture case, because §3.11 promises it **exactly on a
+      // default-tier capture** — which is what this case takes. Asserting it
+      // on the escalated case below would fail against correct code.
+      //
+      // **`warning` is the fourth promised field and is deliberately NOT
+      // here.** It appears only past `CAPTURES_BEFORE_WARNING` captures, so a
+      // first capture correctly carries none. It has its own case below,
+      // which is the only way to assert it without manufacturing that
+      // forbidden failure.
       //
       // Spelled `capture.*` because the reply is an envelope: `capture` renews
       // the lease it was called on, so the value carries `claimId`, `tabId`,
@@ -418,7 +482,47 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         'capture.sourceWidth',
         'capture.sourceHeight',
         'capture.tier',
+        // Three of the four that the comment above used to record as an open
+        // gap. Unconditional, except `escalation`, which is present exactly
+        // because this capture is default-tier.
+        'capture.estimatedTokens',
+        'capture.capturesThisLease',
+        'capture.escalation',
       ],
+    },
+  },
+  {
+    name: 'capture: a capture past the threshold carries the accounting warning',
+    operation: 'capture',
+    // ── The fourth field §3.11 promises, and the one that was worst ───────
+    //
+    // §3.11: *"Past a threshold, every capture is still served **and** carries
+    // a warning"*, and the warning *"appears on **every** capture past the
+    // threshold rather than only the first, because a warning that appears
+    // once has scrolled away by the time it matters."*
+    //
+    // It appeared on **none**. `captureWarning` computed it correctly and on
+    // every capture past the line, the `captures` row recorded `warned`
+    // faithfully — and `pages.ts` did not copy the string into the reply. So
+    // the database knew something the caller was never told, which is a
+    // sharper defect than a missing number: the service had the finding and
+    // withheld it.
+    //
+    // **This case is the assertion that it is told.** It is separate from the
+    // default-tier case for a reason that is a property of the field rather
+    // than a preference: `warning` is *correctly absent* below the threshold,
+    // so it can only be asserted on a lease that has crossed it. The seed
+    // crosses it.
+    seed: pastTheCaptureWarningThreshold,
+    input: {},
+    expect: {
+      outcome: 'accepted',
+      // `capturesThisLease` alongside the warning deliberately: it is the
+      // count the warning is *about*, and asserting both together is what
+      // makes the pair legible to a caller reading the reply. A warning
+      // without the number it refers to is the bare "you have taken a lot of
+      // captures" that `accounting.ts` argues against.
+      valueFields: ['capture.warning', 'capture.capturesThisLease'],
     },
   },
   {
