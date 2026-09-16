@@ -545,7 +545,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         name: 'what',
         type: 'string',
         required: false,
-        description: '"snapshot" (default), "console", "network" or "cookies".',
+        description:
+          '"snapshot" (default), "console", "network" or "cookies". "network" lists every ' +
+          'request with the status it was answered with, or FAILED, or PENDING if it had not ' +
+          'answered yet.',
       },
     ],
   },
