@@ -187,7 +187,7 @@ const ANIMATION_SUPPRESSION_CAVEAT =
  */
 const CAPTURE_BUILD_COMPARISON_CAVEAT =
   'For comparing two builds — not two moments of the one tab you hold — a tool reading the scene ' +
-  'or DOM directly beats this one: this surface is one lease, one tab, pixels.';
+  'or DOM directly beats this one: this surface is one lease, one tab.';
 
 /**
  * Where a returned path is rooted, so a caller can actually find the file
@@ -488,17 +488,22 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'browser_capture',
     operation: 'capture',
     description:
-      'Take a picture of the page — and, if you name an earlier capture, what changed since it. ' +
-      'Returns paths, never the image itself. A selector and a full page cannot both be asked ' +
-      'for. Never refused for cost. ' +
+      'Take a picture of the page — or, naming an earlier capture, what changed since it. Returns ' +
+      'paths relative to BROKER_ARTIFACTS_ROOT, never the image. Selector and full page are ' +
+      'exclusive. Never refused for cost. ' +
       // The animation-suppression trap is folded into CAPTURE_SETTLE_CAVEAT
       // rather than appended as a second constant: both describe settling, so
       // two constants here repeated the premise twice and pushed this
       // description past the ceiling §3.1 holds it to. `browser_read` and
       // `browser_evaluate` carry the standalone caveat, because neither of
       // them mentions settling at all otherwise.
-      ARTIFACT_ROOT_CAVEAT +
-      ' ' +
+      //
+      // The artefact root is folded into "Returns paths" above for the same
+      // reason, rather than appended as ARTIFACT_ROOT_CAVEAT: this description
+      // already carries three caveats, and a fourth sentence took it to 944
+      // against the 900 ceiling. Both facts survive; only the duplicated
+      // sentence stem is gone. `browser_read` carries the standalone constant,
+      // because its own text says only "returned as a path".
       CAPTURE_SETTLE_CAVEAT +
       ' ' +
       CAPTURE_BUILD_COMPARISON_CAVEAT,
