@@ -360,21 +360,21 @@ jobs:
       # the run was real: nothing skipped, nothing failed, and at least the
       # expected number of tests actually passed.
       - name: Diagnose whether the sandbox is what kills the browser
+        # `|| true` on every launch: the point is to OBSERVE the failure, and
+        # `set -e` would abort the probe at the first crash.
         run: |
           BIN=$(node -e "console.log(require('playwright-core').chromium.executablePath())")
-          echo "binary: $BIN"
           DIR=$(mktemp -d)
           echo "=== WITH sandbox (exactly what launch.ts does today) ==="
-          timeout 25 xvfb-run --auto-servernum "$BIN" --user-data-dir="$DIR/a" --remote-debugging-port=0 --no-first-run --no-default-browser-check about:blank > "$DIR/with.log" 2>&1
-          echo "exit=$?"
-          tail -25 "$DIR/with.log"
+          timeout 25 xvfb-run --auto-servernum "$BIN" --user-data-dir="$DIR/a" --remote-debugging-port=0 --no-first-run --no-default-browser-check about:blank > "$DIR/with.log" 2>&1 || echo "exit=$?"
+          echo "--- stderr ---"; cat "$DIR/with.log" || true
+          echo "--- endpoint file: ---"; cat "$DIR/a/DevToolsActivePort" 2>/dev/null || echo "NONE (no endpoint)"
           echo "=== WITHOUT sandbox ==="
-          timeout 25 xvfb-run --auto-servernum "$BIN" --user-data-dir="$DIR/b" --no-sandbox --remote-debugging-port=0 --no-first-run --no-default-browser-check about:blank > "$DIR/without.log" 2>&1
-          echo "exit=$?"
-          tail -25 "$DIR/without.log"
-          echo "=== DevToolsActivePort written? ==="
-          cat "$DIR/a/DevToolsActivePort" 2>&1 || echo "WITH sandbox: NO endpoint file"
-          cat "$DIR/b/DevToolsActivePort" 2>&1 || echo "WITHOUT sandbox: NO endpoint file"
+          timeout 25 xvfb-run --auto-servernum "$BIN" --user-data-dir="$DIR/b" --no-sandbox --remote-debugging-port=0 --no-first-run --no-default-browser-check about:blank > "$DIR/without.log" 2>&1 || echo "exit=$?"
+          echo "--- stderr ---"; cat "$DIR/without.log" || true
+          echo "--- endpoint file: ---"; cat "$DIR/b/DevToolsActivePort" 2>/dev/null || echo "NONE (no endpoint)"
+          echo "=== kernel namespace policy ==="
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "(sysctl unavailable)"
       - name: Run the real-browser suites
         run: xvfb-run --auto-servernum npm run check:browser-tests
 
