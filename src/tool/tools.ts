@@ -1,5 +1,5 @@
 import { OPERATION_NAMES, type OperationName } from '../adapter/operations.ts';
-import { BROWSER_CHOICE_GUIDANCE } from '../browser/driver.ts';
+import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
 
 /**
  * The twelve tools, their descriptions, and their argument schemas.
@@ -290,10 +290,18 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     name: 'browser_act',
     operation: 'act',
+    // The verb list is joined from `PAGE_ACTIONS` (`../browser/driver.ts`)
+    // rather than typed out here, so the description and the refusal §3.8
+    // owes cannot drift apart the way they once did: `fill_form` and `drag`
+    // were both real, implemented `PAGE_ACTIONS` entries, but this
+    // description named only the other ten, so an agent reading only its own
+    // tool list — the one surface it reliably reads — had no way to learn
+    // either verb existed. Adding a verb to `PAGE_ACTIONS` now updates this
+    // description for free; there is no second list to remember.
     description:
-      'Do one thing to the page: click, type, fill, press, select, hover, check, scroll, resize, ' +
-      'emulate, dialog. Element references come from a snapshot. Returns a fresh snapshot after ' +
-      'every change, because your next reference has to come from the page as it is now.',
+      `Do one thing to the page: ${PAGE_ACTIONS.join(', ')}. Element references come from a ` +
+      'snapshot. Returns a fresh snapshot after every change, because your next reference has ' +
+      'to come from the page as it is now.',
     arguments: [
       LEASE_KEY,
       {
