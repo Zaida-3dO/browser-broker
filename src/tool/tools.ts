@@ -322,6 +322,53 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         required: false,
         description: 'What to type, select, or answer a dialog with.',
       },
+      // **The door for the four verbs a flat string cannot describe.**
+      //
+      // `emulate`, `fill_form`, `drag` and `dialog`-with-prompt-text were
+      // implemented, validated, and already parsed by the bridge, and yet
+      // uncallable from here: this list declared only `action`, `target` and
+      // `value`, and none of them can carry an object, an array, or a second
+      // element reference. `additionalProperties: false` then turned that
+      // silence into a refusal — which is the better failure, but a failure
+      // either way. Two reviewers in different repos independently guessed
+      // the same three shapes for `emulate` and were refused identically,
+      // and both downgraded their own reduced-motion evidence in writing
+      // because of it.
+      //
+      // The fix is a declaration, not a feature: `actionFrom`
+      // (`../service/bridge.ts`) already opens with a whole-request
+      // passthrough for the in-process caller that writes the service's own
+      // spelling. The seam was built and reachable; it was simply never
+      // declared. Declaring it costs **one** argument and fixes all four
+      // verbs, where an argument per field would have cost six — and
+      // `SCHEMA.md` §3.1 is explicit that "surface area is a standing tax
+      // and the list is short on purpose", paid by every connected session
+      // on every turn.
+      //
+      // **The description carries the shape deliberately, and at length for
+      // this surface.** `request` is a structured escape hatch, so a caller
+      // who cannot guess its contents is no better off than one refused
+      // outright. The refusals are the other half of that job (they still
+      // name the CLI flag and not this argument) and are tracked separately;
+      // until they land, this text is the only place an agent can learn the
+      // shape — and it is the one surface an agent reliably reads each turn.
+      {
+        name: 'request',
+        type: 'object',
+        required: false,
+        description:
+          "The whole action, in the service's own spelling, for the verbs whose input a flat " +
+          'string cannot express. Send it INSTEAD of action/target/value, repeating the verb ' +
+          'inside it: {"action":"emulate","preferences":{"reducedMotion":"reduce"}} — also ' +
+          '"colourScheme":"dark" and "forcedColours":"active". The other three: ' +
+          '{"action":"fill_form","fields":[{"ref":"e12","value":"a"}]}, ' +
+          '{"action":"drag","ref":"e1","targetRef":"e2"}, and ' +
+          '{"action":"dialog","response":{"accept":true,"promptText":"text"}}. ' +
+          'Every other verb is simpler through action/target/value. Note that an emulated ' +
+          'preference is scoped to this connection, so emulate and then read on the same lease; ' +
+          'and read motion with browser_evaluate BEFORE any capture on that tab, because a ' +
+          'capture suppresses animation document-wide and cannot be undone.',
+      },
     ],
   },
   {
