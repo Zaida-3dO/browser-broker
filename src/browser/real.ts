@@ -207,7 +207,128 @@ interface KeeperState {
  */
 interface PageRecording {
   readonly console: string[];
-  readonly network: string[];
+  /**
+   * One entry per request, **mutated in place** as its outcome arrives. Held
+   * in insertion order, which is the order the requests were made.
+   *
+   * See {@link NetworkEntry} for why the outcome updates the request's own
+   * entry rather than appending a second line.
+   */
+  readonly network: NetworkEntry[];
+}
+
+/**
+ * What is known about one request, so far.
+ *
+ * ── Why outcome is a field and not a second line ────────────────────────
+ *
+ * The obvious cheaper change is a second listener that pushes
+ * `"<- 404 <url>"` when a response arrives. It is rejected: a caller then has
+ * to pair lines up by address, and a page that requests one address twice —
+ * which is ordinary — makes that pairing ambiguous with no way to resolve it.
+ * Keying on the automation library's own request object is unambiguous by
+ * construction, because that object *is* the identity of the request.
+ *
+ * ── Why `outcome` distinguishes three states and not two ────────────────
+ *
+ * A request with no `outcome` yet is **in flight**, which is a real state and
+ * not an absence — a read can legitimately happen mid-load. Reporting it as
+ * though it had completed is the misleading-evidence failure this work exists
+ * to remove, and dropping it silently is the same failure wearing a different
+ * hat. So the three states a caller must be able to tell apart — succeeded,
+ * failed, and not-answered-yet — are three shapes here, and the formatter
+ * writes a visibly different line for each.
+ *
+ * ── Timings: deliberately one number, not a waterfall ───────────────────
+ *
+ * The item asks for timings to be considered. **Included: one elapsed
+ * milliseconds figure, and only on a settled request.** The reason to include
+ * anything is that "the API call is slow" and "the API call is broken" are
+ * different answers to the reviewer's question, and a status alone cannot
+ * separate them. The reason not to include more is that the library's full
+ * timing breakdown (DNS, connect, TLS, TTFB) is seven numbers per request
+ * that answer a profiling question nobody asked this surface, on a log that is
+ * already one line per request on a page that makes hundreds. One number is
+ * measured from this process's own clock at the two events it already has, so
+ * it costs no extra call into the browser.
+ */
+interface NetworkEntry {
+  readonly method: string;
+  readonly url: string;
+  /** This process's clock when the request was seen, for the elapsed figure. */
+  readonly startedAt: number;
+  outcome?: NetworkOutcome;
+}
+
+/** How a request settled — a status it was answered with, or a failure. */
+type NetworkOutcome =
+  | { readonly kind: 'response'; readonly status: number; readonly elapsedMs: number }
+  | { readonly kind: 'failed'; readonly reason: string; readonly elapsedMs: number };
+
+/**
+ * One request as a line of the network log.
+ *
+ * The shape is `STATUS METHOD URL (elapsed)`, with the outcome **first**,
+ * because that is the column a caller scans: a log whose status is at the end
+ * of a line of arbitrary length is one a reader has to parse rather than scan.
+ *
+ * `FAILED` and `PENDING` occupy the same column as a status code for the same
+ * reason, and neither can be mistaken for one — a caller looking for "did this
+ * work" reads one token per line whatever happened.
+ */
+function formatNetworkEntry(entry: NetworkEntry): string {
+  const request = `${entry.method} ${entry.url}`;
+  if (entry.outcome === undefined) {
+    // No response and no failure yet. Said explicitly — the alternative is a
+    // line that reads exactly like a request nobody ever asked the outcome of.
+    return `PENDING ${request} (in flight when this log was written)`;
+  }
+  if (entry.outcome.kind === 'failed') {
+    return `FAILED  ${request} (${entry.outcome.reason}, ${String(entry.outcome.elapsedMs)}ms)`;
+  }
+  return `${String(entry.outcome.status)}     ${request} (${String(entry.outcome.elapsedMs)}ms)`;
+}
+
+/**
+ * The whole network log as it goes into the file, header and all.
+ *
+ * ── Why a header, and why it counts rather than describes ───────────────
+ *
+ * The item's third criterion: *if the full request set is not returned, the
+ * response says what it is showing, so a caller does not read one line as the
+ * whole picture.* **Everything accumulated is returned here** — nothing is
+ * dropped, so the honest header is a count rather than an apology. It exists
+ * because the reported defect was a caller unable to tell a one-line log from
+ * a one-request page, and a count settles that in one line whichever it was.
+ *
+ * The pending tally is called out separately because it is the number that
+ * changes what the rest of the log *means*: a read taken mid-load is a
+ * partial picture of the page even though it is a complete picture of what
+ * has been observed, and those are easy to confuse when nothing says so.
+ *
+ * **Nothing here truncates**, which matches {@link RealBrowserSession.read}'s
+ * neighbouring artefacts and {@link RealBrowserSession} `#write`'s note that
+ * a cap is the service's decision and not this module's. The growth this adds
+ * over the previous format is bounded and small — one outcome per request on a
+ * log that already held one line per request — so it introduces no cap that
+ * was not already owed, and it invents no byte count nobody agreed to.
+ */
+function renderNetworkLog(entries: readonly NetworkEntry[]): string {
+  if (entries.length === 0) {
+    // Distinguishable from a page whose requests all failed, which is the
+    // third thing the item asks a caller to be able to tell apart: no request
+    // was made, rather than one was made and went badly.
+    return 'No requests were observed on this tab.';
+  }
+
+  const pending = entries.filter((entry) => entry.outcome === undefined).length;
+  const counted = `${String(entries.length)} request${entries.length === 1 ? '' : 's'}`;
+  const header =
+    pending === 0
+      ? `${counted}, all settled.`
+      : `${counted}, ${String(pending)} still in flight when this was written.`;
+
+  return [header, ...entries.map((entry) => formatNetworkEntry(entry))].join('\n');
 }
 
 /**
@@ -485,21 +606,73 @@ class RealBrowserSession implements BrowserSession {
    * says is not needed and deliberately does not offer. See
    * {@link PageRecording}.
    *
-   * The entries are text rather than structures because what leaves this
-   * module is a **file**, and a file is text. Shaping them here keeps the
-   * serialisation in one place rather than splitting the format between the
-   * collector and the writer.
+   * A console entry is text, because what leaves this module is a **file** and
+   * a file is text, and a console message is complete the moment it happens.
+   *
+   * **A network entry is not**, and that is the one asymmetry here worth
+   * knowing: a request is observed before its outcome exists, so an entry is
+   * held as a structure ({@link NetworkEntry}) and rendered to text at write
+   * time by {@link formatNetworkEntry}. Pushing a formatted line on `request`
+   * would freeze the entry at the only moment when nothing is yet known about
+   * how it went, which is precisely how a log came to record intent and never
+   * outcome.
+   *
+   * ── Three listeners, because the browser reports three things ───────────
+   *
+   * `request` opens the entry, `response` settles it with a status, and
+   * `requestfailed` settles it with a failure. **A failure is not a status**
+   * and is not modelled as one: a blocked, refused or aborted request never
+   * got an answer at all, and flattening that into a synthetic code (0, or
+   * worse, 500) would invent a server response that did not happen.
    */
   #recordFrom(driverTabId: string, page: Page): void {
     if (this.#recordings.has(driverTabId)) return;
     const recording: PageRecording = { console: [], network: [] };
     this.#recordings.set(driverTabId, recording);
 
+    // Keyed by the library's own request object, which is the identity of the
+    // request — see {@link NetworkEntry} on why pairing by address is not
+    // sufficient. A WeakMap so an entry for a request the library has finished
+    // with does not hold it alive; the log itself keeps the entries.
+    const entries = new WeakMap<Request, NetworkEntry>();
+
     page.on('console', (message: ConsoleMessage) => {
       recording.console.push(`${message.type()}: ${message.text()}`);
     });
     page.on('request', (request: Request) => {
-      recording.network.push(`${request.method()} ${request.url()}`);
+      const entry: NetworkEntry = {
+        method: request.method(),
+        url: request.url(),
+        startedAt: Date.now(),
+      };
+      entries.set(request, entry);
+      recording.network.push(entry);
+    });
+    page.on('response', (response) => {
+      const entry = entries.get(response.request());
+      // A response for a request this page never reported is not expected, and
+      // is dropped rather than guessed at: an entry invented here would have no
+      // start time and so no honest elapsed figure.
+      if (entry === undefined || entry.outcome !== undefined) return;
+      entry.outcome = {
+        kind: 'response',
+        status: response.status(),
+        elapsedMs: Date.now() - entry.startedAt,
+      };
+    });
+    page.on('requestfailed', (request: Request) => {
+      const entry = entries.get(request);
+      // A request that failed *after* its response headers arrived keeps the
+      // status it was answered with: the server did answer, and overwriting a
+      // real 200 with a failure would lose the more informative half.
+      if (entry === undefined || entry.outcome !== undefined) return;
+      entry.outcome = {
+        kind: 'failed',
+        // The library's own words for why. `null` for a failure it has no text
+        // for, which is said rather than blanked.
+        reason: request.failure()?.errorText ?? 'no reason reported',
+        elapsedMs: Date.now() - entry.startedAt,
+      };
     });
 
     // A dialog blocks its tab until something answers it, so a page with no
@@ -1185,7 +1358,7 @@ class RealBrowserSession implements BrowserSession {
 
         case 'network':
           results.push(
-            this.#write(tab, 'network', page.url(), this.#recording(tab).network.join('\n')),
+            this.#write(tab, 'network', page.url(), renderNetworkLog(this.#recording(tab).network)),
           );
           break;
 
