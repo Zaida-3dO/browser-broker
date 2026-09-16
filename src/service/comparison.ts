@@ -156,6 +156,39 @@ export interface RunComparisonOptions {
    * unit, or neither.
    */
   readonly writeRow: (row: ComparisonRow) => string;
+  /**
+   * Claims the caller has **proven** it owns, beyond the one it is capturing
+   * under — how a caller compares against its own earlier baseline across a
+   * release (item b0d1d20d).
+   *
+   * ── Why this exists, and why it is a set of claim ids ───────────────────
+   *
+   * The ownership check below refuses a capture belonging to another claim. It
+   * refused **identically** for a stranger's capture and for the caller's own
+   * earlier capture taken under a claim it has since released — and callers are
+   * explicitly encouraged to release promptly, so taking that advice destroyed
+   * the ability to diff against what they had just seen.
+   *
+   * Those two cases are not the same case, and only the first is what §1.9's
+   * non-disclosure rule is about.
+   *
+   * **The entries here are proven, never asserted.** The caller demonstrates a
+   * past claim is its own by presenting that claim's lease key — a
+   * {@link KEY_BYTES}-byte secret this service mints once, returns once and
+   * stores only as a one-way hash. The resolver hashes what it was handed and
+   * matches `claims.key_hash`, so an entry can only appear here if the caller
+   * held the secret. Nothing a caller merely *says* about itself reaches this
+   * set.
+   *
+   * **`session_id` is deliberately not what this keys on.** It is
+   * `TEXT NOT NULL` with no `CHECK`, validated only for being non-empty, and
+   * §1.3 calls it "a key another system owns" whose content is not this
+   * service's to judge — so keying on it would let any caller read any other
+   * caller's captures by typing their session identifier. That would convert a
+   * privacy guard into a formality, which is the one outcome this widening was
+   * not allowed to produce.
+   */
+  readonly provenClaimIds?: ReadonlySet<string>;
 }
 
 /** The row §1.9 specifies, as the writer receives it. */
@@ -268,7 +301,27 @@ export async function runComparison(options: RunComparisonOptions): Promise<Comp
   // identical sentence as a caller that named nothing at all. Distinguishing
   // them would turn `diff_against` into a way to enumerate other leases'
   // captures by watching which identifiers produce a different message.
-  if (target.claimId !== capture.claimId) {
+  //
+  // ── The one widening, and why it does not weaken the above ─────────────
+  //
+  // The check is "does the caller own this capture", not "is this capture on
+  // the lease in hand". Those coincided until a caller needed to diff against
+  // a baseline it took before releasing — its own capture, under its own
+  // earlier claim, refused by a rule written to stop *cross-caller*
+  // disclosure. {@link RunComparisonOptions.provenClaimIds} carries the
+  // earlier claims the caller has proven are its own by producing their lease
+  // keys, and a capture on one of those is the caller's own history rather
+  // than somebody else's file.
+  //
+  // **The non-disclosure property is untouched for everyone else.** The set is
+  // empty unless a valid key was presented, a key that resolves to nothing
+  // adds nothing to it, and every path that does not match still returns the
+  // identical sentence — so a caller who cannot produce the secret still
+  // cannot tell "not yours" from "no such capture", which is the property
+  // §1.9 actually requires.
+  const owned =
+    target.claimId === capture.claimId || (options.provenClaimIds?.has(target.claimId) ?? false);
+  if (!owned) {
     return noDiff(
       settings,
       `No diff was produced: there is no capture with the identifier ${JSON.stringify(targetCaptureId)}, so there was nothing to compare against. The picture you asked for is above. Check the identifier — it is the one returned by the earlier capture you meant to compare with.`,

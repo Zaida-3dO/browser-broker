@@ -195,3 +195,93 @@ test('promotion follows arrival order across a budget larger than one', async ()
     { tabBudget: 2 },
   );
 });
+
+test('ONE release that frees capacity for two waiters promotes BOTH, not just the front', async () => {
+  // ── What this covers that the test above does not ──────────────────────
+  //
+  // The test above releases holders **one at a time**, so exactly one
+  // promotion is ever due per release — and an implementation that promoted
+  // at most one lease per call would satisfy every assertion in it. Measured:
+  // capping `promoteWhileCapacity`'s loop at a single promotion left all 13
+  // queue/promotion tests green, so nothing anywhere distinguished a loop
+  // that promotes one from a loop that promotes all.
+  //
+  // `promoteWhileCapacity` runs `while capacity exists`. To make the loop
+  // iterate more than once, more than one tab's worth of capacity has to come
+  // back **before a single promotion pass runs**. The sweep expires leases
+  // but deliberately does not promote (promotion lives in `give-back`), so
+  // ageing two active leases past their expiry and then releasing a third is
+  // exactly that shape: the sweep reconciles two slots away, and the release
+  // that follows drives one promotion pass into which two waiters fit.
+  //
+  // `ReleaseResult.promoted` is the assertion that matters and is the one no
+  // test previously made above 1.
+  await withBroker(
+    async ({ broker, store, readCommitted }) => {
+      const holderA = await broker.claim(claimInput({ sessionId: 'session-a' }));
+      const holderB = await broker.claim(claimInput({ sessionId: 'session-b' }));
+      const holderC = await broker.claim(claimInput({ sessionId: 'session-c' }));
+      if (
+        holderA.outcome !== 'granted' ||
+        holderB.outcome !== 'granted' ||
+        holderC.outcome !== 'granted'
+      ) {
+        assert.fail('all three should be granted under a budget of three');
+      }
+
+      const first = await broker.claim(claimInput({ sessionId: 'session-d' }));
+      const second = await broker.claim(claimInput({ sessionId: 'session-e' }));
+      if (first.outcome !== 'queued' || second.outcome !== 'queued') {
+        assert.fail('the fourth and fifth callers are over a budget of three');
+      }
+      assert.equal(first.position, 1, 'the earlier arrival is in front');
+      assert.equal(second.position, 2);
+
+      // Age A and B past their expiry. The leases were created through
+      // `broker.claim` like every other lease in this file — only the clock
+      // is moved, which is the one thing a test cannot do by waiting.
+      await store.immediate(({ db }) => {
+        db.prepare(
+          `UPDATE claims
+              SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour')
+            WHERE id IN (@a, @b)`,
+        ).run({ a: holderA.claimId, b: holderB.claimId });
+        return { value: undefined };
+      });
+
+      // The next operation sweeps first (the runner sweeps unconditionally
+      // before any handler), so this single release sees two slots already
+      // reconciled away plus its own — and the promotion loop must run more
+      // than once to fill them.
+      const result = await broker.release({ key: holderC.key });
+
+      assert.equal(
+        result.promoted,
+        2,
+        'one release freed capacity for two waiters but the promotion loop stopped after one',
+      );
+
+      const firstNow = await broker.status({ key: first.key });
+      const secondNow = await broker.status({ key: second.key });
+      assert.equal(firstNow.state, 'active', 'the front of the queue was promoted');
+      assert.equal(
+        secondNow.state,
+        'active',
+        'the SECOND waiter was left queued — the loop promoted once rather than while capacity',
+      );
+
+      // And it committed, rather than being true only inside the transaction
+      // that made it (this file's own house rule).
+      const states = readCommitted<{ state: string }>(
+        'SELECT state FROM claims WHERE id IN (@first, @second)',
+        { first: first.claimId, second: second.claimId },
+      );
+      assert.deepEqual(
+        states.map((row) => row.state).sort(),
+        ['active', 'active'],
+        'both promotions did not commit',
+      );
+    },
+    { tabBudget: 3 },
+  );
+});

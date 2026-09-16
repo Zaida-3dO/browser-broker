@@ -136,6 +136,23 @@ const PARSERS: readonly {
 ];
 
 /**
+ * How a `parseFlags` **call site** is recognised, wherever that question is
+ * asked.
+ *
+ * A function rather than a constant because a `g`-flagged regex carries
+ * `lastIndex` between uses, so a shared instance would make one caller's
+ * result depend on another's. Each caller gets its own.
+ *
+ * Exported as a named helper so the regression test below asserts against the
+ * pattern the counter actually uses. A copy of the expression in the test
+ * would pass for ever while the counter drifted away from it — which is the
+ * same class of silent divergence this whole file exists to catch.
+ */
+function callSitePattern(): RegExp {
+  return /(?<!function\s)\bparseFlags\(\s*\w+\s*[,)]/g;
+}
+
+/**
  * `operations-commands.ts` holds two commands' call sites in one file, so the
  * file-level extractor cannot answer for either alone. Each is narrowed to its
  * own function body first.
@@ -331,10 +348,29 @@ test('every parseFlags call site in the CLI is covered by a row above', () => {
   const callSites: string[] = [];
   for (const name of files) {
     const source = fs.readFileSync(path.join(cliDirectory, name), 'utf8');
-    // Requiring the array literal is what keeps the *declaration* of
-    // `parseFlags` out of the count: it is followed by a parameter list, not
-    // by `rest, [`.
-    const calls = [...source.matchAll(/parseFlags\(\s*\w+\s*,\s*\[/g)];
+    // ── Why this does NOT require the array literal ──────────────────────
+    //
+    // It used to match `parseFlags(\s*\w+\s*,\s*\[`, and requiring that `[`
+    // was the escape: `const ACCEPTED = [...]; parseFlags(rest, ACCEPTED)`
+    // yields zero call-site matches, so a BRAND-NEW file passing its accepted
+    // set by name and having no `PARSERS` row was counted as nothing, read by
+    // nothing, and fully green. Two conditions had to coincide, but the
+    // failure was silent — which is the one shape this file exists to make
+    // loud.
+    //
+    // The declaration is kept out of the count by what it actually is rather
+    // than by a side effect of the argument spelling: a declaration is
+    // preceded by `function `, so that is what is excluded. A call is
+    // `parseFlags(` followed by an identifier and then a comma or a closing
+    // paren — which matches every spelling of the second argument, a literal
+    // and a named const alike, and still cannot match the parameter list
+    // (`rest: readonly string[],` has a colon where a call has a comma).
+    //
+    // Note the extractor above still requires the literal, and correctly so:
+    // it has to READ the flag names, which a named const does not carry at
+    // the call site. This counter only has to KNOW A CALL HAPPENED — a
+    // weaker question, and one that can be answered for every spelling.
+    const calls = [...source.matchAll(callSitePattern())];
     callSites.push(...calls.map(() => name));
   }
 
@@ -354,5 +390,57 @@ test('every parseFlags call site in the CLI is covered by a row above', () => {
     'a parseFlags call site is not covered by any row in PARSERS — a command that accepts ' +
       'flags is not being checked against its --help, which is exactly the drift this file ' +
       'exists to catch. Add a row for it.',
+  );
+});
+
+/**
+ * The escape the counter above used to have, pinned so it cannot reopen.
+ *
+ * The counter formerly required a literal `[` after `parseFlags(`, which made
+ * a call site passing its accepted set by NAME invisible to it. Combined with
+ * a brand-new file having no `PARSERS` row, that produced a fully green run
+ * for a command whose flags nothing checked against its `--help`.
+ *
+ * Asserted on source text held here rather than by writing a file into
+ * `src/cli/`: a fixture on disk would have to be created and deleted around
+ * the assertion, and a run that died in between would leave a file that fails
+ * the real counter above for everyone afterwards. The shapes are what matter
+ * and they are what is written down.
+ */
+test('the call-site counter sees a named-const accepted set, not only a literal array', () => {
+  const namedConst = "const ACCEPTED = ['browser'];\nconst flags = parseFlags(rest, ACCEPTED);\n";
+  const literal = "const flags = parseFlags(rest, ['browser', 'session-id']);\n";
+
+  assert.equal(
+    [...namedConst.matchAll(callSitePattern())].length,
+    1,
+    'a named-const accepted set is invisible to the counter again — the escape has reopened, ' +
+      'and a new CLI file using this spelling with no PARSERS row would pass silently',
+  );
+  assert.equal(
+    [...literal.matchAll(callSitePattern())].length,
+    1,
+    'the literal-array spelling stopped being counted',
+  );
+
+  // The declaration must stay out of the count, which is the constraint that
+  // made the old pattern require an array in the first place. Written with the
+  // real signature's shape: the parameter list has a colon where a call has a
+  // comma.
+  const declaration =
+    'export function parseFlags(\n  rest: readonly string[],\n  known?: readonly string[],\n)';
+  assert.equal(
+    [...declaration.matchAll(callSitePattern())].length,
+    0,
+    'the parseFlags DECLARATION is being counted as a call site, so the coverage assertion ' +
+      'would demand a PARSERS row for the file that defines the parser',
+  );
+
+  // And the import, which names the function without calling it.
+  const imported = "import { COMMAND_EXIT, parseFlags } from './operations-commands.ts';\n";
+  assert.equal(
+    [...imported.matchAll(callSitePattern())].length,
+    0,
+    'an import naming parseFlags is being counted as a call site',
   );
 });

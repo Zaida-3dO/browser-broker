@@ -25,6 +25,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "pretest": "node scripts/pretest-reap.mjs",
     "test": "node --test \"tests/**/*.test.mjs\" \"tests/**/*.test.ts\"",
     "check": "npm run check:external-refs && npm run check:doc-links && npm run check:pinned-install && npm run check:arbitration && npm run check:capture-isolation && npm run check:artifact-path && npm run typecheck && npm run lint && npm run format:check && npm test && npm run check:install && npm run check:operations && npm run check:argument-refusals && npm run check:argument-reachability && npm run check:injected-tests && npm run check:package",
     "check:arbitration": "node scripts/check-arbitration.mjs",

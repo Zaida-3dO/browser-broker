@@ -235,3 +235,41 @@ export function extendLease(
 
   return row.expiresAt;
 }
+
+/**
+ * Resolve a key to the claim it belongs to, **whatever state that claim is
+ * in** — proof of past ownership rather than authority to act.
+ *
+ * ── Why this is not {@link resolveLease } ────────────────────────────────
+ *
+ * `resolveLease` refuses anything that is not `queued` or `active`, because
+ * its answer is "may this caller act on this lease" and an ended lease confers
+ * no authority. It also renews what it resolves, which an ended lease cannot
+ * accept.
+ *
+ * This answers a strictly narrower question: **was this key ever the key to
+ * this claim?** A released claim is precisely the interesting case — a caller
+ * comparing against a baseline it took before giving the tab back is asking
+ * about history, not asking to do anything with the old lease. So liveness is
+ * not required here, and requiring it would refuse the only case this exists
+ * for.
+ *
+ * ── What makes this proof rather than an assertion ──────────────────────
+ *
+ * The lookup is by `key_hash`, and the key is 32 bytes from the platform's
+ * cryptographic random source, returned to the caller once and never stored
+ * (`keys.ts`). Producing one is therefore something only the caller that was
+ * given it can do. Contrast `session_id`, which is caller-supplied text with
+ * no constraint behind it: keying ownership on that would let anyone claim to
+ * be anyone.
+ *
+ * Nothing is appended to the ledger and nothing is renewed: this reads.
+ *
+ * @returns the claim id, or `null` if no claim has ever had this key.
+ */
+export function claimIdForKey(db: Database, key: string): string | null {
+  const row = db
+    .prepare('SELECT id AS claimId FROM claims WHERE key_hash = @keyHash')
+    .get({ keyHash: hashKey(key) }) as { claimId: string } | undefined;
+  return row?.claimId ?? null;
+}

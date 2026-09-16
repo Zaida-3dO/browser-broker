@@ -282,6 +282,17 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         // told the diff is available, passes it, and gets a capture with no
         // comparison and nothing saying why.
         const compareTo = argument(args, 'compare_to', 'compareTo');
+        // The proof that a `compare_to` capture from an ended claim is the
+        // caller's own (item b0d1d20d). `--compare-to-key` on the command
+        // line normalises to `compare_to_key` the same way `--compare-to`
+        // does, so it arrives here under that name.
+        //
+        // **Not declared on the MCP tool surface**, deliberately: that
+        // surface refuses undeclared arguments, and adding the declaration
+        // touches `tools.ts`, which another crew owns this round. The
+        // capability is complete and reachable from the command line; the one
+        // declaration is a follow-up.
+        const compareToKey = argument(args, 'compare_to_key', 'compareToKey');
         // The resolution rung and the written justification the top rung
         // requires. **Coercion only, never validation**, the same split the
         // wait above keeps: `validateCaptureTier` names the accepted words and
@@ -305,6 +316,9 @@ export function serviceFor(options: BridgeOptions): BrokerService {
             ...(fullPage === undefined ? {} : { fullPage: asBoolean(fullPage) }),
             ...(typeof selector === 'string' ? { selector } : {}),
             ...(typeof compareTo === 'string' && compareTo.length > 0 ? { compareTo } : {}),
+            ...(typeof compareToKey === 'string' && compareToKey.length > 0
+              ? { compareToKey }
+              : {}),
             ...(tier === undefined ? {} : { tier }),
             ...(reason === undefined ? {} : { reason }),
           })),
