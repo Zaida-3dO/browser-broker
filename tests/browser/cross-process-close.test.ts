@@ -82,7 +82,7 @@ async function keeperTargetIdOf(endpoint: string): Promise<string | undefined> {
   }
 }
 
-/** Every page the browser currently has open, asked of a third connection. */
+/** Every page the browser has open, asked of a third connection. */
 async function openPages(endpoint: string): Promise<{ urls: string[]; titles: string[] }> {
   const connection = await chromium.connectOverCDP(endpoint);
   try {
@@ -124,9 +124,9 @@ test(
         // **Closed by the connection that did not open it, without calling
         // `listTabs` first.** That ordering is load-bearing: `listTabs` runs
         // `#track()` and populates the map, so a test that listed first would
-        // pass against the broken implementation. `reconcile` works today only
-        // because it happens to list first — which is exactly how this defect
-        // stayed hidden from the one command built to find leaked pages.
+        // pass against an implementation that can only close what it opened.
+        // `reconcile` happens to list first, which is why a defect here can
+        // hide from the one command built to find leaked pages.
         outcome = await second.closeTab(opened);
       } finally {
         await second.detach();
@@ -155,12 +155,12 @@ test(
   async () => {
     // ── The hazard this test exists for, stated precisely ───────────────
     //
-    // Keeper safety used to be **structural and accidental**: the keeper's
-    // page was never in `#pages`, so the old `closeTab` could not resolve it.
-    // The keeper survived because closing was broken. Fixing the close removes
-    // that guarantee, and the obvious replacement — `#adopt`'s
-    // `page === this.#keeper.page` check — **is not sufficient on its own**,
-    // because `#keeper` initialises to `{ page: undefined }`.
+    // `closeTab` reaches any page in the browser through the adoption path,
+    // and that necessarily includes the keeper. **The identity guard in
+    // `#adopt` — `page === this.#keeper.page` — is not sufficient on its own**,
+    // because `#keeper` initialises to `{ page: undefined }`: a session that
+    // has not established the keeper compares every candidate against
+    // `undefined` and excludes nothing.
     //
     // So a connection that has just attached to a running browser and has not
     // yet called `ensureKeeperTab` compares the keeper against `undefined`,

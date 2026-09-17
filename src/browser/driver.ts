@@ -769,41 +769,40 @@ export type StorageSeedArea = StorageSeedEntry['area'];
 /**
  * What became of a tab a caller asked to close.
  *
- * ── Why this is a returned value and emphatically not a thrown one ──────
+ * ── Why the answer is a returned value and emphatically not a thrown one ─
  *
  * `SCHEMA.md` §2.4b makes closing best effort: a tab that will not close is a
  * leaked tab and not a leaked lease, and {@link TabOperations.closeTab} says
  * below that a rejection here is information for the row rather than a failure
- * to propagate. That settles how a *failure* travels. It does not settle how
- * **"there was nothing here to close"** travels, and for a long time nothing
- * did — the answer was `Promise<void>`, so a close that did nothing and a close
- * that ended a page were the same answer, and the caller recording the row
- * could only write down success.
+ * to propagate. That settles how a *failure* travels — it does not settle how
+ * **"there was nothing here to close"** travels, and those are different
+ * facts. An absent page is neither an error to raise nor a success to report.
  *
- * That is the shape of the defect this type exists to close: a session that
- * did not open a tab could not resolve it, returned, and the row was written
- * `state='closed', close_failed=0` while the page stayed on the screen. It was
- * self-masking — `doctor` counts rows stranded at `closing` and `status`
- * selects `close_failed = 1`, and a row that goes straight to `closed` is
- * invisible to both. Twelve rows read as cleanly closed while three pages from
- * released leases sat open in front of a person.
+ * A seam that answers nothing cannot carry that distinction at all, and the
+ * consequence falls on the store rather than on the caller: the row gets
+ * written `state='closed', close_failed=0` whether or not a page was ended.
+ * **That particular row is self-masking**, which is what makes the distinction
+ * worth a type. `doctor` counts rows stranded at `closing` and `status`
+ * selects `close_failed = 1`, so a row that goes straight to `closed` is
+ * invisible to both instruments built to find leaked pages — a page can sit
+ * open on a person's screen while every query says the store is healthy.
  *
  * So the distinction is carried *in the value*, where a caller has to receive
- * it to record anything, rather than in an exception a best-effort caller is
- * specified to swallow.
+ * it in order to record anything, rather than in an exception a best-effort
+ * caller is specified to swallow.
  *
- * - `closed` — a page was found and it is gone. The only outcome on which a
- *   row may be recorded closed.
- * - `not_found` — no page in this browser answers to that name. The tab was
- *   already gone, the name belongs to another browser, or (the case that
- *   mattered) the implementation could not address it. **Not an error and not
- *   a success**: it is the absence of evidence either way, so the row must not
- *   claim the page was closed on it.
- * - `refused` — the implementation declined to close this particular tab
- *   because closing it is not permitted. Today that is the keeper and only the
- *   keeper (§3.15, §7.3). Distinct from `not_found` so that a keeper protected
- *   *on purpose* is never mistaken for a handle that failed to resolve, which
- *   is precisely how the protection previously read.
+ * - `closed` — a page was found and it is gone. **The only outcome on which a
+ *   row may be recorded closed.**
+ * - `not_found` — no page in this browser answers to that name: the tab was
+ *   already gone, the name belongs to another browser, or the implementation
+ *   cannot address it. **Neither an error nor a success** — it is the absence
+ *   of evidence either way, so the row must not claim the page was closed.
+ * - `refused` — closing this particular tab is not permitted, which means the
+ *   keeper and only the keeper (§3.15, §7.3). Kept distinct from `not_found`
+ *   so that a page protected *on purpose* never reads as a handle that merely
+ *   failed to resolve: one is a rule doing its job and the other is a gap, and
+ *   a seam that spells them the same way invites the reader to treat a
+ *   deliberate safety rule as an implementation accident.
  */
 export type TabCloseOutcome = 'closed' | 'not_found' | 'refused';
 

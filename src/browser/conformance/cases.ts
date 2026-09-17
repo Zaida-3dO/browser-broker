@@ -123,8 +123,8 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
 
   {
     name: 'closeTab distinguishes a page it closed from a name it could not find',
-    rule: 'tabs.close_failed',
-    why: 'runtime.ts derives the tab row directly from this value: `closed` writes `state=closed, close_failed=0`, anything else flags the row. So an implementation that answers the same way whether or not it closed anything makes the service record a clean close for a page that is still open — and that exact pair is invisible to both instruments built to find leaked pages, because doctor counts rows stranded at `closing` and status selects `close_failed = 1`. It is the field defect: twelve rows read as cleanly closed while three released pages sat open on a person’s screen.',
+    rule: 'tab.open',
+    why: 'Whether a tab is open is the fact this seam is asked to change and the fact the store then records. runtime.ts derives the row directly from the answer: `closed` writes `state=closed, close_failed=0`, and anything else flags the row instead. So an implementation that answers the same way whether or not it closed anything makes the service record a clean close for a page that is still open — and that pair is invisible to both instruments built to find leaked pages, because doctor counts rows stranded at `closing` and status selects `close_failed = 1`. The store then reports health while pages from released leases stay on the screen.',
     check: async ({ session }) => {
       await session.ensureKeeperTab();
 

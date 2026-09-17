@@ -586,14 +586,14 @@ class RealBrowserSession implements BrowserSession {
    *
    * It is by **object identity** against `#keeper.page`, and that field
    * initialises to `undefined`. So on a connection that has attached to a
-   * running browser and not yet called {@link ensureKeeperTab}, the comparison
-   * is against `undefined` and the keeper is adoptable like any other page.
-   * That is tolerable for the verbs that read or drive a page — the worst case
-   * is a caller steering a blank tab — and it is **not** tolerable for
-   * {@link closeTab}, which is why that method does not lean on this check and
-   * excludes the keeper by `KEEPER_TAB_URL` before and after resolving. Read
-   * this guard as "the keeper is normally not adopted", not as a guarantee
-   * anything destructive may rest on.
+   * running browser and has not yet called {@link ensureKeeperTab}, the
+   * comparison is against `undefined` and the keeper is adoptable like any
+   * other page. That is tolerable for the verbs that read or drive a page —
+   * the worst case is a caller steering a blank tab — and it is **not**
+   * tolerable for {@link closeTab}, which is why that method excludes the
+   * keeper by `KEEPER_TAB_URL` before and after resolving rather than leaning
+   * on this check. Read this guard as "the keeper is normally not adopted",
+   * never as a guarantee anything destructive may rest on.
    */
   async #adopt(driverTabId: string): Promise<Page | undefined> {
     for (const page of this.#context.pages()) {
@@ -827,51 +827,50 @@ class RealBrowserSession implements BrowserSession {
   /**
    * Close the page a handle names, wherever this session got the name from.
    *
-   * ── Why this resolves like every other verb, and did not ────────────────
+   * ── Why closing resolves like every other verb ──────────────────────────
    *
-   * It used to read the {@link #pages} map and **return** on a miss. Every
-   * other page verb goes through {@link #page}, which falls back to
-   * {@link #adopt} — the thing that makes a tab addressable by the process
-   * that did not open it. So closing was the one operation that stopped
-   * working the moment a different process asked for it, which in a
-   * daemonless service spawned per caller is the ordinary case rather than
-   * the exotic one: the process releasing a lease is routinely not the
-   * process that opened its tab.
+   * Reading {@link #pages} alone would answer only for tabs this session
+   * opened itself. Every other page verb goes through {@link #page}, which
+   * falls back to {@link #adopt} — the thing that makes a tab addressable by
+   * the process that did not open it — and closing needs the same reach for
+   * the same reason. This service is daemonless, spawned per caller, so **the
+   * process releasing a lease is routinely not the process that opened its
+   * tab.** A close that only worked in the opening process would be a close
+   * that mostly did not work.
    *
-   * The damage was not the leaked page. It was that the miss returned
-   * **indistinguishably from a success**, so `runtime.ts` wrote the row
-   * `state='closed', close_failed=0` and the instruments built to find leaks
-   * could not see it: `doctor` counts rows stranded at `closing`, `status`
-   * selects `close_failed = 1`, and a row that went straight to `closed`
-   * answers to neither. Twelve such rows were recorded while three pages from
-   * released leases sat visibly open. Hence {@link TabCloseOutcome}: the
-   * caller now records a close only when a page was actually found and ended.
+   * The leaked page is the smaller half of getting that wrong. A miss that is
+   * indistinguishable from a success makes `runtime.ts` write the row
+   * `state='closed', close_failed=0`, and that row is invisible to both
+   * instruments built to find leaks: `doctor` counts rows stranded at
+   * `closing`, `status` selects `close_failed = 1`, and a row that went
+   * straight to `closed` answers to neither. Hence {@link TabCloseOutcome} —
+   * the caller records a close only when a page was found and ended.
    *
-   * ── ⚠ The keeper, and why the guard had to be rebuilt rather than kept ──
+   * ── ⚠ Why the keeper is excluded by address and not by identity ─────────
    *
-   * Keeper safety used to be **structural and accidental**: the keeper's page
-   * is never put in `#pages`, so the old lookup could not resolve it and the
-   * keeper survived because closing was broken. Fixing the bug removes that
-   * guarantee. `#adopt` does refuse the keeper — but by object identity
+   * Adoption is what makes this method work, and it is also what puts the
+   * keeper within reach, so the guard has to be strong enough to stand on its
+   * own. {@link #adopt} does refuse the keeper — but by object identity
    * against `#keeper.page`, and `#keeper` initialises to `{ page: undefined }`
-   * (see its declaration). A freshly attached session that calls `closeTab`
-   * before `ensureKeeperTab` has run compares against `undefined`, matches
-   * nothing, and adopts the keeper like any other page. Closing it ends the
-   * shared signed-in browser: a headed browser dies within about half a second
-   * of its last tab closing.
+   * (see its declaration). **A freshly attached session that calls this before
+   * {@link ensureKeeperTab} compares against `undefined`, matches nothing, and
+   * adopts the keeper like any other page.** Closing it ends the shared
+   * signed-in browser: a headed browser dies within about half a second of its
+   * last tab closing.
    *
-   * So the keeper is excluded **by address** here, exactly as
-   * `ensureKeeperTab` recognises an adoptable keeper by `KEEPER_TAB_URL`. A
-   * URL is a property of the page the browser reports, true on the first call
-   * of a brand-new connection, and it does not depend on this session having
-   * done anything first. Identity is kept as well, in `#adopt`, but it is the
-   * second lock and not the only one — identity alone is only sound once
-   * something has already populated the field it compares.
+   * So the keeper is excluded **by address**, exactly as `ensureKeeperTab`
+   * recognises an adoptable keeper by `KEEPER_TAB_URL`. A URL is a property of
+   * the page the browser reports — true on the very first call of a brand-new
+   * connection, and independent of whether this session has done anything
+   * first. Identity in `#adopt` stands as a second lock rather than the only
+   * one, because identity is sound only once something has populated the field
+   * it compares, and a destructive operation must not rest on a precondition
+   * its caller controls.
    *
-   * The refusal is reported as `refused` rather than `not_found`, because a
-   * keeper protected on purpose and a handle that failed to resolve are
-   * different facts, and collapsing them is how the protection came to look
-   * like an implementation detail of a bug.
+   * The refusal reports `refused` rather than `not_found`, because a keeper
+   * protected on purpose and a handle that failed to resolve are different
+   * facts — and spelling them the same way is what makes a deliberate safety
+   * rule read as an implementation accident.
    */
   async closeTab(tab: TabHandle): Promise<TabCloseOutcome> {
     if (tab.driverTabId === this.#keeperHandleId()) {

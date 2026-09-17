@@ -645,7 +645,7 @@ describe('broker reconcile', () => {
     assert.match(
       conclusion,
       /may not happen on its own/u,
-      'the message no longer warns that the condition can be permanent',
+      'the message fails to warn that the condition can be permanent',
     );
     // And it has to point at the thing that actually resolves it — the lease
     // — rather than at the clock.

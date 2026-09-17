@@ -672,17 +672,14 @@ export class FakeBrowserDriver implements BrowserDriver {
         // `keeper.never_leased` (§3.15, §7.3): the keeper is never
         // addressable, and **a caller cannot close what it cannot name.**
         //
-        // **This comment used to say `real.ts` got the same protection
-        // structurally, because the keeper's page was never in its `#pages`
-        // map and `closeTab` therefore could not resolve the handle. That is
-        // no longer true, and it was never a guarantee worth having**: the
-        // reason the real driver could not resolve the keeper was that it
-        // could not resolve *anything* it had not opened itself, which is the
-        // cross-process defect that let released pages stay open while their
-        // rows read `closed`. Keeper safety was a side effect of a bug, and it
-        // ended when the bug did. `real.ts` now excludes the keeper by
-        // `KEEPER_TAB_URL` — deliberately, and on a property the browser
-        // reports rather than on state the session may not have populated yet.
+        // **Both drivers exclude the keeper deliberately, and neither relies
+        // on it being unreachable.** `real.ts` excludes it by
+        // `KEEPER_TAB_URL` — a property the browser reports, rather than state
+        // a session may not have populated yet — precisely because its
+        // adoption path can reach any page in the browser, including this one.
+        // A protection that depends on an operation being unable to address
+        // its target is a protection that disappears the moment the operation
+        // gains reach, so each driver owns an explicit one.
         //
         // This fake mints its keeper through its own `openTab`, so without
         // this branch the keeper's identifier **is** an ordinary tab name and
@@ -702,13 +699,13 @@ export class FakeBrowserDriver implements BrowserDriver {
           return Promise.resolve('refused');
         }
 
-        // **`not_found` rather than an unconditional success**, and this is
-        // the half of the fake that had to change with the seam. It used to
-        // answer the same way whether or not it held the tab, which made it a
-        // fixture incapable of exhibiting the field defect: a service that
-        // recorded `closed` for a page it never touched passed against it.
-        // The real driver can now tell those apart, so the fake must too, or
-        // it validates the very conflation the return type exists to end.
+        // **`not_found` rather than an unconditional success**, and the
+        // distinction is the whole reason this fake is usable as a fixture.
+        // A fake that answers the same way whether or not it held the tab
+        // cannot exhibit the failure the seam exists to make visible: a
+        // service recording `closed` for a page it never touched would pass
+        // against it. The real driver can tell those apart, so this must too,
+        // or the fixture quietly validates the conflation.
         if (!this.#tabsFor(tab.browser).delete(tab.driverTabId)) {
           return Promise.resolve('not_found');
         }

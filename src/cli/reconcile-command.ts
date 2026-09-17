@@ -383,35 +383,34 @@ export function formatReconciliation(
  * open for as long as the command keeps being run, with nothing in the
  * message able to say so.
  *
- * ── Why the unowned branch no longer says "run again once they've settled" ──
+ * ── ⚠ Why the unowned branch must not promise that waiting will work ────
  *
- * Because they may never settle, and the message was the only thing claiming
- * otherwise. "Settled" describes something in progress that finishes on its
- * own, and an `opening` row has no such mechanism behind it: `reserveTab`
- * inserts the row inside the arbitration transaction and opens the page after
- * the commit (§2.4b), so a process that dies in between leaves a row that
- * `tabs.ts` says outright "can sit in `opening` forever… the honest outcome
- * rather than a gap".
+ * **An `opening` row can stay that way forever, so the message must not
+ * describe it as something that resolves on its own.** "Settled" and "wait a
+ * moment" both describe work in progress, and there is no mechanism behind
+ * this one: `reserveTab` inserts the row inside the arbitration transaction
+ * and opens the page after the commit (§2.4b), so a process that dies in
+ * between leaves a row that `tabs.ts` says outright "can sit in `opening`
+ * forever… the honest outcome rather than a gap".
  *
  * The refusal itself is correct and is deliberately left alone: §1.4's
  * `CHECK ((state = 'opening') = (driver_tab_id IS NULL))` means an `opening`
  * row holds no driver name, so no page can be *proven* unowned while one
  * exists, and `reconcile.ts` argues at length that declining beats guessing.
- * What was wrong was the advice on top of it. An operator told to wait will
- * wait — and re-run, and wait — against a condition that will outlive the
- * browser, with the counters reading zero every time and nothing anywhere
- * suggesting the wait is the wrong move.
+ * The hazard is entirely in the advice printed on top of it. **An operator
+ * told to wait will wait** — and re-run, and wait — against a condition that
+ * can outlive the browser, with every counter reading zero each time and
+ * nothing anywhere hinting that waiting is the wrong move.
  *
- * So the line now says what is actually true: the run is blocked until those
- * rows stop being `opening`, which happens when their tabs finish opening
- * **or** when the leases holding them are released or expire. That points at
- * the lease rather than at the clock. It deliberately stops there and names no
- * command — this command has no way to tell a row one millisecond from being
- * named from one abandoned two days ago, and inventing a confident instruction
- * it cannot support is precisely how the previous wording went wrong. (An
- * earlier draft of this fix pointed at `broker tabs`, which does not exist.
- * Replacing one piece of misleading advice with another would have been worse
- * than the defect, because this one would have failed in the operator's hand.)
+ * So the line says what is true: the run stays blocked until those rows leave
+ * `opening`, which happens when their tabs finish opening **or** when the
+ * leases holding them are released or expire. That points at the lease rather
+ * than at the clock.
+ *
+ * **It deliberately names no command.** This command cannot distinguish a row
+ * one millisecond from being named from one abandoned two days ago, so any
+ * specific instruction here would be confidence it has no basis for — and an
+ * instruction that fails in the operator's hand is worse than saying less.
  */
 function conclusionLine(report: ReconciliationReport): string {
   const owned = report.skippedOpeningOwnedByCaller;
