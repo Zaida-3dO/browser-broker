@@ -219,6 +219,153 @@
  * for. The self-test runs in the suite so the proof travels with the check
  * rather than living in a commit message.
  *
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE OTHER DIRECTION: **A NEEDED FIELD IS DECLARED BY SOMETHING**
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Everything above runs one way — *declared ⇒ read*. It is blind, structurally
+ * and not by oversight, to the opposite failure: **a field the service requires
+ * that no surface ever declares.** The two are not variants of one rule. The
+ * first asks whether a promise is kept; the second asks whether a capability
+ * was ever offered. A check ranging over the declaration table cannot see a
+ * verb missing from it, for the same reason a census of a street does not
+ * report the house that was never built.
+ *
+ * ── The thing that happened ─────────────────────────────────────────────
+ *
+ * `emulate`, `fill_form`, `drag`, and `dialog` carrying `promptText` were
+ * implemented, given request types, validated, and **already parsed by the
+ * bridge** — and were uncallable over the tool surface for their whole
+ * existence. `browser_act` declared `action`, `target` and `value`, all
+ * strings, and not one of them can carry an object, an array, or a second
+ * element reference. `additionalProperties: false` turned that silence into a
+ * refusal.
+ *
+ * The cost was measured rather than theorised: two reviewers in different
+ * repositories, without conferring, guessed the same three shapes for
+ * `emulate`, were refused identically, and **both downgraded their own
+ * reduced-motion findings in writing** because they concluded the feature did
+ * not work. Fixed by `5738548`, whose diff leaves `src/service/bridge.ts`
+ * untouched — the seam was built and reachable the entire time; nothing
+ * declared it.
+ *
+ * Note what the half above would have said about that tree: **green, and
+ * correctly so.** Every declared argument was read. The defect was not a
+ * broken promise, it was an absent one.
+ *
+ * ── Why the obvious statement of the rule is a trap ─────────────────────
+ *
+ * The rule wants to be: *every required field of `ActionRequest` is reachable
+ * from something `browser_act` declares.* Written that way it is **worthless
+ * the moment it is true**, and the reason is the fix itself.
+ *
+ * `actionFrom` (`src/service/bridge.ts`) opens with a whole-request
+ * passthrough — `argument(args, 'request')`, returned entire before any other
+ * name is consulted. So `request` reaches *every field of every verb*,
+ * including fields that do not exist and verbs nobody has written. Under a
+ * naive reading the check passes for all time, on any tree, having tested
+ * nothing — **which is the same failure class as the bug it exists to catch**,
+ * and this file already carries two other instances of it (the `key:` field
+ * that gave every variable a reader; the family marker that would have matched
+ * its own table). A gate that cannot distinguish a healthy tree from a broken
+ * one is not a weak gate, it is a decorative one.
+ *
+ * ── What is checked instead ─────────────────────────────────────────────
+ *
+ * **The passthrough is excluded from the reach, full stop.** Every required
+ * field of every `ActionRequest` member must be reachable from a declared
+ * argument *other than* the passthrough — directly, under an alias spelling, or
+ * through a parser that assembles it. That is the brief's rule, and it is the
+ * rule because any softer phrasing cannot fail.
+ *
+ * Excluding it means the three fields that genuinely have no flat spelling —
+ * `preferences`, `fields`, `targetRef` — do not reach, and they are correct.
+ * So they are **enumerated**, in `viaPassthrough` on the union's entry, each
+ * with the reason it has no flat argument. Everything not enumerated fails.
+ *
+ * ── Why that enumeration is not the waiver this file forbids ────────────
+ *
+ * {@link WAIVERS} says a waiver on the argument half would be worth nothing,
+ * and that is right. This runs the other way, and the direction is the whole
+ * distinction. **A waiver silences a failure; this list creates them.** Without
+ * it there is no failing state at all — the passthrough carries every field, so
+ * "reachable from anything declared" is satisfied on every tree ever written.
+ * Excluding the passthrough makes *everything* structured fail; naming the
+ * three that are legitimate is what leaves **everything else failing**. A field
+ * added to the union tomorrow with no flat route and no entry goes red, and
+ * that is the defect class.
+ *
+ * Deleting a waiver makes a check stricter. Deleting an entry from this list
+ * makes the check **fail**. It can only ever shrink what passes.
+ *
+ * The enumeration is then itself guarded from both ends: an entry whose field
+ * has since grown a flat route is reported as stale, and the whole list is
+ * conditional on the object-typed argument actually being declared — delete
+ * that declaration and all three lose their only route at once, which is
+ * precisely the pre-`5738548` tree.
+ *
+ * ── The draft that was wrong, recorded so it is not rebuilt ─────────────
+ *
+ * This check was first written in two tiers, where tier one *counted* the
+ * passthrough as reaching everything (on the argument that it really does) and
+ * tier two only fired when no object-typed argument was declared at all. It
+ * passed on the tree, went red on the historical seed, and **was vacuous**:
+ * a new verb carrying a field nothing declares produced zero failures, because
+ * tier one was satisfied by the passthrough and tier two only watches for the
+ * passthrough's total absence. The seeded defect passed it for the wrong
+ * reason — the seed deletes the declaration, so tier one failed on an unrelated
+ * branch and the vacuity never showed.
+ *
+ * It was caught by mutating the check and finding the tests survived. The
+ * lesson is the one this file already teaches about `key:` and about the family
+ * marker, met a third time: **a check can be green, have a passing seeded
+ * defect, and still be unable to observe the class it exists for.** Do not
+ * reintroduce a tier that lets the passthrough count toward reachability.
+ *
+ * ── Scope, stated as a limit rather than implied ────────────────────────
+ *
+ * **Required fields of `ActionRequest` only** — not every name the bridge
+ * reads. That scope is a deliberate narrowing and it is the difference between
+ * a usable gate and noise. The unscoped version — *every name read at the
+ * bridge that no tool declares* — reports **17 names on `browser_act`, of which
+ * 4 are the defect**: a 4:1 false-positive rate, from two legitimate sources.
+ *
+ * 1. **Alias spellings.** `key`, `lease` and `leaseKey` are internal spellings
+ *    of declared `lease_key`; `ref`/`target`, `target_ref`/`targetRef` and
+ *    `prompt_text`/`promptText` are alias pairs. These are not undeclared, they
+ *    are declared under their other name. The remedy was already in this file:
+ *    `argument(args, 'a', 'b')` **is** the alias declaration, so the spellings
+ *    are grouped **by call site** rather than flattened into one set.
+ * 2. **Alternate-shape parsers legitimately read undeclared names.**
+ *    `viewportFrom` reads `viewport`, `width`, `height` *and* `value`, and only
+ *    `value` is declared — by design, because the flat surface accepts
+ *    `1280x720`. These are accepted alternatives, not gaps, and are followed as
+ *    assemblers: a helper named `<field>From` that reads `<field>` itself
+ *    builds that field out of every name it reads.
+ *
+ * On the narrowed scope the false-positive count on the current tree is
+ * **zero**, and the seeded historical declaration still goes red on all four
+ * fields. **There is deliberately no waiver facility on this half** — see
+ * {@link WAIVERS}: a check quietable on the exact class it exists for is worth
+ * nothing. Wanting a waiver here means the scope is wrong; narrow the scope.
+ *
+ * ── What this half cannot see ───────────────────────────────────────────
+ *
+ * | Claim | Status |
+ * |---|---|
+ * | Every required `ActionRequest` field is reachable from a declared argument | **Checked**, over the union rather than a list beside it |
+ * | A field that depends on the passthrough alone is named, and the passthrough is required to exist | **Checked** |
+ * | *Optional* fields are reachable | **NOT checked.** `press`'s `ref?` may be undeclared and nothing here objects — an optional field absent is a weaker claim than a required one absent |
+ * | *Nested* fields, inside a member's field type, are reachable | **NOT checked**, and this is the one gap worth naming by name. The episode was four verbs; this half catches **three**. `dialog`'s `promptText` is the fourth, and it is out of scope twice over: it is `readonly promptText?: string`, so optional, and it lives on `DialogResponse` rather than on the union member, so a scan of `ActionRequest`'s own fields does not reach it. Descending into field types would mean checking every nested optional, which is where the false positives live — the scope was chosen for the three it catches soundly over the four it would catch noisily |
+ * | Other structured unions — a future `ReadRequest` — are covered | **NOT checked.** This ranges over `ActionRequest` only, and a second union needs a second entry |
+ * | The declared argument's *type* can carry the field | **NOT checked.** A `string` declared where an object is needed satisfies this, which is precisely how the four verbs broke; tier two catches the passthrough's removal, not its retyping |
+ * | The derivation is AST-accurate | **No.** Regex and text, like the rest of this file — see `helperReads`, whose `async` hole let a helper's reads vanish and made the check pass "on an accident of ordering" |
+ *
+ * The last row is the one to hold onto: this half inherits every limit of the
+ * machinery it reuses, on purpose, because a parallel derivation that drifted
+ * from the one above would be worse than a shared one that is honestly
+ * approximate.
+ *
  * Usage:
  *   node scripts/check-argument-reachability.mjs
  *   node scripts/check-argument-reachability.mjs --self-test
@@ -521,6 +668,440 @@ export function bridgeReadsByOperation(rawSource = readFileSync(BRIDGE_SOURCE, '
   }
 
   return byOperation;
+}
+
+/**
+ * Where the service declares the structured request the action verbs take.
+ */
+export const DRIVER_SOURCE = path.join(repositoryRoot, 'src', 'browser', 'driver.ts');
+
+/**
+ * The union whose required fields the reverse half ranges over, and the tool
+ * that serves it.
+ *
+ * A table of one, written as a table anyway. A second structured union — a
+ * `ReadRequest`, say — is an entry here rather than a second copy of the
+ * machinery below, and the header's limits table says plainly that until such
+ * an entry exists the union is not covered. Naming the union in a table also
+ * makes its absence loud: {@link actionRequestMembers} fails rather than
+ * returning nothing if the type is renamed, so this cannot quietly start
+ * checking an empty set.
+ */
+export const STRUCTURED_UNIONS = [
+  {
+    type: 'ActionRequest',
+    tool: 'browser_act',
+    operation: 'act',
+    /** The field that says which member is meant; never a field to look for. */
+    discriminant: 'action',
+    /**
+     * Required fields that arrive **inside the structured passthrough** and
+     * have no flat spelling — by design, not by omission.
+     *
+     * ── Why this is an enumeration and emphatically not a waiver ─────────
+     *
+     * {@link WAIVERS} argues at length that a waiver on the argument half
+     * would be worthless, because "a check that could be quieted on the exact
+     * class it exists for would be worth nothing". That argument is right and
+     * this list does not contradict it, because the two run in **opposite
+     * directions**.
+     *
+     * A waiver *silences a failure*: the defect is real, and the entry stops
+     * the gate reporting it. This list *creates* failures. Without it the
+     * check has no way to fail at all — the passthrough reaches every field
+     * by construction, so a rule phrased "reachable from anything declared"
+     * passes forever. Excluding the passthrough makes every structured field
+     * fail, including the three that are correct. Enumerating those three is
+     * what leaves **everything else failing**: a field added to the union
+     * tomorrow with no flat route and no entry here goes red, which is the
+     * defect class, and it is the only shape in which this gate can fire.
+     *
+     * The test of the difference: deleting a waiver makes a check stricter;
+     * deleting an entry from this list makes the check *fail*, and adding one
+     * requires writing down a reason in a diff a reviewer reads. This list can
+     * only ever shrink the set of things that pass.
+     *
+     * Each entry records why the field has no flat spelling. `SCHEMA.md` §3.1
+     * is the standing reason — "surface area is a standing tax and the list is
+     * short on purpose" — and `5738548` is the commit that chose one
+     * passthrough argument over the six flat ones these would otherwise need.
+     */
+    viaPassthrough: [
+      {
+        field: 'preferences',
+        why: 'an object of media preferences; #62 chose the passthrough over three flat arguments',
+      },
+      {
+        field: 'fields',
+        why: 'an array of {ref, value} pairs, which no flat string argument can carry (#64)',
+      },
+      {
+        field: 'targetRef',
+        why: "drag's second element reference; a flat `target_ref` was refused as surface tax (#64)",
+      },
+    ],
+  },
+];
+
+/**
+ * The members of a discriminated union, as `{ verbs, required, optional }`.
+ *
+ * Read from the text, like everything else here, and bounded the way the source
+ * is laid out: members are `| { … }` blocks between the `export type X =` and
+ * the next top-level `export`. Optionality is taken from the `?` the source
+ * already writes, which is why the union has to be read rather than a list of
+ * fields kept beside it — a list would have to be updated by the same person
+ * who forgot to declare the argument, and the header explains at length why a
+ * check whose coverage depends on somebody remembering is not a check against
+ * forgetting.
+ *
+ * Comments are stripped first. The union's own prose names fields in prose
+ * (`"the field is optional for the same reason press's is"`), and counting a
+ * mention as a declaration is the vacuity this file exists to refuse.
+ */
+export function actionRequestMembers(
+  union = STRUCTURED_UNIONS[0],
+  source = readFileSync(DRIVER_SOURCE, 'utf8'),
+) {
+  const code = stripComments(source);
+  const start = code.indexOf(`export type ${union.type} =`);
+  if (start === -1) {
+    throw new Error(
+      `the reverse reachability check could not find "export type ${union.type}" in ` +
+        `src/browser/driver.ts. Either the union was renamed — update STRUCTURED_UNIONS with it — ` +
+        `or it was removed. A union this check cannot locate is a union it checks vacuously, ` +
+        'so this throws rather than returning an empty set.',
+    );
+  }
+  // Bounded by the next top-level `export`, which is how the file is laid out.
+  const after = code.indexOf('\nexport ', start + `export type ${union.type} =`.length);
+  const body = code.slice(start, after === -1 ? code.length : after);
+
+  const members = [];
+  for (const match of body.matchAll(/\|\s*\{([\s\S]*?)\n\s*\}/g)) {
+    const member = match[1];
+    const discriminant = new RegExp(`readonly\\s+${union.discriminant}:\\s*([^;]+);`).exec(member);
+    if (discriminant === null) continue;
+    const verbs = [...discriminant[1].matchAll(/'([a-z_]+)'/g)].map((verb) => verb[1]);
+
+    const required = [];
+    const optional = [];
+    for (const field of member.matchAll(/readonly\s+([A-Za-z0-9_]+)(\??):/g)) {
+      if (field[1] === union.discriminant) continue;
+      (field[2] === '?' ? optional : required).push(field[1]);
+    }
+    members.push({ verbs, required, optional });
+  }
+
+  if (members.length === 0) {
+    throw new Error(
+      `the reverse reachability check found "export type ${union.type}" and parsed no members ` +
+        'out of it, so it would check nothing while reporting green.',
+    );
+  }
+  return members;
+}
+
+/**
+ * The alias spellings the bridge treats as one argument, grouped **by call
+ * site**.
+ *
+ * This is the single decision that takes the false-positive rate on
+ * `browser_act` from 17 names to zero, and it needed no new parser: a call
+ * `argument(args, 'ref', 'target')` **is** the statement that those two names
+ * are one argument under two spellings. Flattening every literal into one set
+ * loses exactly that structure and then reports `ref` as undeclared while
+ * `target` sits declared beside it.
+ *
+ * Returned as a list of groups rather than a name-to-name map because the
+ * relation is not a function: `lease_key` has three internal spellings, and one
+ * of them (`key`) is read at a second call site with a different membership.
+ */
+export function aliasGroups(bridgeSource = readFileSync(BRIDGE_SOURCE, 'utf8')) {
+  const code = stripComments(bridgeSource);
+  const groups = [];
+  for (const call of code.matchAll(/\bargument\(\s*args\s*,([^)]*)\)/g)) {
+    const names = [...call[1].matchAll(/'([^']+)'/g)].map((literal) => literal[1]);
+    if (names.length > 0) groups.push(names);
+  }
+  return groups;
+}
+
+/**
+ * Helpers that **assemble** a field out of whatever the caller could express.
+ *
+ * `viewportFrom` reads `viewport`, `width`, `height` and `value`, and only
+ * `value` is declared on the surface — deliberately, because the flat surface
+ * accepts `390x844`. Those undeclared names are accepted alternatives, not
+ * gaps, so a field is reachable when any name its assembler reads is reachable.
+ *
+ * ── Why "reads its own name" is the test, and not merely a tidy convention ──
+ *
+ * The naming convention alone is not enough, and getting this wrong is a third
+ * route to vacuity that this check hit in draft. `refusalFrom` also ends in
+ * `From` and reads the *whole* argument record — transitively, all 48 names in
+ * the bridge. Admitting it as an assembler makes every field reachable from any
+ * declared argument whatsoever, and the check passes on everything again.
+ *
+ * So an assembler must read a name **equal to the field it is named for**:
+ * `viewportFrom` opens `const given = argument(args, 'viewport')`, and that
+ * self-read is what distinguishes a function that *builds* `viewport` from one
+ * that merely passes the record along. `refusalFrom` reads no `refusal` and is
+ * excluded. Direct reads only, never the transitive closure {@link helperReads}
+ * computes, for the same reason.
+ *
+ * ── `actionFrom` is admitted, and that is not a hole ────────────────────
+ *
+ * It reads `argument(args, 'action')`, so it passes the self-read test. Worth
+ * stating because it looks like the exact thing the paragraph above forbids,
+ * and a draft of the test below asserted it should be excluded — wrongly.
+ *
+ * **Reachability composes inward.** An assembler entry means "any of these read
+ * names reaches this built field", so admitting `actionFrom` lets `ref`,
+ * `value` and `target` reach `action`. It does not let `action` reach them; the
+ * relation is not symmetric, and it is the outward direction that would be
+ * dangerous. Starting from a surface declaring only `action`, the closure is
+ * `{action}` and nothing more — pinned by a test, because the day that stops
+ * being true is the day this function needs the stricter rule.
+ */
+export function assemblers(bridgeSource = readFileSync(BRIDGE_SOURCE, 'utf8')) {
+  const code = stripComments(bridgeSource);
+  const boundaries = [...code.matchAll(/\n(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/g)];
+  const found = new Map();
+
+  for (const [position, match] of boundaries.entries()) {
+    const name = match[1];
+    const named = /^([A-Za-z0-9_]+)From$/.exec(name);
+    if (named === null) continue;
+    const field = named[1];
+
+    const next = boundaries[position + 1];
+    const body = code.slice(match.index, next === undefined ? code.length : next.index);
+    const reads = new Set(
+      [...body.matchAll(/\bargument\(\s*args\s*,([^)]*)\)/g)].flatMap((call) =>
+        [...call[1].matchAll(/'([^']+)'/g)].map((literal) => literal[1]),
+      ),
+    );
+    // The self-read test. Without it, `actionFrom` and `refusalFrom` qualify
+    // and every field becomes reachable from everything.
+    if (!reads.has(field)) continue;
+
+    found.set(field, {
+      reads,
+      // Other assemblers this one delegates to, so `responseFrom` calling
+      // `acceptFrom` carries `accept`'s alternatives into `response`.
+      delegates: new Set(
+        [...body.matchAll(/\b([A-Za-z0-9_]+)From\s*\(\s*args\b/g)]
+          .map((call) => call[1])
+          .filter((callee) => callee !== field),
+      ),
+    });
+  }
+  return found;
+}
+
+/**
+ * The argument a tool declares that the bridge hands on **whole** — the
+ * passthrough.
+ *
+ * Derived structurally rather than by name, and the structure is unambiguous:
+ * it is the sole argument on the whole tool surface declared `type: 'object'`,
+ * every other being a scalar or an `array`. Deriving it means a passthrough
+ * added to a second tool is found without editing this check, and — the part
+ * that matters — that the name `request` is not wired into the gate that exists
+ * to notice the passthrough disappearing. A check hunting for a hardcoded name
+ * reports "not found" identically whether the argument was deleted or renamed,
+ * and only one of those is a defect.
+ *
+ * Returns the declared names, so the caller can say which fields lean on it.
+ */
+export function passthroughArguments(tool, toolsSource = readFileSync(TOOLS_SOURCE, 'utf8')) {
+  const toolPattern =
+    /name:\s*'(browser_[a-z_]+)',\s*(?:\/\/[^\n]*\n\s*)*operation:\s*'([a-z_]+)'/g;
+  const tools = [...toolsSource.matchAll(toolPattern)].map((match) => ({
+    tool: match[1],
+    at: match.index,
+  }));
+
+  const names = [];
+  for (const [position, entry] of tools.entries()) {
+    if (entry.tool !== tool) continue;
+    const next = tools[position + 1];
+    const region = toolsSource.slice(entry.at, next === undefined ? toolsSource.length : next.at);
+    // Each argument is `{ name: 'x', type: 'y', … }`; the object-typed one is
+    // the passthrough. Matched as a pair so a `type: 'object'` belonging to a
+    // different argument cannot be attributed to the wrong name.
+    for (const argument of region.matchAll(/name:\s*'([a-z_]+)',\s*type:\s*'object'/g)) {
+      names.push(argument[1]);
+    }
+  }
+  return names;
+}
+
+/**
+ * Every field reachable from a set of declared names, closing over alias groups
+ * and assemblers until nothing new appears.
+ *
+ * A fixed point for the same reason {@link helperReads} needs one: reachability
+ * composes. `value` is declared, `viewportFrom` builds `viewport` from `value`,
+ * and a member requiring `viewport` is satisfied two hops out. One pass would
+ * miss the second hop and report a false failure on a working verb.
+ */
+export function reachableFields(declaredNames, { groups, built }) {
+  const reach = new Set(declaredNames);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const group of groups) {
+      if (!group.some((name) => reach.has(name))) continue;
+      for (const name of group) {
+        if (!reach.has(name)) {
+          reach.add(name);
+          changed = true;
+        }
+      }
+    }
+    for (const [field, assembler] of built) {
+      if (reach.has(field)) continue;
+      const viaRead = [...assembler.reads].some((name) => reach.has(name));
+      const viaDelegate = [...assembler.delegates].some((callee) => reach.has(callee));
+      if (viaRead || viaDelegate) {
+        reach.add(field);
+        changed = true;
+      }
+    }
+  }
+  return reach;
+}
+
+/**
+ * The reverse half: **a required field of a structured request is reachable
+ * from something the tool declares, and the passthrough it leans on exists.**
+ *
+ * Read the header section "THE OTHER DIRECTION" before changing the shape of
+ * this. In particular the two tiers are not redundant with each other: tier one
+ * alone passes on every tree ever written, and tier two alone fails on the
+ * tree as it correctly stands. The self-test seeds both mistakes.
+ */
+export function checkRequiredFieldsAreDeclarable({ toolsSource, bridgeSource, driverSource } = {}) {
+  const tools = toolsSource ?? readFileSync(TOOLS_SOURCE, 'utf8');
+  const bridge = bridgeSource ?? readFileSync(BRIDGE_SOURCE, 'utf8');
+  const driver = driverSource ?? readFileSync(DRIVER_SOURCE, 'utf8');
+
+  const declarations = declaredToolArguments(tools);
+  const groups = aliasGroups(bridge);
+  const built = assemblers(bridge);
+
+  const failures = [];
+  const viaPassthroughOnly = [];
+  let checked = 0;
+
+  for (const union of STRUCTURED_UNIONS) {
+    const members = actionRequestMembers(union, driver);
+    const declared = declarations
+      .filter((entry) => entry.tool === union.tool)
+      .map((entry) => entry.name);
+    const passthrough = passthroughArguments(union.tool, tools);
+
+    // Tier one's reach, and the same reach with the passthrough taken away.
+    // The difference between the two is the set of fields that depend on the
+    // passthrough alone, which is what tier two is about.
+    //
+    // **The passthrough reaches every field of the union, by construction and
+    // not by inference.** `actionFrom` opens by returning `argument(args,
+    // 'request')` whole and unexamined, so whatever the caller puts inside it
+    // arrives at the guard intact — there is no name-by-name derivation to
+    // follow, and modelling it as an ordinary declared name would find nothing,
+    // because the passthrough's whole nature is that it carries names it never
+    // mentions. This is exactly the property that makes tier one vacuous on its
+    // own, and it is written here explicitly rather than left implicit so that
+    // the vacuity is visible at the place it is created.
+    // **The reach excludes the passthrough, and that is the whole rule.** The
+    // passthrough is not modelled as reaching anything, even though at runtime
+    // it reaches everything, because modelling it honestly is precisely what
+    // makes the check vacuous: `actionFrom` returns `argument(args, 'request')`
+    // whole and unexamined, so a reach that counted it would contain every
+    // field of every verb — including verbs nobody has written yet — and the
+    // gate could never go red on any tree.
+    const reach = reachableFields(
+      declared.filter((name) => !passthrough.includes(name)),
+      { groups, built },
+    );
+    const declaresPassthrough = declared.some((name) => passthrough.includes(name));
+
+    for (const member of members) {
+      for (const field of member.required) {
+        checked += 1;
+        const verbs = member.verbs.map((verb) => `"${verb}"`).join(' / ');
+        if (reach.has(field)) continue;
+
+        // Not reachable from any flat argument. Two very different situations
+        // wear that description, and separating them is what makes this a gate
+        // rather than noise.
+        const known = union.viaPassthrough.find((entry) => entry.field === field);
+
+        if (known === undefined) {
+          // **A field with no flat route that nobody has acknowledged.** This
+          // is the defect class: a verb added to the union whose input the
+          // surface cannot express. It fires whether or not the passthrough is
+          // declared, which is the property the earlier draft of this check
+          // lacked and the reason it was rewritten — see the header.
+          failures.push(
+            `${union.type} requires "${field}" for ${verbs}, and ${union.tool} declares no ` +
+              `argument it can arrive in: not directly, not under an alias spelling, and not ` +
+              `through a parser that assembles it. The verb is implemented and uncallable — a ` +
+              `caller cannot express the field, and additionalProperties:false turns the attempt ` +
+              `into a refusal, which is how emulate, fill_form and drag shipped unusable. ` +
+              `Either declare an argument that carries it in src/tool/tools.ts, or — if it is ` +
+              `meant to arrive inside the structured passthrough like those three — add it to ` +
+              `viaPassthrough for ${union.type} with the reason, which is a claim a reviewer ` +
+              `sees rather than an absence they would have to notice.`,
+          );
+          continue;
+        }
+
+        // **A field acknowledged as arriving inside the passthrough.** Three of
+        // these exist and they are legitimate: `SCHEMA.md` §3.1 refuses an
+        // argument per field ("surface area is a standing tax and the list is
+        // short on purpose"), so the structured verbs are *designed* to arrive
+        // whole. What the acknowledgement buys is the assertion below — the
+        // passthrough they depend on has to actually be declared.
+        viaPassthroughOnly.push({ field, verbs, tool: union.tool, why: known.why });
+      }
+    }
+
+    // The acknowledgement is conditional on the passthrough existing. Delete
+    // the object-typed declaration and every acknowledged field loses its only
+    // route at once — which IS the pre-5738548 tree, and is the state in which
+    // four implemented verbs were uncallable.
+    if (viaPassthroughOnly.length > 0 && !declaresPassthrough) {
+      failures.push(
+        `${union.tool} declares no object-typed argument, and ` +
+          `${String(viaPassthroughOnly.length)} required ${union.type} field(s) are recorded as ` +
+          `arriving inside one: ${viaPassthroughOnly.map((e) => `"${e.field}"`).join(', ')}. A ` +
+          `flat string argument cannot carry an object, an array, or a second element reference, ` +
+          `so those verbs are implemented and uncallable. This is exactly the defect 5738548 ` +
+          `fixed by declaring the passthrough; do not fix it by deleting the verbs.`,
+      );
+    }
+
+    // A recorded field that has since grown a flat route is an acknowledgement
+    // that has outlived the thing it described. Reported for the same reason a
+    // stale waiver is, one section down: an entry nobody has to remove is a
+    // permanent hole, and this is the moment it can be removed with certainty
+    // rather than by somebody guessing later.
+    for (const entry of union.viaPassthrough) {
+      if (!reach.has(entry.field)) continue;
+      failures.push(
+        `"${entry.field}" is recorded as reaching ${union.tool} only inside the passthrough, and ` +
+          `it now has a flat route as well. Delete the entry: a record that no longer describes ` +
+          `the tree stops being read, and this one is load-bearing for the fields that still ` +
+          `need it.`,
+      );
+    }
+  }
+
+  return { failures, checked, viaPassthroughOnly };
 }
 
 /**
@@ -886,15 +1467,94 @@ export function seededDefect() {
   return { toolsSource: readFileSync(TOOLS_SOURCE, 'utf8'), bridgeSource: seeded };
 }
 
+/**
+ * The seeded violation for the reverse half: `browser_act`'s declaration as it
+ * stood **before `5738548`**, with the passthrough removed.
+ *
+ * Historically faithful rather than invented. That commit added exactly one
+ * argument and touched no other file, so deleting the object-typed declaration
+ * reproduces the tree on which four implemented verbs were uncallable — and
+ * reproduces it at the place the defect actually lived, the declaration,
+ * rather than by damaging the bridge that was innocent throughout.
+ */
+export function seededUndeclaredPassthrough() {
+  const tools = readFileSync(TOOLS_SOURCE, 'utf8');
+  // The whole `{ name: 'request', type: 'object', … }` entry, from its opening
+  // brace to the closing one before the list ends. Matched by the object-typed
+  // pair rather than the name, so the seed follows a rename of the argument.
+  const seeded = tools.replace(
+    /\{\s*name:\s*'[a-z_]+',\s*type:\s*'object',[\s\S]*?\n {6}\},\n/,
+    '',
+  );
+  if (seeded === tools) {
+    throw new Error(
+      'the self-test could not find an object-typed argument declaration to remove, so the ' +
+        'seed no longer reproduces the historical defect and proves nothing. Fix the seed.',
+    );
+  }
+  return { toolsSource: seeded };
+}
+
+/**
+ * The seed that proves the **exclusion clause** is load-bearing, which is a
+ * different claim from the seed above and the more important of the two.
+ *
+ * ── Why the other seed is not enough, stated because it fooled this check ──
+ *
+ * {@link seededUndeclaredPassthrough} deletes the declaration, so on that tree
+ * the passthrough is not a declared argument at all. A check that wrongly
+ * counted the passthrough toward reachability would **still go red on it** —
+ * for the unrelated reason that there is nothing left to count. The seed
+ * therefore cannot distinguish a working exclusion clause from an absent one,
+ * and an earlier draft of this file passed it while being unable to observe the
+ * defect class at all.
+ *
+ * This seed fixes that by leaving the passthrough exactly where it is and
+ * growing the **union** instead: a new verb whose required field no declared
+ * argument can carry. That is the live defect class — a verb added to the
+ * service ahead of the surface, which is what happened to `emulate`,
+ * `fill_form` and `drag` — and it is red only if the passthrough is genuinely
+ * excluded from the reach. Let the passthrough count and this seed goes green,
+ * which is the whole demonstration.
+ */
+export function seededUnreachableVerb(driverSource = readFileSync(DRIVER_SOURCE, 'utf8')) {
+  const union = STRUCTURED_UNIONS[0];
+  // Spliced in ahead of an existing member so the union's layout is untouched.
+  const anchor = "      readonly action: 'drag';";
+  if (!driverSource.includes(anchor)) {
+    throw new Error(
+      'the self-test could not find the `drag` member to splice a seeded verb beside, so the ' +
+        'seed no longer reproduces a verb the surface cannot express. Fix the seed.',
+    );
+  }
+  const seeded = driverSource.replace(
+    anchor,
+    "      readonly action: 'seeded_unreachable';\n" +
+      '      readonly fieldNoArgumentCanCarry: string;\n' +
+      '    }\n' +
+      '  | {\n' +
+      anchor,
+  );
+  return { driverSource: seeded, union, field: 'fieldNoArgumentCanCarry' };
+}
+
 /** Both halves, against the tree as it is. */
 export function runReachabilityCheck() {
   const args = checkArguments();
+  const required = checkRequiredFieldsAreDeclarable();
   const configuration = checkConfiguration();
   const families = checkConfigurationFamilies();
   return {
-    failures: [...args.failures, ...configuration.failures, ...families.failures],
+    failures: [
+      ...args.failures,
+      ...required.failures,
+      ...configuration.failures,
+      ...families.failures,
+    ],
     waived: configuration.waived,
     checkedArguments: args.checked,
+    checkedFields: required.checked,
+    viaPassthroughOnly: required.viaPassthroughOnly,
     checkedVariables: configuration.checked + families.checked,
   };
 }
@@ -914,6 +1574,47 @@ if (invokedDirectly) {
       console.error(
         'Self-test FAILED: `wait_ms` was made inert and the check stayed green, so it cannot ' +
           'observe the defect it exists for.',
+      );
+      process.exitCode = 1;
+    }
+
+    // ── The same proof, for the reverse half ───────────────────────────────
+    //
+    // Two seeds, because this half has two ways to be worthless and only one
+    // of them is "it never fires".
+    const undeclared = checkRequiredFieldsAreDeclarable(seededUndeclaredPassthrough());
+    const reverseCaught = undeclared.failures.some((failure) => failure.includes('preferences'));
+    if (reverseCaught) {
+      console.log(
+        'Self-test passed: the check goes red when the passthrough is undeclared and the ' +
+          'structured verbs have no route to the surface.',
+      );
+      for (const failure of undeclared.failures) console.log(`  would fail: ${failure}`);
+    } else {
+      console.error(
+        'Self-test FAILED: `browser_act` was returned to its pre-5738548 declaration and the ' +
+          'check stayed green, so it cannot observe four implemented verbs being uncallable.',
+      );
+      process.exitCode = 1;
+    }
+
+    // The vacuity proof, and the one that matters most: a verb the surface
+    // cannot express, added while the passthrough stays declared. Red only if
+    // the passthrough is genuinely excluded from the reach.
+    const unreachable = seededUnreachableVerb();
+    const grown = checkRequiredFieldsAreDeclarable({ driverSource: unreachable.driverSource });
+    if (grown.failures.some((failure) => failure.includes(unreachable.field))) {
+      console.log(
+        'Self-test passed: a verb whose required field no declared argument can carry goes red ' +
+          'even though the passthrough is declared — so the "other than the passthrough" clause ' +
+          'is doing the work, not decorating it.',
+      );
+    } else {
+      console.error(
+        'Self-test FAILED: a required field that NOTHING on the tool surface can express was ' +
+          'added and the check stayed green. That is the vacuous state this clause exists to ' +
+          'prevent: the passthrough is being counted toward reachability, so the gate can never ' +
+          'fire on a verb the surface cannot express — which is the defect class itself.',
       );
       process.exitCode = 1;
     }
@@ -972,9 +1673,20 @@ if (invokedDirectly) {
     } else {
       console.log(
         `Argument-reachability check passed: ${String(result.checkedArguments)} declared tool ` +
-          `arguments are read at the bridge under their own operation, and ` +
-          `${String(result.checkedVariables)} declared variables are read outside their declaration.`,
+          `arguments are read at the bridge under their own operation, ` +
+          `${String(result.checkedFields)} required structured-request fields can be expressed ` +
+          `from the tool surface, and ${String(result.checkedVariables)} declared variables are ` +
+          `read outside their declaration.`,
       );
+      // Printed on a passing run for the same reason a waiver is: a field that
+      // can only arrive through the passthrough is fine *while the passthrough
+      // is declared*, and that dependency should be visible to whoever is
+      // reading a diff that touches the declaration.
+      for (const entry of result.viaPassthroughOnly) {
+        console.log(
+          `  via the passthrough only: "${entry.field}" for ${entry.verbs} on ${entry.tool}`,
+        );
+      }
     }
   }
 }
