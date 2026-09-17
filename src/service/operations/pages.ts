@@ -16,6 +16,7 @@ import {
   validateCaptureMode,
   validateCaptureTier,
   resolveReadArtifacts,
+  resolveSnapshotFilter,
   validateAction,
   validateExpression,
   validateNavigationTarget,
@@ -871,6 +872,14 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
 
 export interface ReadInput extends TabOperationInput {
   readonly artifacts?: unknown;
+  /**
+   * Narrow the snapshot to matching lines and their ancestors.
+   *
+   * `unknown` like its neighbour, because what arrives here is whatever a
+   * caller sent and the validation is `resolveSnapshotFilter`'s job — a typed
+   * field here would be a claim this layer is not the one that checks.
+   */
+  readonly find?: unknown;
 }
 
 export interface ReadResult extends TabOperationResult {
@@ -933,6 +942,11 @@ export function decideRead(
   input: ReadInput,
 ): ArbitrationOutcome<ReadResult> {
   const artifacts = resolveReadArtifacts(input.artifacts);
+  // Validated beside the artefact list and before admission, so a malformed
+  // pattern is refused without a lease having been touched — the same order
+  // the artefact check already keeps, and for the same reason: a caller whose
+  // request cannot be honoured should not learn that from a ledger entry.
+  const snapshotFind = resolveSnapshotFilter(input.find);
   const { lease, tab, expiresAt } = admit(scope, input, 'read');
 
   append(scope.db, {
@@ -943,7 +957,19 @@ export function decideRead(
     tabId: tab.tabId,
     sessionId: lease.sessionId,
     browserId: tab.browserId,
-    detail: { artifacts: [...artifacts] },
+    detail: {
+      artifacts: [...artifacts],
+      // Recorded because a filtered snapshot and a whole one are the same
+      // artefact name and the same path shape in the ledger, and "why is this
+      // snapshot three lines long" is otherwise unanswerable after the fact.
+      // Absent rather than empty when nothing was asked for.
+      ...(snapshotFind === undefined
+        ? {}
+        : {
+            find:
+              snapshotFind.kind === 'text' ? snapshotFind.text : `/${snapshotFind.pattern.source}/`,
+          }),
+    },
   });
 
   // Set inside the after-commit closure and read by the getter below — the
@@ -957,7 +983,13 @@ export function decideRead(
     input,
     tab,
     async (session, page) => {
-      const results = await session.read(page, artifacts);
+      // The filter is passed positionally rather than spread into an options
+      // object built above, because a conditionally-spread property is
+      // exactly how `tier` was assembled at the bridge and dropped at the
+      // call site with the compiler silent (excess-property checks do not
+      // apply to conditional spreads). Here the value either reaches the seam
+      // or does not typecheck.
+      const results = await session.read(page, artifacts, { snapshotFind });
       // **The return value is what carries the paths.** The driver knows them;
       // a handler that ignores this leaves the caller unable to open anything
       // it just collected.

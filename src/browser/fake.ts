@@ -15,6 +15,8 @@ import type {
   NavigationResult,
   RawCapture,
   ReadArtifact,
+  ReadOptions,
+  SnapshotFilter,
   StorageSeedArea,
   StorageSeedEntry,
   TabHandle,
@@ -228,6 +230,19 @@ function storageKey(
   key: string,
 ): string {
   return `${driverTabId}|${origin}|${area}|${key}`;
+}
+
+/**
+ * A snapshot filter as something a call-log assertion can compare against.
+ *
+ * **A string rather than the object.** A `RegExp` in a call log is compared
+ * by identity by `assert.deepEqual` in ways that surprise, and a test wanting
+ * to say *"the pattern that arrived was `^\s*- button`"* should be able to
+ * write that sentence. The spelling is round-trippable by eye: text comes
+ * back quoted, a pattern comes back in the slashes the caller typed.
+ */
+function describeFilter(find: SnapshotFilter): string {
+  return find.kind === 'text' ? JSON.stringify(find.text) : `/${find.pattern.source}/`;
 }
 
 const DEFAULT_MODE: Readonly<Record<string, BrowserMode | undefined>> = {
@@ -786,12 +801,25 @@ export class FakeBrowserDriver implements BrowserDriver {
       read: (
         tab: TabHandle,
         artifacts: readonly ReadArtifact[],
+        options?: ReadOptions,
       ): Promise<readonly ArtifactResult[]> => {
         const failure = this.#enter({
           name: 'read',
           browser,
           tab,
-          detail: { artifacts: [...artifacts] },
+          detail: {
+            artifacts: [...artifacts],
+            // Recorded so a test can assert the filter ARRIVED here, which is
+            // the only thing that distinguishes a `find` that works from one
+            // read at the bridge and dropped on the way down. That is not a
+            // hypothetical: `tier` was read at the bridge, packed into a
+            // request, dropped at the call site, and the reachability check
+            // stayed green throughout (see `check-argument-reachability.mjs`).
+            // Spread away when absent so its presence is itself the signal.
+            ...(options?.snapshotFind === undefined
+              ? {}
+              : { snapshotFind: describeFilter(options.snapshotFind) }),
+          },
         });
         if (failure) return Promise.reject(failure);
         return Promise.resolve(
