@@ -51,9 +51,17 @@ import { parseArguments } from '../../src/cli/adapter.ts';
  * with a hand-built argument record would skip the CLI spelling, which is one
  * of the two surfaces this argument has.
  */
-async function readWith(
-  argv: readonly string[],
-): Promise<{ outcome: string; value: Record<string, unknown>; readDetail: unknown }> {
+async function readWith(argv: readonly string[]): Promise<{
+  outcome: string;
+  value: Record<string, unknown>;
+  /**
+   * The whole outcome. A refusal puts `rule`, `code` and `message` at the TOP
+   * LEVEL beside `outcome` rather than inside `value` — `value` carries what
+   * an acceptance produced, and a refusal produced nothing.
+   */
+  refusal: Record<string, unknown>;
+  readDetail: unknown;
+}> {
   const subject = await makeServiceSubject();
   try {
     const claimed = await subject.service.perform({
@@ -79,6 +87,7 @@ async function readWith(
     return {
       outcome: performed.outcome,
       value: (performed as { value?: Record<string, unknown> }).value ?? {},
+      refusal: performed as unknown as Record<string, unknown>,
       readDetail: readCall?.detail,
     };
   } finally {
@@ -158,18 +167,24 @@ test('the return is still a path, and find does not add a second return shape', 
 });
 
 test('a malformed pattern is refused as a refusal, with the rule and the way out', async () => {
-  const { outcome, value } = await readWith(['--find', '/[/']);
+  const { outcome, refusal } = await readWith(['--find', '/[/']);
 
   assert.equal(outcome, 'refused', 'an uncompilable pattern was accepted');
-  assert.equal(value['rule'], 'read.find_shape');
+  // §3.14: a refusal carries the code and the rule as data, beside the
+  // outcome, so a caller branches on a name rather than on prose.
+  assert.equal(refusal['rule'], 'read.find_shape');
+  assert.equal(refusal['code'], 'read.find_shape');
+
   // The house bar: the message names the argument and says what to do
   // instead, rather than relaying a JavaScript engine's internal wording and
   // leaving the caller to infer that the broker is broken.
-  const raw = value['message'];
+  const raw = refusal['message'];
   const message = typeof raw === 'string' ? raw : '';
   assert.notEqual(message, '', 'the refusal carried no message at all');
   assert.match(message, /find/);
   assert.match(message, /slashes/i);
+  // The engine's own reason survives, because it names the character to fix.
+  assert.match(message, /Unterminated character class/);
 });
 
 test('a refusal happens before the driver is touched at all', async () => {

@@ -32,7 +32,7 @@ import { PageRefusal, resolveSnapshotFilter } from '../../src/service/pages.ts';
  * - Emitting an ancestor once per match instead of once — the shared-parent
  *   test fails on a duplicated line.
  * - Emitting matches before ancestors, or in match order — the ordering test
- *   fails, because the result would no longer read as a tree.
+ *   fails, because the result would read as a list rather than as a tree.
  * - Adding the `i` flag to a compiled pattern — the case-sensitivity test
  *   fails, which is the difference between `/[A-Z]/` meaning what it says and
  *   quietly meaning something else.

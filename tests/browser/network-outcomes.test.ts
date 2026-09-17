@@ -44,9 +44,9 @@ import { teardownBrowser, temporaryProfileRoot } from '../helpers/browser-fixtur
  *   shape — the `FAILED` assertion fails.
  * - Formatting the outcome at `request` time, which is the shape that caused
  *   the original defect — nothing would ever settle.
- * - Moving the index AFTER the outcome (`404 [7] GET …`) — the outcome is no
- *   longer the first thing said about the request and the method no longer
- *   starts at a predictable offset. The ordering assertion fails.
+ * - Moving the index AFTER the outcome (`404 [7] GET …`) — that displaces the
+ *   outcome as the first thing said about the request, and costs the method
+ *   its predictable offset. The ordering assertion fails.
  * - Numbering from zero, or renumbering per read — the stable-handle
  *   assertion fails.
  */
@@ -377,9 +377,9 @@ test(
  * scans — `FAILED` and `PENDING` occupy that same column deliberately, so
  * that "did this work" is one token per line whatever happened. An index
  * placed after the outcome (`404 [7] GET …`) puts a variable-width number
- * between the status and the request, and the method no longer starts at a
- * predictable offset. The index therefore has to sit outside that column
- * entirely, which is what the bracket and the position express.
+ * between the status and the request, which costs the method its predictable
+ * offset. The index therefore has to sit outside that column entirely, which
+ * is what the bracket and the position express.
  */
 test(
   'every request is numbered, from 1, with the number before the outcome',

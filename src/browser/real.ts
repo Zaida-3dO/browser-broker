@@ -283,11 +283,11 @@ type NetworkOutcome =
  *
  * The index has to sit **outside** the scanned column rather than inside it.
  * Putting it after the outcome (`404 [7] GET …`) would place a variable-width
- * number between the status and the request, so the method and address no
- * longer start at a predictable offset and the outcome is no longer the token
- * a reader's eye lands on first. Putting it before, in brackets, keeps the
- * one-token-per-line property the paragraph above exists to protect: the
- * bracket is visibly not a status, and the outcome is still the first thing
+ * number between the status and the request, which costs the method and
+ * address their predictable offset and costs the outcome its place as the
+ * token a reader's eye lands on first. Putting it before, in brackets, keeps
+ * the one-token-per-line property the paragraph above exists to protect: the
+ * bracket is visibly not a status, and the outcome remains the first thing
  * said *about the request*.
  *
  * ── Why an index at all, when nothing yet spends it ─────────────────────
@@ -299,15 +299,15 @@ type NetworkOutcome =
  * usable for referring to a line at all, in a later message, in a bug report,
  * or by a detail call that does not exist yet.
  *
- * The detail call (`browser_network_request {lease_key, index}`) is
- * **deliberately deferred**: it would require buffering every response body on
- * every page, against {@link ArtifactCollection}'s "the cost of not asking is
- * zero", and it would be the first path writing third-party response bodies to
- * disk under a credential scanner that is currently prose rather than code.
- * The index is shipped ahead of it because it costs one token per line and
- * because the thing it is most often needed for — *"the third request, the one
- * that 404s"* — is a sentence a caller wants to write today. What it does not
- * do is promise that a call taking it exists.
+ * A detail call (`browser_network_request {lease_key, index}`) is
+ * **deliberately out of scope**: it would require buffering every response
+ * body on every page, against {@link ArtifactCollection}'s "the cost of not
+ * asking is zero", and it would be the first path writing third-party
+ * response bodies to disk under a credential scanner that exists as prose
+ * rather than as code. The index stands on its own because it costs one token
+ * per line and because the thing it is most often needed for — *"the third
+ * request, the one that 404s"* — is a sentence a caller has reason to write.
+ * What it does not do is promise that a call taking it exists.
  */
 function formatNetworkEntry(entry: NetworkEntry, index: number): string {
   const request = `${entry.method} ${entry.url}`;
@@ -423,8 +423,8 @@ function renderNetworkLog(entries: readonly NetworkEntry[]): string {
  * ── Why no line is emitted twice, and why order is preserved ────────────
  *
  * Two matches under one parent share that parent, and printing it twice
- * would produce a document whose indentation no longer describes a tree.
- * Lines are therefore tracked by index and the output is assembled in
+ * would produce a document whose indentation describes something other than
+ * a tree. Lines are therefore tracked by index and the output is assembled in
  * **original order**, so the result reads as the tree it came from with
  * branches removed — not as a list of matches with context stapled on.
  *

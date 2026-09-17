@@ -592,11 +592,11 @@ export type SnapshotFilter =
  *
  * ── Why this is an options object and not a second positional argument ──
  *
- * `read` has exactly one narrowing today and would take a second positional
- * parameter perfectly well. The object is chosen anyway, because the next
- * narrowing — a `find` over the console log is the obvious one, and it is a
- * different argument matching different lines — would otherwise arrive as a
- * third positional, and a call site reading `read(tab, artifacts, filter,
+ * `read` has exactly one narrowing, which a second positional parameter would
+ * carry perfectly well. The object is chosen anyway, because a second
+ * narrowing — a `find` over the console log is the obvious candidate, and it
+ * is a different argument matching different lines — would arrive as a third
+ * positional, and a call site reading `read(tab, artifacts, filter,
  * undefined)` is where a value silently goes to the wrong slot.
  *
  * **Optional in full**, so every existing call site that wants the whole
