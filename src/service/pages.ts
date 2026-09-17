@@ -6,6 +6,7 @@ import {
   type CookieSummary,
   type PageAction,
   type ReadArtifact,
+  type SnapshotFilter,
 } from '../browser/driver.ts';
 import { BrokerError } from '../errors.ts';
 
@@ -611,6 +612,112 @@ export function resolveReadArtifacts(requested: unknown): readonly ReadArtifact[
   // two callers asking for the same set get the same answer and a test can
   // name the order it expects.
   return READ_ARTIFACTS.filter((artifact) => asked.has(artifact));
+}
+
+/**
+ * The longest `find` this will compile, in characters.
+ *
+ * A bound rather than a guess at what is reasonable: the pattern is compiled
+ * into a regular expression on this process, and an unbounded one is an
+ * unbounded compile. This is far above any selector text a caller writes —
+ * the pattern is matched against one line of an accessibility tree, and a
+ * line is rarely past a couple of hundred characters — so the bound refuses
+ * abuse without being reachable by ordinary use.
+ */
+const FIND_MAX_LENGTH = 200;
+
+/**
+ * Read a caller's `find` into something the driver can match lines against.
+ *
+ * ── Why two spellings and not one ───────────────────────────────────────
+ *
+ * The overwhelmingly common case is a literal: *the word "Checkout" appears
+ * on this page somewhere*. Making that caller write a regular expression —
+ * and escape the `.` in a price, or the `(` in a label — is a tax on the
+ * ordinary case for the benefit of the rare one.
+ *
+ * The rare one is real though: `/^\s*- button/` finds every button at a
+ * depth, which no substring can express. So `/…/` is read as a pattern and
+ * everything else is read as literal text, which is the spelling agents
+ * already know from `grep` and from this repository's own doc-link checks.
+ *
+ * **Case is ignored on the literal path** and honoured on the pattern path.
+ * A caller typing `checkout` is looking for the button whatever the page
+ * capitalised it as; a caller who wrote a regular expression has asked for
+ * exactly what they wrote, and quietly adding a flag to it would make
+ * `/[A-Z]/` match a lower-case letter — a pattern that does not do what it
+ * says is worse than one that finds nothing.
+ *
+ * Returns `undefined` when nothing was asked for, which is the ordinary read
+ * — `find` is optional and its absence is not a refusal.
+ *
+ * ── Why a malformed pattern is refused here rather than thrown ──────────
+ *
+ * `new RegExp` on bad syntax throws a `SyntaxError` whose message is written
+ * for a JavaScript author (*"Invalid regular expression: /[/: Unterminated
+ * character class"*). Let out, it reaches an agent as an internal error with
+ * no rule name and no suggestion, and the reasonable inference — *the browser
+ * broker is broken* — is wrong. It is a refusal: the caller asked for
+ * something this cannot do, and the thing to do instead is to fix the
+ * pattern or to drop the slashes and search for text.
+ */
+export function resolveSnapshotFilter(find: unknown): SnapshotFilter | undefined {
+  if (find === undefined || find === null) return undefined;
+
+  if (typeof find !== 'string' || find.trim() === '') {
+    throw new PageRefusal(
+      'read.find_shape',
+      'find is the text to look for in the snapshot, as a string: ' +
+        'find: "Checkout" matches any line containing it, ignoring case. ' +
+        'Wrap it in slashes for a regular expression instead: find: "/^\\\\s*- button/".',
+      { find },
+    );
+  }
+
+  if (find.length > FIND_MAX_LENGTH) {
+    throw new PageRefusal(
+      'read.find_shape',
+      `find is ${String(find.length)} characters, and the limit is ${String(FIND_MAX_LENGTH)}. ` +
+        'It is matched against one line of the accessibility tree at a time, so a pattern ' +
+        'longer than a line cannot match anything. Search for a distinctive part of it.',
+      { find, length: find.length, limit: FIND_MAX_LENGTH },
+    );
+  }
+
+  // A pattern is `/…/`, needing both delimiters and something between them —
+  // so a lone "/" is text (an address fragment, which is a perfectly ordinary
+  // thing to search a snapshot for) rather than an empty pattern that matches
+  // every line.
+  const isPattern = find.length >= 2 && find.startsWith('/') && find.endsWith('/');
+  if (!isPattern) {
+    return { kind: 'text', text: find };
+  }
+
+  const source = find.slice(1, -1);
+  if (source === '') {
+    throw new PageRefusal(
+      'read.find_shape',
+      'find was "//", which is an empty regular expression and matches every line. ' +
+        'Put the pattern between the slashes — find: "/^\\\\s*- button/" — or drop them ' +
+        'to search for the text "//" itself.',
+      { find },
+    );
+  }
+
+  try {
+    return { kind: 'pattern', pattern: new RegExp(source) };
+  } catch (error) {
+    // The engine's own message is carried through rather than replaced: it
+    // names the position and the construct, which is the part that tells a
+    // caller which character to fix. What this adds is the way out.
+    throw new PageRefusal(
+      'read.find_shape',
+      `find was read as a regular expression because it is wrapped in slashes, and ` +
+        `it does not compile: ${error instanceof Error ? error.message : String(error)}. ` +
+        'Fix the pattern, or drop the surrounding slashes to search for it as literal text.',
+      { find, pattern: source },
+    );
+  }
 }
 
 /**

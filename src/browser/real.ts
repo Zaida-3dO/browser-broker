@@ -43,6 +43,8 @@ import type {
   NavigationResult,
   RawCapture,
   ReadArtifact,
+  ReadOptions,
+  SnapshotFilter,
   StorageSeedEntry,
   TabCloseOutcome,
   TabHandle,
@@ -269,25 +271,61 @@ type NetworkOutcome =
 /**
  * One request as a line of the network log.
  *
- * The shape is `STATUS METHOD URL (elapsed)`, with the outcome **first**,
- * because that is the column a caller scans: a log whose status is at the end
- * of a line of arbitrary length is one a reader has to parse rather than scan.
+ * The shape is `[n] STATUS METHOD URL (elapsed)`, with the outcome **first
+ * among the things that describe the request**, because that is the column a
+ * caller scans: a log whose status is at the end of a line of arbitrary length
+ * is one a reader has to parse rather than scan.
  *
  * `FAILED` and `PENDING` occupy the same column as a status code for the same
  * reason, and neither can be mistaken for one — a caller looking for "did this
  * work" reads one token per line whatever happened.
+ *
+ * ── Why the index goes before the status and not after it ───────────────
+ *
+ * The index has to sit **outside** the scanned column rather than inside it.
+ * Putting it after the outcome (`404 [7] GET …`) would place a variable-width
+ * number between the status and the request, which costs the method and
+ * address their predictable offset and costs the outcome its place as the
+ * token a reader's eye lands on first. Putting it before, in brackets, keeps
+ * the one-token-per-line property the paragraph above exists to protect: the
+ * bracket is visibly not a status, and the outcome remains the first thing
+ * said *about the request*.
+ *
+ * ── Why an index at all, when nothing yet spends it ─────────────────────
+ *
+ * It is a **stable handle**, and that is the whole of the claim being made
+ * for it. The entries are held in insertion order and an entry is mutated in
+ * place as its outcome arrives ({@link PageRecording}), so entry *n* is the
+ * same request across two reads of the same tab — which is what makes it
+ * usable for referring to a line at all, in a later message, in a bug report,
+ * or by a detail call that does not exist yet.
+ *
+ * A detail call (`browser_network_request {lease_key, index}`) is
+ * **deliberately out of scope**: it would require buffering every response
+ * body on every page, against {@link ArtifactCollection}'s "the cost of not
+ * asking is zero", and it would be the first path writing third-party
+ * response bodies to disk under a credential scanner that exists as prose
+ * rather than as code. The index stands on its own because it costs one token
+ * per line and because the thing it is most often needed for — *"the third
+ * request, the one that 404s"* — is a sentence a caller has reason to write.
+ * What it does not do is promise that a call taking it exists.
  */
-function formatNetworkEntry(entry: NetworkEntry): string {
+function formatNetworkEntry(entry: NetworkEntry, index: number): string {
   const request = `${entry.method} ${entry.url}`;
+  // One-based, because the number is for a person or an agent to quote, and
+  // "the first request" is entry 1 in every sentence anybody writes about a
+  // log. A zero-based index here would be an internal detail leaking into a
+  // caller-facing handle.
+  const at = `[${String(index + 1)}]`;
   if (entry.outcome === undefined) {
     // No response and no failure yet. Said explicitly — the alternative is a
     // line that reads exactly like a request nobody ever asked the outcome of.
-    return `PENDING ${request} (in flight when this log was written)`;
+    return `${at} PENDING ${request} (in flight when this log was written)`;
   }
   if (entry.outcome.kind === 'failed') {
-    return `FAILED  ${request} (${entry.outcome.reason}, ${String(entry.outcome.elapsedMs)}ms)`;
+    return `${at} FAILED  ${request} (${entry.outcome.reason}, ${String(entry.outcome.elapsedMs)}ms)`;
   }
-  return `${String(entry.outcome.status)}     ${request} (${String(entry.outcome.elapsedMs)}ms)`;
+  return `${at} ${String(entry.outcome.status)}     ${request} (${String(entry.outcome.elapsedMs)}ms)`;
 }
 
 /**
@@ -306,6 +344,16 @@ function formatNetworkEntry(entry: NetworkEntry): string {
  * changes what the rest of the log *means*: a read taken mid-load is a
  * partial picture of the page even though it is a complete picture of what
  * has been observed, and those are easy to confuse when nothing says so.
+ *
+ * ── What the index on each line is counting ─────────────────────────────
+ *
+ * Position in {@link PageRecording.network}, one-based, and **everything
+ * accumulated is rendered** — so the indices are contiguous and the last one
+ * equals the header's count. That correspondence is worth keeping: a caller
+ * that sees `12 requests` and a line `[12]` can tell at a glance that it is
+ * looking at the whole log rather than a window onto it. A future filter here
+ * would have to say so in the header, because a gap in the numbering is
+ * otherwise indistinguishable from a request that was dropped on the floor.
  *
  * **Nothing here truncates**, which matches {@link RealBrowserSession.read}'s
  * neighbouring artefacts and {@link RealBrowserSession} `#write`'s note that
@@ -329,7 +377,126 @@ function renderNetworkLog(entries: readonly NetworkEntry[]): string {
       ? `${counted}, all settled.`
       : `${counted}, ${String(pending)} still in flight when this was written.`;
 
-  return [header, ...entries.map((entry) => formatNetworkEntry(entry))].join('\n');
+  // `entries.entries()` rather than a counter, because the index IS the array
+  // position: the two cannot drift apart, and a filter added here later would
+  // renumber rather than silently lie about which request a number names.
+  return [
+    header,
+    ...[...entries.entries()].map(([index, entry]) => formatNetworkEntry(entry, index)),
+  ].join('\n');
+}
+
+/**
+ * Narrow a snapshot to the lines a caller asked for, **keeping ancestry**.
+ *
+ * ── What the input actually is, because it decides the whole approach ───
+ *
+ * `ariaSnapshot({ mode: 'ai' })` returns **indented YAML, one node per
+ * line** — `- button "Sign in" [ref=e14]` — with nesting expressed as leading
+ * spaces and nothing else. There is no structured form to query: the
+ * automation library hands over a `string`. So a search of the tree is a
+ * **line filter over text**, and this is that filter rather than a tree walk
+ * pretending the tree still exists.
+ *
+ * ── Why the ancestors come too, which is the whole design ───────────────
+ *
+ * A bare `grep` of matching lines is the obvious implementation and it is
+ * the wrong one, because **on an accessibility tree the parent is frequently
+ * what identifies the node**. Three lines reading
+ *
+ * ```
+ *   - listitem [ref=e21]
+ *   - listitem [ref=e34]
+ *   - listitem [ref=e47]
+ * ```
+ *
+ * tell a caller nothing at all, and a caller that acts on one of those refs
+ * is guessing. The same three under their parents —
+ * `list "Primary navigation"` and `list "Footer"` — are unambiguous. The
+ * ancestors cost a handful of lines and they are the difference between a
+ * result that can be acted on and one that can only be looked at.
+ *
+ * So each matching line is emitted **preceded by every line that encloses
+ * it**: the nearest preceding line at each strictly smaller indentation,
+ * outermost first. One pass, holding a stack of the enclosing lines at the
+ * current depth.
+ *
+ * ── Why no line is emitted twice, and why order is preserved ────────────
+ *
+ * Two matches under one parent share that parent, and printing it twice
+ * would produce a document whose indentation describes something other than
+ * a tree. Lines are therefore tracked by index and the output is assembled in
+ * **original order**, so the result reads as the tree it came from with
+ * branches removed — not as a list of matches with context stapled on.
+ *
+ * ── What a caller is told when nothing matched ──────────────────────────
+ *
+ * An empty file. That is the one outcome this could get badly wrong: a
+ * zero-byte snapshot is indistinguishable from an artefact that failed to
+ * write, and the failure mode — a caller concluding the read broke, when in
+ * fact the page simply does not contain the word — is the
+ * misleading-evidence class this repository has already been bitten by on
+ * the network log. So a miss says so, in the file, and says what it
+ * searched for.
+ */
+export function filterSnapshot(snapshot: string, find: SnapshotFilter): string {
+  const lines = snapshot.split('\n');
+  const matches = (line: string): boolean =>
+    find.kind === 'text'
+      ? line.toLowerCase().includes(find.text.toLowerCase())
+      : find.pattern.test(line);
+
+  // Indices to keep, as a set: a parent shared by two matches is added twice
+  // and kept once, and the set is walked in original order below.
+  const keep = new Set<number>();
+  // The enclosing lines at the current point of the walk — `stack[d]` is the
+  // index of the line that opened depth `d`. Truncated to the current depth
+  // on every line, which is what makes this one pass rather than a search
+  // backwards from each match.
+  const stack: number[] = [];
+
+  for (const [index, line] of lines.entries()) {
+    // A blank line encloses nothing and belongs to no depth. Skipped rather
+    // than measured, because its indentation is zero and it would otherwise
+    // pop the whole stack and orphan everything after it.
+    if (line.trim() === '') continue;
+
+    const depth = line.length - line.trimStart().length;
+    // Everything at this indentation or deeper is a sibling or a former
+    // child, not an ancestor of what follows.
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      const topLine = top === undefined ? undefined : lines[top];
+      if (topLine === undefined || topLine.length - topLine.trimStart().length < depth) break;
+      stack.pop();
+    }
+
+    if (matches(line)) {
+      for (const ancestor of stack) keep.add(ancestor);
+      keep.add(index);
+    }
+
+    stack.push(index);
+  }
+
+  if (keep.size === 0) {
+    // Said in the file, because an empty one reads as a broken write. The
+    // pattern is quoted back so a caller can see what was actually searched
+    // for — a `find` that arrived with a stray quote or a shell's mangling is
+    // otherwise invisible from the result.
+    const what = find.kind === 'text' ? JSON.stringify(find.text) : `/${find.pattern.source}/`;
+    return (
+      `No line of the accessibility tree matched ${what}.\n` +
+      `The snapshot was taken and has ${String(lines.length)} lines; ` +
+      `nothing in it matched, which is not the same as the read having failed. ` +
+      `Read it without find to see the whole tree.`
+    );
+  }
+
+  return [...keep]
+    .sort((left, right) => left - right)
+    .map((index) => lines[index] ?? '')
+    .join('\n');
 }
 
 /**
@@ -1411,10 +1578,24 @@ class RealBrowserSession implements BrowserSession {
    * snapshot the only load-bearing artefact precisely because every reference
    * `browser_act` takes comes from it. A snapshot without references would be
    * readable and useless.
+   *
+   * A `find` narrows what is **written to the file**. The return is a path
+   * either way — see {@link filterSnapshot} for why filtering happens here,
+   * at the last moment before the write, rather than anywhere earlier.
    */
-  async #writeSnapshot(tab: TabHandle, page: Page): Promise<ArtifactResult> {
+  async #writeSnapshot(tab: TabHandle, page: Page, find?: SnapshotFilter): Promise<ArtifactResult> {
     const snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
-    return this.#write(tab, 'snapshot', page.url(), snapshot);
+    // The whole tree is taken from the page and then narrowed, which is the
+    // only order available: `ariaSnapshot` returns a rendered string and has
+    // no query of its own. Worth stating because the cost is not what a
+    // caller might assume — `find` saves the caller's context window, not the
+    // browser's work.
+    return this.#write(
+      tab,
+      'snapshot',
+      page.url(),
+      find === undefined ? snapshot : filterSnapshot(snapshot, find),
+    );
   }
 
   /**
@@ -1457,6 +1638,7 @@ class RealBrowserSession implements BrowserSession {
   async read(
     tab: TabHandle,
     artifacts: readonly ReadArtifact[],
+    options?: ReadOptions,
   ): Promise<readonly ArtifactResult[]> {
     const page = await this.#page(tab);
     const results: ArtifactResult[] = [];
@@ -1464,7 +1646,10 @@ class RealBrowserSession implements BrowserSession {
     for (const artifact of artifacts) {
       switch (artifact) {
         case 'snapshot':
-          results.push(await this.#writeSnapshot(tab, page));
+          // The only artefact `find` touches, and the switch is where that
+          // is enforced rather than promised: the console and network cases
+          // below do not see it at all.
+          results.push(await this.#writeSnapshot(tab, page, options?.snapshotFind));
           break;
 
         case 'console':

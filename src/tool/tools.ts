@@ -547,8 +547,20 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         required: false,
         description:
           '"snapshot" (default), "console", "network" or "cookies". "network" lists every ' +
-          'request with the status it was answered with, or FAILED, or PENDING if it had not ' +
-          'answered yet.',
+          'request, numbered, with the status it was answered with, or FAILED, or PENDING if ' +
+          'it had not answered yet.',
+      },
+      // Named for what it does to the FILE rather than to the answer, because
+      // the return is a path either way — a caller expecting matching lines
+      // back inline is a caller who will think this did nothing.
+      {
+        name: 'find',
+        type: 'string',
+        required: false,
+        description:
+          'Narrow the snapshot to matching lines plus their parents, which are what identify a ' +
+          'node ("listitem" under list "Footer"). Plain text matches anywhere, ignoring case; ' +
+          '/slashes/ make it a regular expression. Still returns a path, not the lines.',
       },
     ],
   },

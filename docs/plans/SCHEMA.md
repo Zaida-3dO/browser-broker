@@ -3244,6 +3244,7 @@ build.
 | `act.form_fields_bounded` | A batch fill carries **at least one field and no more than the maximum**, each with a reference and a value | invalid fields, naming the maximum |
 | `act.drag_ends_differ` | A drag's two references **are not the same element** | invalid drag. A drag onto itself is a caller mistake rather than a no-op, and silently succeeding would hide it |
 | `read.artifact_known` | A read names **which artefacts it wants**, from the known set (§3.9) | unknown artefact, listing the artefacts |
+| `read.find_shape` | A snapshot `find` is **a non-empty string within its length bound**, and one wrapped in `/slashes/` **compiles as a regular expression** | malformed find, showing both spellings. A pattern that does not compile is refused with the engine's own message and the way out — dropping the slashes searches for the text itself — rather than being let out as an internal error |
 | `evaluate.result_serialisable` | An evaluation's result **has a plain representation** — no cycles, nothing the service cannot return (§3.9) | unserialisable result, saying to evaluate to plain data. **The refusal carries the reason and never the value**, for the same reason a cookie read returns no values |
 | `feedback.rating_in_scale` | A rating is **a whole number within the scale**, on a help-versus-hinder axis rather than a satisfaction one (§3.12) | rating out of range, naming the bounds and the anchors |
 | `feedback.category_known` | The category is one of the five | unknown category, listing all five with their descriptions |

@@ -44,6 +44,11 @@ import { teardownBrowser, temporaryProfileRoot } from '../helpers/browser-fixtur
  *   shape — the `FAILED` assertion fails.
  * - Formatting the outcome at `request` time, which is the shape that caused
  *   the original defect — nothing would ever settle.
+ * - Moving the index AFTER the outcome (`404 [7] GET …`) — that displaces the
+ *   outcome as the first thing said about the request, and costs the method
+ *   its predictable offset. The ordering assertion fails.
+ * - Numbering from zero, or renumbering per read — the stable-handle
+ *   assertion fails.
  */
 
 const available = browserAvailable();
@@ -166,6 +171,21 @@ function lineFor(log: string, url: string): string {
 }
 
 /**
+ * A line with its `[n]` index removed, so the outcome assertions can go on
+ * asserting what they were written to assert: that the outcome is the first
+ * thing said **about the request**.
+ *
+ * The index is checked separately and deliberately — folding it into every
+ * regular expression here would mean an index that silently vanished still
+ * passed several of them.
+ */
+function afterIndex(line: string): string {
+  const match = /^\[\d+\] (?<rest>.*)$/su.exec(line);
+  assert.ok(match?.groups !== undefined, `the line carries no [n] index at all: ${line}`);
+  return match.groups['rest'] ?? '';
+}
+
+/**
  * THE HEADLINE: on a page that 404s, the log says 404.
  *
  * The reported defect was that nothing in the network log did. A recorder with
@@ -185,7 +205,7 @@ test(
         const line = lineFor(log, MISSING);
 
         assert.match(
-          line,
+          afterIndex(line),
           /^404\b/,
           `the 404 is not visible as a 404 in its own line: ${line}\n---\n${log}\n---`,
         );
@@ -234,26 +254,30 @@ test(
         let log = '';
         for (let attempt = 0; attempt < 40; attempt += 1) {
           log = await networkLog(session, tab);
-          if (/^(FAILED|\d+)\s/m.test(lineFor(log, DROPPED))) break;
+          if (/^(FAILED|\d+)\s/m.test(afterIndex(lineFor(log, DROPPED)))) break;
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
 
         const good = lineFor(log, OK);
         const bad = lineFor(log, DROPPED);
 
-        assert.match(good, /^200\b/, `the successful request does not read as a 200: ${good}`);
         assert.match(
-          bad,
+          afterIndex(good),
+          /^200\b/,
+          `the successful request does not read as a 200: ${good}`,
+        );
+        assert.match(
+          afterIndex(bad),
           /^FAILED\b/,
           `a request the server dropped does not read as failed: ${bad}\n---\n${log}\n---`,
         );
         // A failure is NOT a status: flattening it into a synthetic code is
         // the mutation this assertion exists to kill.
-        assert.doesNotMatch(bad, /^\d/);
+        assert.doesNotMatch(afterIndex(bad), /^\d/);
         // The browser's own words for why, carried through rather than
         // replaced with a generic phrase.
         assert.ok(
-          bad.length > 'FAILED  GET '.length + `${server.origin}${DROPPED}`.length,
+          afterIndex(bad).length > 'FAILED  GET '.length + `${server.origin}${DROPPED}`.length,
           `the failure line carries no reason at all: ${bad}`,
         );
       });
@@ -293,13 +317,18 @@ test(
 
         const line = lineFor(log, SLOW);
         assert.match(
-          line,
+          afterIndex(line),
           /^PENDING\b/,
           `an unanswered request does not read as pending: ${line}\n---\n${log}\n---`,
         );
         // And the header warns that the log is a partial picture of the page,
         // which is the thing a caller would otherwise have to notice alone.
         assert.match(log, /still in flight when this was written/);
+
+        // The index this request was given while pending. It is a handle, so
+        // the point of it is that it still names this request afterwards.
+        const indexWhilePending = /^\[(?<n>\d+)\]/u.exec(line)?.[1];
+        assert.ok(indexWhilePending !== undefined, `the pending line carries no index: ${line}`);
 
         // Now let it finish, and the SAME entry settles — it does not appear a
         // second time. A recorder that appended an outcome line instead of
@@ -309,7 +338,7 @@ test(
         let settled = '';
         for (let attempt = 0; attempt < 40; attempt += 1) {
           settled = await networkLog(session, tab);
-          if (/^200\s.*still-thinking/m.test(settled)) break;
+          if (/^\[\d+\] 200\s.*still-thinking/m.test(settled)) break;
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
 
@@ -319,8 +348,91 @@ test(
           1,
           `one request produced ${String(linesForSlow.length)} lines:\n${settled}`,
         );
-        assert.match(linesForSlow[0] ?? '', /^200\b/);
+        assert.match(afterIndex(linesForSlow[0] ?? ''), /^200\b/);
         assert.match(settled, /all settled\./);
+
+        // THE STABLE HANDLE: the request kept its number when its outcome
+        // arrived. An index recomputed per read — or one derived from
+        // anything but array position, such as a counter over settled
+        // requests — renumbers here and fails.
+        assert.match(
+          linesForSlow[0] ?? '',
+          new RegExp(`^\\[${indexWhilePending}\\] `, 'u'),
+          `the request changed index when it settled: was [${indexWhilePending}], now ${linesForSlow[0] ?? ''}`,
+        );
+      });
+    } finally {
+      await server.close();
+    }
+  },
+);
+
+/**
+ * Every line is numbered, the numbers are contiguous from 1, and the number
+ * sits BEFORE the outcome.
+ *
+ * ── Why before, and why that is worth an assertion of its own ───────────
+ *
+ * `real.ts` argues the outcome goes first because it is the column a caller
+ * scans — `FAILED` and `PENDING` occupy that same column deliberately, so
+ * that "did this work" is one token per line whatever happened. An index
+ * placed after the outcome (`404 [7] GET …`) puts a variable-width number
+ * between the status and the request, which costs the method its predictable
+ * offset. The index therefore has to sit outside that column entirely, which
+ * is what the bracket and the position express.
+ */
+test(
+  'every request is numbered, from 1, with the number before the outcome',
+  { skip: !available && skipReason() },
+  async () => {
+    const server = await outcomeServer();
+
+    try {
+      await withTab(async (session, tab) => {
+        await session.navigate(tab, `${server.origin}${OK}`, 20_000);
+        // A second request, so "contiguous" is a claim about more than one
+        // line and an off-by-one in the numbering has somewhere to show.
+        await session.evaluate(tab, `fetch(${JSON.stringify(MISSING)}).catch(() => 'ignored')`);
+
+        let log = '';
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          log = await networkLog(session, tab);
+          if (log.split('\n').length > 2) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+
+        const lines = log
+          .split('\n')
+          .slice(1)
+          .filter((line) => line.trim() !== '');
+        assert.ok(lines.length >= 2, `expected at least two requests:\n${log}`);
+
+        lines.forEach((line, position) => {
+          // One-based and in array order. A zero-based index, or one derived
+          // from a filtered subset, fails on the first line.
+          assert.match(
+            line,
+            new RegExp(`^\\[${String(position + 1)}\\] `, 'u'),
+            `line ${String(position + 1)} is not numbered ${String(position + 1)}: ${line}\n---\n${log}\n---`,
+          );
+          // And what follows the index is immediately the outcome — nothing
+          // is allowed to slip between the number and the scanned column.
+          assert.match(
+            afterIndex(line),
+            /^(\d{3}|FAILED|PENDING)\b/,
+            `the outcome does not immediately follow the index: ${line}`,
+          );
+        });
+
+        // The header's count and the last index agree, which is what lets a
+        // caller see at a glance that it has the whole log rather than a
+        // window onto it.
+        const counted = /^(?<n>\d+) requests?/u.exec(log)?.groups?.['n'];
+        assert.equal(
+          counted,
+          String(lines.length),
+          `the header counts ${String(counted)} requests but ${String(lines.length)} lines follow:\n${log}`,
+        );
       });
     } finally {
       await server.close();

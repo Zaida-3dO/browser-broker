@@ -574,6 +574,49 @@ export const READ_ARTIFACTS: readonly ReadArtifact[] = [
 export type ArtifactCollection = 'accumulated' | 'live' | 'generated';
 
 /**
+ * What a caller is looking for in the snapshot, already read into a matcher.
+ *
+ * **Resolved by the service, not here.** A caller spells this `/…/` or as
+ * plain text (`resolveSnapshotFilter`, `src/service/pages.ts`), and the
+ * refusal for a pattern that does not compile belongs on that side with every
+ * other refusal. What crosses this seam is the decided thing: a driver either
+ * matches a string case-insensitively or tests a compiled expression, and has
+ * no spelling left to interpret.
+ */
+export type SnapshotFilter =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'pattern'; readonly pattern: RegExp };
+
+/**
+ * What a read may be narrowed by, beyond which artefacts it wants.
+ *
+ * ── Why this is an options object and not a second positional argument ──
+ *
+ * `read` has exactly one narrowing, which a second positional parameter would
+ * carry perfectly well. The object is chosen anyway, because a second
+ * narrowing — a `find` over the console log is the obvious candidate, and it
+ * is a different argument matching different lines — would arrive as a third
+ * positional, and a call site reading `read(tab, artifacts, filter,
+ * undefined)` is where a value silently goes to the wrong slot.
+ *
+ * **Optional in full**, so every existing call site that wants the whole
+ * snapshot keeps its two-argument shape and nothing had to be touched to stay
+ * still.
+ */
+export interface ReadOptions {
+  /**
+   * Narrow the **snapshot** to matching lines and their ancestors.
+   *
+   * Names the artefact it applies to deliberately: a caller asking for the
+   * console and the snapshot in one read gets a filtered snapshot and a whole
+   * console, and a field called `find` would have promised otherwise. The
+   * console is accumulated text a caller can search itself; the snapshot is
+   * the one whose size is the reason to filter (§3.9).
+   */
+  readonly snapshotFind?: SnapshotFilter;
+}
+
+/**
  * Which artefacts are which. Written down so *"is this already being
  * collected"* has a stable answer per artefact rather than being something to
  * reason out each time somebody reads the default.
@@ -893,10 +936,18 @@ export interface TabOperations {
    */
   readonly act: (tab: TabHandle, request: ActionRequest) => Promise<ArtifactResult>;
 
-  /** Write the requested artefacts to disk and report where each went. */
+  /**
+   * Write the requested artefacts to disk and report where each went.
+   *
+   * {@link ReadOptions} narrows what is **written**, never what is returned:
+   * the result is a path per artefact whether or not anything was filtered,
+   * which is what keeps a filtered read from being a second return shape a
+   * caller has to branch on (`DECISIONS.md` §3, references not payloads).
+   */
   readonly read: (
     tab: TabHandle,
     artifacts: readonly ReadArtifact[],
+    options?: ReadOptions,
   ) => Promise<readonly ArtifactResult[]>;
 
   /**

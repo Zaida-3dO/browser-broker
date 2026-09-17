@@ -182,6 +182,18 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
     words: ['read'],
     operation: 'read',
     summary: 'The page snapshot; console, network or cookies on request.',
+    options: [
+      {
+        flag: '--what <snapshot|console|network|cookies>',
+        summary: 'Which artefact. The snapshot is the default and is always included.',
+      },
+      {
+        flag: '--find <text|/regex/>',
+        summary:
+          'Narrow the snapshot to matching lines and their parents. Plain text ignores case; ' +
+          'slashes make it a regular expression. The result is still a path to a file.',
+      },
+    ],
   },
   { words: ['evaluate'], operation: 'evaluate', summary: 'Evaluate an expression in the page.' },
   {

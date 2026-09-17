@@ -300,6 +300,13 @@ export function serviceFor(options: BridgeOptions): BrokerService {
 
       case 'read': {
         const key = keyFrom(args);
+        // Read once into a name, rather than called twice inside the spread
+        // the way `what` is. Both spellings satisfy the reachability check;
+        // this one is a fraction clearer about the value being carried, and
+        // `find` is a string a caller may reasonably have typed `""` into —
+        // which the resolver refuses with a message, rather than silently
+        // treating as absent the way a truthiness test here would.
+        const find = argument(args, 'find');
         return {
           ...(await broker.read({
             key,
@@ -307,6 +314,7 @@ export function serviceFor(options: BridgeOptions): BrokerService {
             ...(argument(args, 'what', 'artifacts') === undefined
               ? {}
               : { artifacts: artifactsFrom(argument(args, 'what', 'artifacts')) }),
+            ...(find === undefined ? {} : { find }),
           })),
         };
       }
