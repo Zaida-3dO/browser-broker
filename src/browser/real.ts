@@ -44,6 +44,7 @@ import type {
   RawCapture,
   ReadArtifact,
   StorageSeedEntry,
+  TabCloseOutcome,
   TabHandle,
 } from './driver.ts';
 import { coldStartDetached, type LaunchOptions } from './launch.ts';
@@ -580,6 +581,19 @@ class RealBrowserSession implements BrowserSession {
    * pages **the browser reports as open**, so a name that matches nothing
    * resolves to nothing. The keeper is excluded, so it stays unaddressable
    * (§3.13) by the same rule that keeps it out of {@link listTabs}.
+   *
+   * ── ⚠ How far that exclusion actually reaches ───────────────────────────
+   *
+   * It is by **object identity** against `#keeper.page`, and that field
+   * initialises to `undefined`. So on a connection that has attached to a
+   * running browser and has not yet called {@link ensureKeeperTab}, the
+   * comparison is against `undefined` and the keeper is adoptable like any
+   * other page. That is tolerable for the verbs that read or drive a page —
+   * the worst case is a caller steering a blank tab — and it is **not**
+   * tolerable for {@link closeTab}, which is why that method excludes the
+   * keeper by `KEEPER_TAB_URL` before and after resolving rather than leaning
+   * on this check. Read this guard as "the keeper is normally not adopted",
+   * never as a guarantee anything destructive may rest on.
    */
   async #adopt(driverTabId: string): Promise<Page | undefined> {
     for (const page of this.#context.pages()) {
@@ -810,17 +824,120 @@ class RealBrowserSession implements BrowserSession {
     return `${this.#browser}-keeper`;
   }
 
-  async closeTab(tab: TabHandle): Promise<void> {
-    const page = this.#pages.get(tab.driverTabId);
-    if (page === undefined) {
-      // Includes the keeper's handle, which is never in the map. Closing is
-      // best effort by design (§2.4b) — it runs after the arbitration
-      // transaction has committed, so a tab that will not close is a leaked
-      // tab and not a leaked lease.
-      return;
+  /**
+   * Close the page a handle names, wherever this session got the name from.
+   *
+   * ── Why closing resolves like every other verb ──────────────────────────
+   *
+   * Reading {@link #pages} alone would answer only for tabs this session
+   * opened itself. Every other page verb goes through {@link #page}, which
+   * falls back to {@link #adopt} — the thing that makes a tab addressable by
+   * the process that did not open it — and closing needs the same reach for
+   * the same reason. This service is daemonless, spawned per caller, so **the
+   * process releasing a lease is routinely not the process that opened its
+   * tab.** A close that only worked in the opening process would be a close
+   * that mostly did not work.
+   *
+   * The leaked page is the smaller half of getting that wrong. A miss that is
+   * indistinguishable from a success makes `runtime.ts` write the row
+   * `state='closed', close_failed=0`, and that row is invisible to both
+   * instruments built to find leaks: `doctor` counts rows stranded at
+   * `closing`, `status` selects `close_failed = 1`, and a row that went
+   * straight to `closed` answers to neither. Hence {@link TabCloseOutcome} —
+   * the caller records a close only when a page was found and ended.
+   *
+   * ── ⚠ Why the keeper is excluded by address and not by identity ─────────
+   *
+   * Adoption is what makes this method work, and it is also what puts the
+   * keeper within reach, so the guard has to be strong enough to stand on its
+   * own. {@link #adopt} does refuse the keeper — but by object identity
+   * against `#keeper.page`, and `#keeper` initialises to `{ page: undefined }`
+   * (see its declaration). **A freshly attached session that calls this before
+   * {@link ensureKeeperTab} compares against `undefined`, matches nothing, and
+   * adopts the keeper like any other page.** Closing it ends the shared
+   * signed-in browser: a headed browser dies within about half a second of its
+   * last tab closing.
+   *
+   * So the keeper is excluded **by address** on the adoption route, exactly as
+   * `ensureKeeperTab` recognises an adoptable keeper by `KEEPER_TAB_URL`. A
+   * URL is a property of the page the browser reports — true on the very first
+   * call of a brand-new connection, and independent of whether this session
+   * has done anything first. Identity in `#adopt` stands as a second lock
+   * rather than the only one, because identity is sound only once something
+   * has populated the field it compares, and a destructive operation must not
+   * rest on a precondition its caller controls.
+   *
+   * **The address check guards adoption and nothing else, and that boundary is
+   * exact rather than cautious.** `KEEPER_TAB_URL` is `about:blank`, which is
+   * also what a tab looks like between being opened and being navigated. A
+   * check applied to every route would refuse a caller the tab it just opened
+   * and report a real close as one that did not happen — the same class of
+   * false record this method exists to eliminate, merely pointing the other
+   * way. A page found in `#pages` needs no address check to be safe: the
+   * keeper is never registered there, so a hit is itself the proof.
+   *
+   * The refusal reports `refused` rather than `not_found`, because a keeper
+   * protected on purpose and a handle that failed to resolve are different
+   * facts — and spelling them the same way is what makes a deliberate safety
+   * rule read as an implementation accident.
+   */
+  async closeTab(tab: TabHandle): Promise<TabCloseOutcome> {
+    if (tab.driverTabId === this.#keeperHandleId()) {
+      return 'refused';
     }
+
+    // ── Resolution, and why the two routes are kept apart ──────────────────
+    //
+    // A page held in `#pages` is one this session opened and named itself, and
+    // the keeper is **never** put there — `ensureKeeperTab` keeps it in
+    // `#keeper` precisely so it cannot be reached by name. So a hit here is
+    // proof the page is not the keeper, and no further check is owed.
+    //
+    // A page reached by adoption carries no such proof: it came out of the
+    // browser's own list, and on a connection that did not start the browser
+    // the keeper is in that list like anything else.
+    const held = this.#pages.get(tab.driverTabId);
+    if (held !== undefined && !held.isClosed()) {
+      this.#pages.delete(tab.driverTabId);
+      await held.close();
+      return 'closed';
+    }
+
+    const adopted = await this.#adopt(tab.driverTabId);
+    if (adopted === undefined) {
+      // No page in this browser answers to that name: already closed, another
+      // browser's name, or never opened. Closing is best effort by design
+      // (§2.4b) — it runs after the arbitration transaction has committed, so
+      // this is a leaked tab and not a leaked lease. It is reported rather
+      // than swallowed so the row is not written as a close that happened.
+      this.#pages.delete(tab.driverTabId);
+      return 'not_found';
+    }
+
+    // ── ⚠ The address check, and why it guards adoption ONLY ───────────────
+    //
+    // `KEEPER_TAB_URL` is `about:blank`, **and so is a tab that has just been
+    // opened and not yet navigated.** The address therefore identifies the
+    // keeper only among pages this session cannot otherwise vouch for. Applied
+    // to every route it would refuse a caller its own freshly opened tab and
+    // record a genuine close as one that did not happen — which is the same
+    // class of lie, in the opposite direction, as the miss this method exists
+    // to stop reporting as success.
+    //
+    // Applied here it is sound, and it is what `#adopt`'s identity check
+    // cannot be: `#keeper.page` is `undefined` until this session establishes
+    // the keeper, so on a freshly attached connection identity excludes
+    // nothing and a blank page in the browser's list may well be the keeper of
+    // a browser somebody signed in to by hand. Refusing a blank adopted page
+    // costs at most a leaked tab; closing the keeper ends the browser.
+    if (adopted.url() === KEEPER_TAB_URL) {
+      this.#pages.delete(tab.driverTabId);
+      return 'refused';
+    }
+
     this.#pages.delete(tab.driverTabId);
-    await page.close();
+    await adopted.close();
+    return 'closed';
   }
 
   /**

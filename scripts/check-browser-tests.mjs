@@ -78,7 +78,7 @@
  *
  * A gate that is flaky gets ignored, then disabled, and that is worse than
  * not having one. So the list below is the subset that was **measured**
- * stable, and one suite is deliberately excluded:
+ * stable, and two suites are deliberately excluded:
  *
  * **`tests/browser/cross-process-act.test.ts` is excluded because it is
  * flaky, measured at roughly one failure in four runs *in isolation* on an
@@ -89,6 +89,24 @@
  * dropped silently, because an excluded test that nobody can see excluded is
  * the same invisible-hole problem in a new place. Fixing that flake is
  * separate work; when it is fixed, add the file here and raise the minimum.
+ *
+ * **`tests/browser/cross-process-close.test.ts` is excluded because both of
+ * its tests cold-start a browser, which cannot succeed on a hosted runner for
+ * the sandbox reason set out above.** Adding it would push `fail` from 24 to
+ * 26 and force {@link MAXIMUM_EXPECTED_FAILURES} upward — and that number is a
+ * ratchet that should only ever go down. Raising a safety ceiling to
+ * accommodate tests that are *known* to fail in this environment would convert
+ * this gate back into the thing it was built to replace, so the exclusion is
+ * recorded here instead.
+ *
+ * ⚠️ **Read that as "requires a local browser", never as "optional".** These
+ * are the tests that prove a page opened by one connection is really gone
+ * after another closes it, and that **the keeper survives being named to
+ * `closeTab` by a session that has not established it** — the case that ends a
+ * shared signed-in browser, since a headed browser dies within about half a
+ * second of its last tab closing. They must be run locally, on a machine with
+ * a browser, before a change to the close path is merged. A green run of this
+ * gate says nothing whatsoever about them.
  *
  * This subset is therefore an honest floor, not a complete claim. What a
  * green run here means is stated below — and what it does not mean is stated

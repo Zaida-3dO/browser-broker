@@ -198,6 +198,26 @@ test('THE KNOWN-FLAKY SUITE IS NOT IN THE GATE', () => {
   );
 });
 
+test('THE COLD-START CLOSE SUITE IS NOT IN THE GATE, AND NOT BECAUSE IT IS OPTIONAL', () => {
+  // tests/browser/cross-process-close.test.ts cold-starts a browser in both
+  // of its tests, which cannot succeed on a hosted runner for the sandbox
+  // reason the gate's header sets out. Adding it would take `fail` from 24 to
+  // 26 and force MAXIMUM_EXPECTED_FAILURES up — and the test below makes that
+  // number a ratchet that only falls. So the exclusion is the honest move,
+  // and this test is what keeps it deliberate.
+  //
+  // ⚠️ It is excluded for the ENVIRONMENT, not for its importance. It proves
+  // a page closed across a process boundary really goes away, and that the
+  // keeper survives being named to `closeTab` by a session that has not
+  // established it — the case that ends a shared signed-in browser. Run it
+  // locally, on a machine with a browser, before merging a change to the
+  // close path. A green run of this gate says nothing about it.
+  assert.ok(
+    !BROWSER_TEST_FILES.includes('tests/browser/cross-process-close.test.ts'),
+    'the cold-start close suite must stay out of the gate while the ceiling is a ratchet',
+  );
+});
+
 test('the expected floor sits below the measured count, not at it', () => {
   // At the floor, adding a single test would fail the gate and teach the next
   // person to edit the number rather than read what broke.

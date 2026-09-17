@@ -460,9 +460,9 @@ describe('broker reconcile', () => {
   it('does not claim ownership of a blocking tab that belongs to another session', async () => {
     // The negative control, and the assertion that stops the message being
     // unconditional. The blocking row is a different session's, so the
-    // ordinary "run again once they have settled" is the true thing to say —
-    // telling this caller to release a lease it does not hold would send it
-    // looking for something it cannot find.
+    // ordinary unowned conclusion is the true thing to say — telling this
+    // caller to release a lease it does not hold would send it looking for
+    // something it cannot find.
     const temp = makeTempStore();
     try {
       const store = await prepareStore(temp.environment);
@@ -488,7 +488,11 @@ describe('broker reconcile', () => {
       const output = captured.out.join('\n');
 
       assert.match(output, /1 tab\(s\) are still being opened/u);
-      assert.match(output, /Run again once they have settled/u);
+      // The unowned branch, identified by what only it says. Matched on the
+      // permanence warning rather than on the retired "run again once they
+      // have settled", which promised a condition that clears on its own
+      // when an `opening` row may never clear at all.
+      assert.match(output, /may not happen on its own/u);
       assert.doesNotMatch(output, /your own lease/u);
     } finally {
       temp.remove();
@@ -522,7 +526,11 @@ describe('broker reconcile', () => {
 
       assert.equal(code, COMMAND_EXIT.accepted, captured.err.join('\n'));
       const output = captured.out.join('\n');
-      assert.match(output, /Run again once they have settled/u);
+      // The unowned branch, identified by what only it says. Matched on the
+      // permanence warning rather than on the retired "run again once they
+      // have settled", which promised a condition that clears on its own
+      // when an `opening` row may never clear at all.
+      assert.match(output, /may not happen on its own/u);
       assert.doesNotMatch(output, /your own lease/u);
     } finally {
       temp.remove();
@@ -591,7 +599,57 @@ describe('broker reconcile', () => {
 
     assert.equal(lines[0], 'did not reconcile: regular');
     assert.match(lines[1] ?? '', /still being opened/u);
-    assert.match(lines[1] ?? '', /Run again once they have settled/u);
+  });
+
+  it('does NOT tell the caller to wait for a condition that may never clear', () => {
+    // ── The defect this replaced ────────────────────────────────────────
+    //
+    // The line used to end "Run again once they have settled." *Settled*
+    // describes something in progress that finishes on its own, and an
+    // `opening` row has no such mechanism behind it. `reserveTab` inserts the
+    // row inside the arbitration transaction and opens the page after the
+    // commit (§2.4b), so a process that dies in between leaves a row that
+    // `tabs.ts` says outright "can sit in `opening` forever… the honest
+    // outcome rather than a gap".
+    //
+    // So an operator was being told to wait for something that may outlive
+    // the browser, with every counter reading zero on each retry and nothing
+    // anywhere hinting that waiting was the wrong move. The refusal itself is
+    // correct and deliberately untouched — only the advice on top of it was
+    // wrong.
+    const lines = formatReconciliation('regular', {
+      pagesSeen: 2,
+      settled: [],
+      strandedSettled: 0,
+      closed: 0,
+      closeFailures: 0,
+      skippedOpening: 1,
+      skippedOpeningOwnedByCaller: 0,
+    });
+
+    const conclusion = lines[1] ?? '';
+
+    // The negative assertion is the point of the test, and it is written
+    // against the exact old sentence so it fails the moment anyone restores
+    // it. The single-character change that breaks this test is putting the
+    // word "settled" back into `conclusionLine`'s unowned branch.
+    assert.doesNotMatch(
+      conclusion,
+      /once they have settled/u,
+      'the message again promises a condition that clears on its own, when it may never clear',
+    );
+
+    // Positively: it has to say the wait may not end by itself, or the
+    // negative assertion above is satisfied by deleting the advice entirely
+    // and telling the operator nothing at all.
+    assert.match(
+      conclusion,
+      /may not happen on its own/u,
+      'the message fails to warn that the condition can be permanent',
+    );
+    // And it has to point at the thing that actually resolves it — the lease
+    // — rather than at the clock.
+    assert.match(conclusion, /released or expires/u);
   });
 
   it('KEEPS the completion headline, and the trailing caveat, when it did close pages', () => {

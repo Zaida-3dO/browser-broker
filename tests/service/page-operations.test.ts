@@ -91,7 +91,9 @@ function recordingSession(canned?: { readonly width: number; readonly height: nu
     },
     closeTab: async (tab: TabHandle) => {
       calls.push(`closeTab:${tab.driverTabId}`);
-      await Promise.resolve();
+      // `'closed'`: this stub records the call and stands in for a driver
+      // that closed the page.
+      return await Promise.resolve('closed' as const);
     },
     // The wait is part of what the driver was asked for, so it is part of what
     // the log records. Without it a call that dropped the argument on the way
