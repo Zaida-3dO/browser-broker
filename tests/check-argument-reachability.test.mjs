@@ -39,14 +39,23 @@ import {
   BRIDGE_SOURCE,
   TOOLS_SOURCE,
   WAIVERS,
+  actionRequestMembers,
+  aliasGroups,
+  assemblers,
   bridgeReadsByOperation,
   checkArguments,
   checkConfiguration,
+  checkRequiredFieldsAreDeclarable,
   declaredToolArguments,
   environmentFieldsFor,
+  passthroughArguments,
+  reachableFields,
   runReachabilityCheck,
   seededDefect,
+  seededUndeclaredPassthrough,
+  seededUnreachableVerb,
   stripCommentsAndStrings,
+  STRUCTURED_UNIONS,
   ENVIRONMENT_SOURCE,
 } from '../scripts/check-argument-reachability.mjs';
 
@@ -312,5 +321,250 @@ describe('the tool surface and the bridge agree about capture', () => {
       capture.includes('tier') && capture.includes('reason'),
       '`reason` without `tier` offers a justification for an escalation nothing can request',
     );
+  });
+});
+
+/**
+ * The reverse half — **a needed field is declared by something**.
+ *
+ * The same argument as the header of this file, applied to the newer half and
+ * sharper for it. This half's subject is *a capability nobody offered*, and the
+ * ways it can be worthless are not the ways the first half can: it can fail to
+ * fire, like any gate, but it can also **pass vacuously by construction**,
+ * because the argument it reasons about is a passthrough that carries every
+ * field by definition. A green run proves nothing about either hazard, so both
+ * are seeded below.
+ */
+describe('the reverse check: a required field of ActionRequest can reach the surface', () => {
+  it('passes on the tree as it stands, with no false positives', () => {
+    // The scope claim, asserted rather than asserted-about. The unscoped
+    // version of this check reports 17 names on `browser_act`, of which 4 are
+    // the defect; the scoped one reports none. If a future change makes this
+    // fail, the question to ask first is whether the scope drifted — not
+    // whether to add a waiver, which this half deliberately does not have.
+    const result = checkRequiredFieldsAreDeclarable();
+    assert.deepEqual(
+      result.failures,
+      [],
+      'every required ActionRequest field can be expressed from the tool surface on this tree',
+    );
+    assert.ok(result.checked > 0, 'a check that examined no fields would report green vacuously');
+  });
+
+  it('goes red when the passthrough is undeclared, which is the pre-5738548 tree', () => {
+    // Seeded against a **copy**, like the `wait_ms` seed above, and seeded at
+    // the declaration rather than the bridge because that is where the defect
+    // actually lived: 5738548 added one argument and left `bridge.ts` untouched.
+    const seeded = checkRequiredFieldsAreDeclarable(seededUndeclaredPassthrough());
+    for (const field of ['preferences', 'fields', 'targetRef']) {
+      assert.ok(
+        seeded.failures.some((failure) => failure.includes(field)),
+        `removing the passthrough must make "${field}" unreachable — it has no flat spelling, ` +
+          'which is exactly why the four verbs were uncallable',
+      );
+    }
+  });
+
+  it('goes red on a verb the surface cannot express, with the passthrough still declared', () => {
+    // **The load-bearing proof, and the one the seed above cannot make.**
+    //
+    // Worth stating plainly because an earlier draft of this check passed the
+    // seed above while being unable to observe the defect class at all. That
+    // seed deletes the declaration, so a check that wrongly counted the
+    // passthrough toward reachability still went red on it — for the unrelated
+    // reason that there was nothing left to count. It cannot tell a working
+    // exclusion clause from an absent one.
+    //
+    // This one leaves the passthrough exactly where it is and grows the
+    // **union**: a verb whose required field no declared argument can carry,
+    // which is precisely what happened to emulate, fill_form and drag. It is
+    // red only if the passthrough is genuinely excluded. Let the passthrough
+    // count and this goes green — so this is the test that fails when somebody
+    // "simplifies" the clause away.
+    const seeded = seededUnreachableVerb();
+    const result = checkRequiredFieldsAreDeclarable({ driverSource: seeded.driverSource });
+    assert.ok(
+      result.failures.some((failure) => failure.includes(seeded.field)),
+      'a required field nothing on the surface can express must fail even while the passthrough ' +
+        'is declared — otherwise the passthrough is being counted toward reachability and the ' +
+        'gate can never fire on the defect class it exists for',
+    );
+  });
+
+  it('fails a passthrough-only field that is not recorded, which is what makes the list bite', () => {
+    // The enumeration is what leaves everything else failing, so the thing to
+    // pin is that an *unrecorded* field fails. Asserted by emptying the list
+    // rather than by adding a verb, so it exercises the recorded/unrecorded
+    // branch directly: the three real fields become unacknowledged and must
+    // each be reported.
+    const union = STRUCTURED_UNIONS[0];
+    const recorded = union.viaPassthrough;
+    try {
+      union.viaPassthrough = [];
+      const result = checkRequiredFieldsAreDeclarable();
+      for (const field of ['preferences', 'fields', 'targetRef']) {
+        assert.ok(
+          result.failures.some((failure) => failure.includes(field)),
+          `with nothing recorded, "${field}" has no flat route and must be reported — if it is ` +
+            'not, the passthrough is reaching it and the exclusion has stopped working',
+        );
+      }
+    } finally {
+      union.viaPassthrough = recorded;
+    }
+  });
+
+  it('reports a recorded field that has since grown a flat route as stale', () => {
+    // The other end of the guard. An entry that misdescribes the tree stops
+    // being read, and this list is load-bearing for the fields that do
+    // still need it — so a stale one is a failure rather than a shrug, exactly
+    // like the stale-waiver guard in the configuration half.
+    const union = STRUCTURED_UNIONS[0];
+    const recorded = union.viaPassthrough;
+    try {
+      // `value` is declared flat, so recording it as passthrough-only is a lie
+      // the check must notice.
+      union.viaPassthrough = [...recorded, { field: 'value', why: 'fabricated for this test' }];
+      const result = checkRequiredFieldsAreDeclarable();
+      assert.ok(
+        result.failures.some(
+          (failure) => failure.includes('"value"') && failure.includes('flat route'),
+        ),
+        'a recorded field that is reachable flat must be reported as stale',
+      );
+    } finally {
+      union.viaPassthrough = recorded;
+    }
+  });
+
+  it('derives the passthrough structurally rather than by the name `request`', () => {
+    // A check hunting a hardcoded name cannot tell a deleted argument from a
+    // renamed one, and only one of those is a defect. Asserted by renaming it
+    // in a copy and requiring the derivation to follow.
+    const tools = readFileSync(TOOLS_SOURCE, 'utf8');
+    assert.deepEqual(passthroughArguments('browser_act', tools), ['request']);
+
+    const renamed = tools.replaceAll("name: 'request'", "name: 'whole_request'");
+    assert.deepEqual(
+      passthroughArguments('browser_act', renamed),
+      ['whole_request'],
+      'the passthrough is the object-typed argument, whatever it is called',
+    );
+    assert.deepEqual(
+      checkRequiredFieldsAreDeclarable({ toolsSource: renamed }).failures,
+      [],
+      'renaming the passthrough is not a defect and must not be reported as one',
+    );
+  });
+
+  it('reads optionality from the union rather than from a list kept beside it', () => {
+    const members = actionRequestMembers();
+    const press = members.find((member) => member.verbs.includes('press'));
+    // `press` is the member that pins this: it has `ref?` and `value`, so a
+    // parser blind to `?` would put `ref` in `required` and demand a
+    // declaration for a field the service does not require.
+    assert.deepEqual(press.required, ['value']);
+    assert.deepEqual(press.optional, ['ref']);
+
+    const drag = members.find((member) => member.verbs.includes('drag'));
+    assert.deepEqual(drag.required, ['ref', 'targetRef']);
+  });
+
+  it('refuses to check an empty set when the union is renamed', () => {
+    // The failure mode this guards is the worst one available to a static
+    // check: finding nothing, checking nothing, and reporting green. It throws
+    // rather than returning `[]` for exactly that reason.
+    assert.throws(
+      () => actionRequestMembers(undefined, 'export type SomethingElse = { readonly a: 1 };'),
+      /could not find "export type ActionRequest"/,
+    );
+
+    // The second way to check nothing: the type is found and no member parses
+    // out of it, which is what a change to the union's layout would produce.
+    // Pinned separately because it is a different branch and a mutation that
+    // removes it survives the assertion above.
+    assert.throws(
+      () =>
+        actionRequestMembers(undefined, 'export type ActionRequest = never;\nexport const x = 1;'),
+      /parsed no members/,
+    );
+  });
+
+  it('treats alias spellings as one argument by grouping them at the call site', () => {
+    // The single decision that takes the false-positive count from 17 to zero.
+    // `argument(args, 'ref', 'target')` IS the statement that the two names are
+    // one argument, so `ref` is reachable from a surface that declares only
+    // `target`. Flattening the literals loses precisely this.
+    const groups = aliasGroups();
+    assert.ok(
+      groups.some((group) => group.includes('ref') && group.includes('target')),
+      'ref/target must be recognised as one argument under two spellings',
+    );
+
+    const reach = reachableFields(['target'], { groups, built: assemblers() });
+    assert.ok(reach.has('ref'), '`ref` is declared — as `target`, which is the same argument');
+  });
+
+  it('follows alternate-shape parsers, so a flat `value` reaches `viewport`', () => {
+    // `viewportFrom` reads `viewport`, `width`, `height` and `value`, and only
+    // `value` is declared — by design, because the flat surface accepts
+    // `390x844`. Undeclared alternatives are not gaps, and a check that called
+    // them gaps would cry wolf on a working verb.
+    const reach = reachableFields(['value'], { groups: aliasGroups(), built: assemblers() });
+    assert.ok(reach.has('viewport'), 'resize is reachable through the `390x844` spelling');
+  });
+
+  it('admits only helpers that build their own field, not every `…From`', () => {
+    // **The third vacuity route, and the subtlest.** `actionFrom` and
+    // `refusalFrom` also end in `From` and both read the whole argument record —
+    // `refusalFrom` transitively reads every name in the bridge. Admitting them
+    // makes every field reachable from any declared argument whatsoever, and
+    // the check passes on everything again. The self-read test is what excludes
+    // them, and this pins it.
+    const built = assemblers();
+    assert.ok(built.has('viewport'), '`viewportFrom` reads `viewport` and assembles it');
+    assert.ok(built.has('response'), '`responseFrom` reads `response` and assembles it');
+    assert.ok(
+      !built.has('refusal'),
+      '`refusalFrom` reads the whole record — all 48 names in the bridge, transitively — and ' +
+        'assembles no field of its own. Admitting it would make every field reachable from any ' +
+        'declared argument whatsoever, which is the vacuity the self-read test exists to prevent',
+    );
+
+    // **`actionFrom` IS admitted, and that is correct — noted because it looks
+    // wrong.** It reads `argument(args, 'action')`, so it passes the self-read
+    // test, and an earlier draft of this test asserted it should be excluded.
+    // The assertion was wrong, not the code. Reachability flows *inward*: an
+    // assembler entry says "these read names reach this built field", so
+    // `actionFrom` lets `ref`, `value` and the rest reach `action`. It never
+    // lets `action` reach *them*, which is the direction that would be
+    // dangerous. The guard that matters is the one below.
+    assert.deepEqual(
+      [...reachableFields(['action'], { groups: aliasGroups(), built })],
+      ['action'],
+      'admitting the dispatcher must not let one declared name reach the whole union — ' +
+        'reachability composes inward, toward the assembled field, and never back out',
+    );
+  });
+
+  it('names the fields that depend on the passthrough alone, on a passing run', () => {
+    // Reported rather than failed, and visible on green, for the same reason a
+    // waiver is printed on every run: the dependency should be in front of
+    // whoever is reading a diff that touches the declaration.
+    const result = checkRequiredFieldsAreDeclarable();
+    const named = result.viaPassthroughOnly.map((entry) => entry.field).sort();
+    assert.deepEqual(named, ['fields', 'preferences', 'targetRef']);
+  });
+
+  it('is wired into the whole-tree run rather than living beside it', () => {
+    // A check nothing calls is the inert-argument defect wearing a gate's
+    // clothes. `npm run check:argument-reachability` runs `runReachabilityCheck`,
+    // so the reverse half has to be reachable from there or it never runs in CI.
+    const result = runReachabilityCheck();
+    assert.ok(
+      typeof result.checkedFields === 'number' && result.checkedFields > 0,
+      'the reverse half must contribute to the run the CI job actually invokes',
+    );
+    assert.deepEqual(result.failures, []);
   });
 });
