@@ -415,8 +415,8 @@ describe('the reverse check: a required field of ActionRequest can reach the sur
   });
 
   it('reports a recorded field that has since grown a flat route as stale', () => {
-    // The other end of the guard. An entry that no longer describes the tree
-    // stops being read, and this list is load-bearing for the fields that do
+    // The other end of the guard. An entry that misdescribes the tree stops
+    // being read, and this list is load-bearing for the fields that do
     // still need it — so a stale one is a failure rather than a shrug, exactly
     // like the stale-waiver guard in the configuration half.
     const union = STRUCTURED_UNIONS[0];

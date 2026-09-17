@@ -1094,9 +1094,8 @@ export function checkRequiredFieldsAreDeclarable({ toolsSource, bridgeSource, dr
       if (!reach.has(entry.field)) continue;
       failures.push(
         `"${entry.field}" is recorded as reaching ${union.tool} only inside the passthrough, and ` +
-          `it now has a flat route as well. Delete the entry: a record that no longer describes ` +
-          `the tree stops being read, and this one is load-bearing for the fields that still ` +
-          `need it.`,
+          `it now has a flat route as well. Delete the entry: a record that misdescribes the tree ` +
+          `stops being read, and this one is load-bearing for the fields that still need it.`,
       );
     }
   }
@@ -1471,8 +1470,8 @@ export function seededDefect() {
  * The seeded violation for the reverse half: `browser_act`'s declaration as it
  * stood **before `5738548`**, with the passthrough removed.
  *
- * Historically faithful rather than invented. That commit added exactly one
- * argument and touched no other file, so deleting the object-typed declaration
+ * Faithful to what `5738548` did rather than invented. That commit added exactly
+ * one argument and touched no other file, so deleting the object-typed declaration
  * reproduces the tree on which four implemented verbs were uncallable — and
  * reproduces it at the place the defect actually lived, the declaration,
  * rather than by damaging the bridge that was innocent throughout.
@@ -1489,7 +1488,7 @@ export function seededUndeclaredPassthrough() {
   if (seeded === tools) {
     throw new Error(
       'the self-test could not find an object-typed argument declaration to remove, so the ' +
-        'seed no longer reproduces the historical defect and proves nothing. Fix the seed.',
+        'seed reproduces nothing and proves nothing. Fix the seed.',
     );
   }
   return { toolsSource: seeded };
@@ -1524,7 +1523,7 @@ export function seededUnreachableVerb(driverSource = readFileSync(DRIVER_SOURCE,
   if (!driverSource.includes(anchor)) {
     throw new Error(
       'the self-test could not find the `drag` member to splice a seeded verb beside, so the ' +
-        'seed no longer reproduces a verb the surface cannot express. Fix the seed.',
+        'seed reproduces no verb the surface cannot express, so it proves nothing. Fix the seed.',
     );
   }
   const seeded = driverSource.replace(
