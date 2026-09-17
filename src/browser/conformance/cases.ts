@@ -84,7 +84,16 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
       // and it must not do anything either. Both halves matter: a rejection
       // would be a driver reporting a failure the service is specified to
       // ignore, and a close would be the keeper gone.
-      await session.closeTab(keeper);
+      const outcome = await session.closeTab(keeper);
+
+      // **And it must not report a close it did not perform.** `runtime.ts`
+      // writes the tab row from this value, so an implementation answering
+      // `closed` here records a clean close for a page that is still open —
+      // which is the self-masking pair (`closed`, `close_failed = 0`) that
+      // `doctor` and `status` are both unable to see.
+      if (outcome === 'closed') {
+        return `closeTab reported it had closed the keeper (${keeper.driverTabId}), so the service records a clean close for a page that must still be open`;
+      }
 
       // ── What is asserted, and why it is identity rather than presence ────
       //
@@ -107,6 +116,41 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
       const after = await session.ensureKeeperTab();
       if (after.driverTabId !== keeper.driverTabId) {
         return `closing the keeper destroyed it: the session called it ${keeper.driverTabId} before the close and ${after.driverTabId} after, so a caller holding that handle can end the shared browser`;
+      }
+      return undefined;
+    },
+  },
+
+  {
+    name: 'closeTab distinguishes a page it closed from a name it could not find',
+    rule: 'tabs.close_failed',
+    why: 'runtime.ts derives the tab row directly from this value: `closed` writes `state=closed, close_failed=0`, anything else flags the row. So an implementation that answers the same way whether or not it closed anything makes the service record a clean close for a page that is still open — and that exact pair is invisible to both instruments built to find leaked pages, because doctor counts rows stranded at `closing` and status selects `close_failed = 1`. It is the field defect: twelve rows read as cleanly closed while three released pages sat open on a person’s screen.',
+    check: async ({ session }) => {
+      await session.ensureKeeperTab();
+
+      // A tab this session really has. Closing it must be reported as a
+      // close, or an honest release is flagged as a failure forever and the
+      // flag `status` selects on becomes noise.
+      const opened = await session.openTab();
+      const closed = await session.closeTab(opened);
+      if (closed !== 'closed') {
+        return `closeTab answered ${closed} for a tab this session had just opened, so a release that genuinely closed its page is recorded as one that did not`;
+      }
+
+      // ── The half that pins the defect, and why it is a second close ─────
+      //
+      // The same handle again. The page is gone now, so there is nothing to
+      // find — which is exactly the state a freshly spawned process was in
+      // for *every* tab it had not opened itself, and exactly the state the
+      // old implementation reported indistinguishably from success.
+      //
+      // Asked through the seam rather than by inventing a name, because a
+      // fabricated identifier tests the implementation's handling of
+      // nonsense; a handle that was real a moment ago tests the thing the
+      // service actually hits.
+      const again = await session.closeTab(opened);
+      if (again === 'closed') {
+        return `closeTab reported closing ${opened.driverTabId} a second time, when no page by that name is open — so the service cannot tell a real close from a close that found nothing, and records both as clean`;
       }
       return undefined;
     },

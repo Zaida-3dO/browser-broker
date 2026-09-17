@@ -122,7 +122,8 @@ function workingSession(): BrowserSession {
     listTabs: () => Promise.resolve([handle]),
     ensureKeeperTab: () => Promise.resolve(handle),
     detach: () => Promise.resolve(),
-    closeTab: () => Promise.resolve(),
+    // `'closed'`: this stub stands in for a driver that closes the page.
+    closeTab: () => Promise.resolve('closed' as const),
     navigate: (_tab, url) => Promise.resolve({ url, title: 'a title', status: 200 }),
     seedStorage: () => Promise.resolve(),
     act: () =>

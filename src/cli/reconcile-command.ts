@@ -217,8 +217,26 @@ export async function runReconcileCommand(
   let closeFailures = 0;
   for (const page of plan.unownedPages) {
     try {
-      await session.closeTab({ browser, driverTabId: page.driverTabId });
-      closed += 1;
+      // **Counted by what the driver says it did, not by the call returning.**
+      // `closeTab` answers `closed`, `not_found` or `refused`; only the first
+      // is a page this run ended. Counting a `not_found` as closed would make
+      // this report the same false comfort the tab rows used to — "N closed"
+      // on a run that closed nothing — and reconciliation's whole purpose is
+      // to be the instrument that sees leaked pages.
+      //
+      // `not_found` is genuinely unremarkable here: the list of pages was read
+      // before this loop, so a page can legitimately have gone away in between
+      // by a person clicking the cross. It is still not a close this run
+      // performed, so it belongs in neither counter — the run saw it and did
+      // nothing to it. `refused` is the keeper, which `listTabs` excludes and
+      // so should never reach this loop at all; if it ever does, it is counted
+      // as a failure so it shows up rather than inflating a success.
+      const outcome = await session.closeTab({ browser, driverTabId: page.driverTabId });
+      if (outcome === 'closed') {
+        closed += 1;
+      } else if (outcome === 'refused') {
+        closeFailures += 1;
+      }
     } catch {
       // Swallowed, and counted. The count is what makes this visible without
       // naming the page — a driver name is never printed (§1.4).
@@ -364,6 +382,36 @@ export function formatReconciliation(
  * otherwise run this repeatedly against a row that is its own lease, held
  * open for as long as the command keeps being run, with nothing in the
  * message able to say so.
+ *
+ * ── Why the unowned branch no longer says "run again once they've settled" ──
+ *
+ * Because they may never settle, and the message was the only thing claiming
+ * otherwise. "Settled" describes something in progress that finishes on its
+ * own, and an `opening` row has no such mechanism behind it: `reserveTab`
+ * inserts the row inside the arbitration transaction and opens the page after
+ * the commit (§2.4b), so a process that dies in between leaves a row that
+ * `tabs.ts` says outright "can sit in `opening` forever… the honest outcome
+ * rather than a gap".
+ *
+ * The refusal itself is correct and is deliberately left alone: §1.4's
+ * `CHECK ((state = 'opening') = (driver_tab_id IS NULL))` means an `opening`
+ * row holds no driver name, so no page can be *proven* unowned while one
+ * exists, and `reconcile.ts` argues at length that declining beats guessing.
+ * What was wrong was the advice on top of it. An operator told to wait will
+ * wait — and re-run, and wait — against a condition that will outlive the
+ * browser, with the counters reading zero every time and nothing anywhere
+ * suggesting the wait is the wrong move.
+ *
+ * So the line now says what is actually true: the run is blocked until those
+ * rows stop being `opening`, which happens when their tabs finish opening
+ * **or** when the leases holding them are released or expire. That points at
+ * the lease rather than at the clock. It deliberately stops there and names no
+ * command — this command has no way to tell a row one millisecond from being
+ * named from one abandoned two days ago, and inventing a confident instruction
+ * it cannot support is precisely how the previous wording went wrong. (An
+ * earlier draft of this fix pointed at `broker tabs`, which does not exist.
+ * Replacing one piece of misleading advice with another would have been worse
+ * than the defect, because this one would have failed in the operator's hand.)
  */
 function conclusionLine(report: ReconciliationReport): string {
   const owned = report.skippedOpeningOwnedByCaller;
@@ -372,6 +420,6 @@ function conclusionLine(report: ReconciliationReport): string {
     `${String(report.skippedOpening)} tab(s) are still being opened, so nothing was closed on this run — a page seen now may belong to one of them.` +
     (owned > 0
       ? ` ${String(owned)} of them ${owned === 1 ? 'belongs' : 'belong'} to your own lease — release ${owned === 1 ? 'it' : 'them'}, or run this from another session.`
-      : ' Run again once they have settled.')
+      : ' This will keep declining until those tabs leave the opening state, and that may not happen on its own: a lease whose tab never finished opening stays that way until the lease is released or expires.')
   );
 }

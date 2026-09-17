@@ -195,11 +195,17 @@ test('CONTROL — a closeTab that can close the keeper is caught', async () => {
           // The destructive act: the keeper is gone, and the next call to
           // establish it opens a different one — which is what a real headed
           // browser would not survive long enough to do.
+          //
+          // It answers `'closed'`, because that is the honest report of what
+          // this bent driver just did, and because a mutation that also lied
+          // about its outcome would be testing two things at once. The
+          // property this control arms is about the keeper being destroyed,
+          // not about how the destruction is described.
           destroyed += 1;
           keeper = undefined;
-          return;
+          return 'closed' as const;
         }
-        await session.closeTab(tab);
+        return await session.closeTab(tab);
       },
     };
   }, 'fake-whose-keeper-can-be-closed');

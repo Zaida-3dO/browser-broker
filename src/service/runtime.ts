@@ -206,9 +206,35 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
       // A failure is recorded rather than thrown: §2.4b's "a leaked tab is
       // not a leaked lease" means the capacity is already back, and failing
       // the release over the page would fail a call that did its job.
+      //
+      // ── Recorded closed only on `closed`, and why that is the whole fix ──
+      //
+      // The driver used to answer `Promise<void>`, so "I ended the page" and
+      // "I could not find it" arrived here identically and this wrote
+      // `state='closed', close_failed=0` for both. That is the defect, and its
+      // worst property is that it **hid itself**: `doctor` counts rows
+      // stranded at `closing` and `status` selects `close_failed = 1`, so a
+      // row that went straight to `closed` is invisible to every instrument
+      // built to find leaked pages. The store read twelve clean closes while
+      // three released pages sat open on a person's screen.
+      //
+      // So the outcome decides the row. `not_found` and `refused` are both
+      // recorded as a close that did not happen — not because either is an
+      // error, but because neither is evidence that a page is gone, and
+      // `close_failed = 1` is the flag that makes a row *visible* to the
+      // operator tooling. **A row that overstates its knowledge is worse than
+      // one that admits a page may still be open**: the second gets looked at.
+      //
+      // `refused` in practice means the keeper, which no lease should ever
+      // name; if one does, that is exactly the anomaly worth surfacing rather
+      // than recording as a tidy success.
       try {
-        await session.closeTab({ browser: tab.browserId, driverTabId: opened });
-        recordTabClosed(store.db, tab.tabId, new Date().toISOString());
+        const outcome = await session.closeTab({ browser: tab.browserId, driverTabId: opened });
+        if (outcome === 'closed') {
+          recordTabClosed(store.db, tab.tabId, new Date().toISOString());
+        } else {
+          recordTabCloseFailed(store.db, tab.tabId, new Date().toISOString());
+        }
       } catch {
         recordTabCloseFailed(store.db, tab.tabId, new Date().toISOString());
       }

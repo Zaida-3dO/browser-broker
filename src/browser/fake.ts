@@ -17,6 +17,7 @@ import type {
   ReadArtifact,
   StorageSeedArea,
   StorageSeedEntry,
+  TabCloseOutcome,
   TabHandle,
 } from './driver.ts';
 
@@ -659,7 +660,7 @@ export class FakeBrowserDriver implements BrowserDriver {
         return tab;
       },
 
-      closeTab: (tab: TabHandle) => {
+      closeTab: (tab: TabHandle): Promise<TabCloseOutcome> => {
         const failure = this.#enter({ name: 'closeTab', browser, tab });
         // The tab stays open when the close fails. `SCHEMA.md` §2.4b: that is
         // a leaked tab and not a leaked lease, and the distinction is only
@@ -670,9 +671,18 @@ export class FakeBrowserDriver implements BrowserDriver {
         //
         // `keeper.never_leased` (§3.15, §7.3): the keeper is never
         // addressable, and **a caller cannot close what it cannot name.**
-        // `real.ts` gets this structurally — the keeper's page is never put
-        // in its `#pages` map, so `closeTab` cannot resolve the handle and
-        // returns having done nothing.
+        //
+        // **This comment used to say `real.ts` got the same protection
+        // structurally, because the keeper's page was never in its `#pages`
+        // map and `closeTab` therefore could not resolve the handle. That is
+        // no longer true, and it was never a guarantee worth having**: the
+        // reason the real driver could not resolve the keeper was that it
+        // could not resolve *anything* it had not opened itself, which is the
+        // cross-process defect that let released pages stay open while their
+        // rows read `closed`. Keeper safety was a side effect of a bug, and it
+        // ended when the bug did. `real.ts` now excludes the keeper by
+        // `KEEPER_TAB_URL` — deliberately, and on a property the browser
+        // reports rather than on state the session may not have populated yet.
         //
         // This fake mints its keeper through its own `openTab`, so without
         // this branch the keeper's identifier **is** an ordinary tab name and
@@ -683,16 +693,26 @@ export class FakeBrowserDriver implements BrowserDriver {
         // browser — a headed browser dies within about half a second of its
         // last tab closing.
         //
-        // Returning without closing rather than rejecting, because that is
-        // what `real.ts` does and closing is best effort by design (§2.4b): a
+        // Answering `refused` rather than rejecting, because that is what
+        // `real.ts` does and closing is best effort by design (§2.4b): a
         // rejection here would be a driver reporting a failure the service is
-        // specified to ignore.
+        // specified to ignore. `refused` and not `closed`, so a caller cannot
+        // record a close that did not happen.
         if (this.#keeperTabs.get(tab.browser) === tab.driverTabId) {
-          return Promise.resolve();
+          return Promise.resolve('refused');
         }
 
-        this.#tabsFor(tab.browser).delete(tab.driverTabId);
-        return Promise.resolve();
+        // **`not_found` rather than an unconditional success**, and this is
+        // the half of the fake that had to change with the seam. It used to
+        // answer the same way whether or not it held the tab, which made it a
+        // fixture incapable of exhibiting the field defect: a service that
+        // recorded `closed` for a page it never touched passed against it.
+        // The real driver can now tell those apart, so the fake must too, or
+        // it validates the very conflation the return type exists to end.
+        if (!this.#tabsFor(tab.browser).delete(tab.driverTabId)) {
+          return Promise.resolve('not_found');
+        }
+        return Promise.resolve('closed');
       },
 
       navigate: (tab: TabHandle, url: string, waitMs?: number): Promise<NavigationResult> => {

@@ -91,9 +91,10 @@ function redirectingSession(
     detach: async () => {
       await Promise.resolve();
     },
-    closeTab: async () => {
-      await Promise.resolve();
-    },
+    // `'closed'` because this stub stands in for a driver that does close
+    // the page; the seam now reports what it did (`TabCloseOutcome`) and this
+    // fixture is not the subject of that distinction.
+    closeTab: async () => await Promise.resolve('closed' as const),
     navigate: async (_tab: TabHandle, url: string) => {
       calls.push(`navigate:${url}`);
       // The shape of a real redirect: asked for one address, answers with

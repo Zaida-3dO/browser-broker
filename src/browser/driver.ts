@@ -766,6 +766,47 @@ export interface StorageSeedEntry {
 /** The storage areas on offer. Cookies are refused by not being here (§3.2). */
 export type StorageSeedArea = StorageSeedEntry['area'];
 
+/**
+ * What became of a tab a caller asked to close.
+ *
+ * ── Why this is a returned value and emphatically not a thrown one ──────
+ *
+ * `SCHEMA.md` §2.4b makes closing best effort: a tab that will not close is a
+ * leaked tab and not a leaked lease, and {@link TabOperations.closeTab} says
+ * below that a rejection here is information for the row rather than a failure
+ * to propagate. That settles how a *failure* travels. It does not settle how
+ * **"there was nothing here to close"** travels, and for a long time nothing
+ * did — the answer was `Promise<void>`, so a close that did nothing and a close
+ * that ended a page were the same answer, and the caller recording the row
+ * could only write down success.
+ *
+ * That is the shape of the defect this type exists to close: a session that
+ * did not open a tab could not resolve it, returned, and the row was written
+ * `state='closed', close_failed=0` while the page stayed on the screen. It was
+ * self-masking — `doctor` counts rows stranded at `closing` and `status`
+ * selects `close_failed = 1`, and a row that goes straight to `closed` is
+ * invisible to both. Twelve rows read as cleanly closed while three pages from
+ * released leases sat open in front of a person.
+ *
+ * So the distinction is carried *in the value*, where a caller has to receive
+ * it to record anything, rather than in an exception a best-effort caller is
+ * specified to swallow.
+ *
+ * - `closed` — a page was found and it is gone. The only outcome on which a
+ *   row may be recorded closed.
+ * - `not_found` — no page in this browser answers to that name. The tab was
+ *   already gone, the name belongs to another browser, or (the case that
+ *   mattered) the implementation could not address it. **Not an error and not
+ *   a success**: it is the absence of evidence either way, so the row must not
+ *   claim the page was closed on it.
+ * - `refused` — the implementation declined to close this particular tab
+ *   because closing it is not permitted. Today that is the keeper and only the
+ *   keeper (§3.15, §7.3). Distinct from `not_found` so that a keeper protected
+ *   *on purpose* is never mistaken for a handle that failed to resolve, which
+ *   is precisely how the protection previously read.
+ */
+export type TabCloseOutcome = 'closed' | 'not_found' | 'refused';
+
 export interface TabOperations {
   /**
    * Close this tab. **The only destructive operation on this seam, and it is
@@ -779,8 +820,17 @@ export interface TabOperations {
    * a leaked tab and not a leaked lease. The capacity is already back. A
    * rejection here is therefore information for the row rather than a failure
    * to propagate to the caller.
+   *
+   * **It answers with what it did** ({@link TabCloseOutcome}), because
+   * best-effort and silent are not the same thing. The caller is entitled to
+   * tolerate a failure; it is not entitled to record a success it has no
+   * evidence for, and before this returned a value it had no way to tell the
+   * two apart. An implementation must resolve the tab the way every other verb
+   * on this seam resolves one — including across process boundaries, since
+   * this service is spawned per caller and the process releasing a lease is
+   * routinely not the one that opened its tab.
    */
-  readonly closeTab: (tab: TabHandle) => Promise<void>;
+  readonly closeTab: (tab: TabHandle) => Promise<TabCloseOutcome>;
 
   /**
    * Point a tab at an address, and report where it actually ended up.
