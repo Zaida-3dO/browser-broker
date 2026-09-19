@@ -148,6 +148,90 @@ test('the verbs that address an element require one', () => {
   }
 });
 
+test('a selector passed as a reference is refused as a selector, not as staleness', () => {
+  const refusal = refusesWith('act.ref_shaped', () =>
+    validateAction({ action: 'click', ref: '[data-gandalf-target="branchpicker"]' }),
+  );
+
+  // The caller's own value comes back, truncated, so they see what they sent
+  // named rather than having to work out which argument is meant.
+  assert.match(refusal.message, /"\[data-gandalf-target="br\.\.\."/u);
+  assert.match(refusal.message, /is not an element reference/u);
+
+  // **The message points at the read that mints references** — the thing the
+  // caller has to do — and says nothing about staleness, which is the wrong
+  // hypothesis this refusal exists to stop endorsing.
+  assert.match(refusal.message, /browser_read with what: "snapshot"/u);
+  assert.doesNotMatch(refusal.message, /stale/iu);
+});
+
+test('other selector shapes are refused too, and a long one is cut short', () => {
+  for (const ref of ['#submit', '.btn.primary', 'button[type="submit"]', 'div > span', '//a[1]']) {
+    refusesWith('act.ref_shaped', () => validateAction({ action: 'click', ref }));
+  }
+
+  // Near-misses: reference-ish, but not what a snapshot mints.
+  for (const ref of ['e', 'e1x', 'f1', 'fe1', 'f1e', 'E14', 'e 14', 'ref=e14']) {
+    refusesWith('act.ref_shaped', () => validateAction({ action: 'click', ref }));
+  }
+
+  // Surrounding whitespace is a copy-and-paste artefact rather than a
+  // different value, so it is trimmed before the shape is judged — the same
+  // trim `act.ref_required` already uses to decide a reference is empty.
+  assert.deepEqual(validateAction({ action: 'click', ref: ' e14 ' }), {
+    action: 'click',
+    ref: ' e14 ',
+  });
+
+  const long = `[data-testid="${'x'.repeat(200)}"]`;
+  const refusal = refusesWith('act.ref_shaped', () =>
+    validateAction({ action: 'click', ref: long }),
+  );
+  assert.ok(
+    refusal.message.length < 400,
+    `a refusal quotes the caller back briefly, but this one is ${String(refusal.message.length)} characters`,
+  );
+  assert.match(refusal.message, /\.\.\./u);
+});
+
+test('an iframe reference is a reference — f1e23 is not a selector', () => {
+  // **The trap this test exists for.** References are minted as
+  // `refPrefix + "e" + n`, and `refPrefix` is `"f" + frameSeq` for anything
+  // inside an iframe. A shape check written as `/^e\d+$/` would call every
+  // one of these a selector and refuse elements that resolve perfectly well —
+  // making the defect this rule fixes strictly worse.
+  for (const ref of ['e1', 'e14', 'e99999', 'f1e23', 'f0e0', 'f12e345']) {
+    assert.deepEqual(
+      validateAction({ action: 'click', ref }),
+      { action: 'click', ref },
+      `${ref} is a reference a snapshot can mint and must pass the shape gate`,
+    );
+  }
+});
+
+test('a batch fill applies the same shape gate, and says which field', () => {
+  const refusal = refusesWith('act.ref_shaped', () =>
+    validateAction({
+      action: 'fill_form',
+      fields: [
+        { ref: 'f1e23', value: 'ok' },
+        { ref: '#email', value: 'x' },
+      ],
+    }),
+  );
+  assert.equal(refusal.detail.index, 1);
+  assert.match(refusal.message, /Field 1/u);
+  assert.match(refusal.message, /browser_read with what: "snapshot"/u);
+
+  // And the framed reference beside it was fine.
+  assert.ok(
+    validateAction({
+      action: 'fill_form',
+      fields: [{ ref: 'f1e23', value: 'ok' }],
+    }),
+  );
+});
+
 test('the verbs that need a value are refused without one', () => {
   for (const action of ['type', 'fill', 'select']) {
     assert.deepEqual(validateAction({ action, ref: 'e7', value: 'x' }), {

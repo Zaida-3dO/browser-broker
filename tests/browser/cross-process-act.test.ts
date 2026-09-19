@@ -342,10 +342,32 @@ test(
 
         await fixture.first.evaluate(fixture.tab, "document.getElementById('go').remove()");
 
+        // **The reference is well-formed and genuinely stale**, which is the
+        // one case `act.ref_resolves` still answers now that a value which
+        // was never a reference is refused as `act.ref_shaped` before any tab
+        // is touched. Its message is pinned below: this is the caller for
+        // whom the staleness explanation is true, and rewording it away would
+        // leave them with no account of what happened.
+        let stale: unknown;
         await refusesWithRule(
-          async () => await second.act(fixture.tab, { action: 'click', ref: reference }),
+          async () => {
+            try {
+              return await second.act(fixture.tab, { action: 'click', ref: reference });
+            } catch (error) {
+              stale = error;
+              throw error;
+            }
+          },
           'act.ref_resolves',
           'a reference whose element has gone refuses rather than resolving to something else',
+        );
+
+        assert.match(reference, /^(?:f\d+)?e\d+$/u, 'the snapshot minted a well-formed reference');
+        assert.ok(stale instanceof Error);
+        assert.equal(
+          stale.message,
+          `No element on this page matches the reference "${reference}". References are minted by a snapshot and describe the page as it was when that snapshot was taken, so a reference goes stale when the page changes underneath it. Read the page again and use a reference from the snapshot that read returns.`,
+          'the genuine-staleness message is unchanged',
         );
 
         assert.equal(

@@ -1525,6 +1525,13 @@ class RealBrowserSession implements BrowserSession {
     // leaves `pageDriven` false — the flag is set by the last statement of the
     // after-commit closure, which this never reaches — so the caller is told
     // the page was not driven, and told why.
+    //
+    // **This message may explain staleness because staleness is all that is
+    // left to explain.** A value that was never a reference — a selector the
+    // caller composed — is refused as `act.ref_shaped` by `validateAction`
+    // before any tab is touched, so it never arrives here. It used to, and
+    // this message then sent such callers off to re-read the page over and
+    // over in pursuit of an expiry that had not happened.
     throw new BrokerError(
       'act.ref_resolves',
       `No element on this page matches the reference "${ref}". References are minted by a snapshot and describe the page as it was when that snapshot was taken, so a reference goes stale when the page changes underneath it. Read the page again and use a reference from the snapshot that read returns.`,
