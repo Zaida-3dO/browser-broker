@@ -185,6 +185,40 @@ export function countStrandedTabsFor(
 export interface StrandedByBrowser {
   readonly browserId: string;
   readonly stranded: number;
+  /**
+   * Of those, the ones a browser was asked about and did not close.
+   *
+   * ── Why the backlog is counted twice, by provenance ─────────────────────
+   *
+   * `close_failed = 1` means the tool was asked and answered that the page is
+   * still there. That is evidence about a *page*, and it is the population
+   * the original incident was about: eight real pages open on a person's
+   * screen owned by no lease.
+   *
+   * A row that was never asked is a different claim entirely. It says only
+   * that a record is unsettled; whether a page sits behind it has never been
+   * established. Folding the two together makes the confident statement on
+   * behalf of rows that cannot support it, which is how a permanent red floor
+   * comes to tell an operator to go and look for pages that are not there.
+   *
+   * Split by `close_attempts`, not by age. Age would say an old leak is less
+   * urgent than a new one, which is backwards — and `close_attempts` is the
+   * column that exists to tell *tried and failed* from *never tried*.
+   */
+  readonly closeFailed?: number;
+  /**
+   * Of those, the ones no close was ever attempted against.
+   *
+   * **Not the complement of {@link closeFailed}, and never derive one from
+   * the other.** A refused close leaves the row at `closing` with
+   * `close_failed = 1`, so it stays eligible to be asked again — which makes
+   * `close_attempts >= 1` with `close_failed = 0` a reachable third
+   * population belonging to neither count. `closeFailed + neverAttempted`
+   * can therefore be less than {@link stranded}, and computing either as
+   * `stranded` minus the other files that third population under a claim the
+   * evidence does not support.
+   */
+  readonly neverAttempted?: number;
 }
 
 /**
@@ -217,7 +251,10 @@ export function strandedTabsByBrowser(
   const cutoff = new Date(at.getTime() - leaseSeconds * 1000).toISOString();
   return db
     .prepare<[string], StrandedByBrowser>(
-      `SELECT browser_id AS browserId, COUNT(*) AS stranded
+      `SELECT browser_id AS browserId,
+              COUNT(*) AS stranded,
+              SUM(CASE WHEN close_failed = 1 THEN 1 ELSE 0 END) AS closeFailed,
+              SUM(CASE WHEN close_attempts = 0 THEN 1 ELSE 0 END) AS neverAttempted
          FROM tabs
         WHERE state = 'closing'
           AND updated_at < ?

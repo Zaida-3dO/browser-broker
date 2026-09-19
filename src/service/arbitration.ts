@@ -788,6 +788,53 @@ export function recordTabClosed(db: Database, tabId: string, at: string): void {
  * still be there. What changes is that it is now *known* to have been tried,
  * which is what `close_failed` is for and what reconciliation selects on.
  */
+/**
+ * Settle a row whose page was never resolvable, so nothing can be asked.
+ *
+ * ── The third outcome a close can have ──────────────────────────────────
+ *
+ * {@link recordTabClosed} and {@link recordTabCloseFailed} both answer the
+ * question *"what did the browser say"*. This one is for the case where the
+ * browser was never asked, because the close path could not resolve a driver
+ * name for the tab at all.
+ *
+ * **Not the `driver_tab_id IS NULL` case** — that one cannot reach a
+ * `closing` row, because `step-004-tab-never-opened.ts` CHECKs that only an
+ * `opening` row may carry a null name, and {@link updateSweptTabs} settles
+ * those straight to `closed`. In practice this is a row that has gone
+ * missing, and the statement is a no-op when it is genuinely absent.
+ *
+ * That path used to return without writing anything, which left the row at
+ * `closing` with `close_attempts = 0` for the life of the store. It is the
+ * same fingerprint as the stranded backlog those two functions were written
+ * to fix, produced by a different route, so it survived them.
+ *
+ * ── Why `closed` and not `close_failed` ─────────────────────────────────
+ *
+ * There is no page. {@link updateSweptTabs} already settles the
+ * `driver_tab_id IS NULL` case straight to `closed` on this exact reasoning:
+ * nothing was opened, so there is nothing to ask and nothing to wait for, and
+ * the tab is over now rather than when a round trip that will never happen
+ * would have returned.
+ *
+ * `close_failed = 1` would be a lie in the direction that costs an operator
+ * time — it means a browser was asked and said the page is still there, and
+ * that is the flag `doctor` escalates on. Nothing was asked here.
+ *
+ * The attempt counter is deliberately **not** incremented. `close_attempts`
+ * distinguishes *tried* from *never tried*, and this is never tried.
+ */
+export function settleUnopenedTab(db: Database, tabId: string, at: string): void {
+  db.prepare(
+    `UPDATE tabs
+        SET state = 'closed',
+            closed_at = ?,
+            updated_at = ?
+      WHERE id = ?
+        AND state = 'closing'`,
+  ).run(at, at, tabId);
+}
+
 export function recordTabCloseFailed(db: Database, tabId: string, at: string): void {
   db.prepare(
     `UPDATE tabs

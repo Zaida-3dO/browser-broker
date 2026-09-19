@@ -602,4 +602,121 @@ describe('checkStrandedTabs', () => {
     assert.ok(result.remedy !== undefined, 'a failure with no remedy');
     assert.doesNotMatch(result.remedy, /reconcile regular/u);
   });
+
+  it('KEEPS EXIT 10 for rows a browser was asked about and refused to close', () => {
+    // The original incident, and the population the confident wording is
+    // correct for. `close_failed = 1` is a browser's own answer that the page
+    // is still there, so "a page is probably still open" is a claim the
+    // evidence supports and the health gate should go red on it.
+    const result = checkStrandedTabs(
+      [{ browserId: 'regular', stranded: 5, closeFailed: 5, neverAttempted: 0 }],
+      600,
+    );
+
+    assert.equal(result.status, 'failed');
+    assert.match(result.detail, /5 tab/u);
+    assert.match(result.detail, /probably still open/u);
+    // The whole point of keeping this population at `failed`: the store group
+    // maps to exit 10, and a gate keyed on it must still fire.
+    assert.equal(exitCodeFor([result]), 10);
+  });
+
+  it('DOES NOT ESCALATE records nobody ever asked about — the permanent red floor', () => {
+    // The defect. `browser_claim` and `browser_doctor` reported eleven
+    // stranded tabs on a browser holding one, unchanged across two days and
+    // multiple sessions. Every one had `close_attempts = 0`: nothing had ever
+    // asked a browser about them, so nothing established a page was there.
+    // Reporting that as `failed` held every health gate keyed on this check
+    // permanently red and sent operators hunting pages that did not exist.
+    const result = checkStrandedTabs(
+      [{ browserId: 'regular', stranded: 11, closeFailed: 0, neverAttempted: 11 }],
+      600,
+    );
+
+    assert.equal(result.status, 'unknown');
+    // `unknown` contributes to no failure code — that is what ends the floor.
+    assert.notEqual(exitCodeFor([result]), 10);
+    assert.equal(exitCodeFor([result]), 0);
+    // The prose speaks of records, not pages, because that is all that is
+    // known. A sentence claiming an open page here would be unsupported.
+    assert.match(result.detail, /records, not pages/u);
+    assert.doesNotMatch(result.detail, /probably still open/u);
+    // Still remedied: `unknown` is not `ok`, and there is something to do.
+    assert.ok(result.remedy !== undefined, 'an unsettled backlog with no remedy');
+  });
+
+  it('NAMES BOTH POPULATIONS SEPARATELY when a store holds each, and failed wins', () => {
+    // A mixed store must not round either way. Folding the never-asked rows
+    // into the total overstates what is known; dropping them from the message
+    // hides a real backlog. Both are counted, separately, and the population
+    // with evidence behind it decides the severity.
+    const result = checkStrandedTabs(
+      [{ browserId: 'regular', stranded: 14, closeFailed: 3, neverAttempted: 11 }],
+      600,
+    );
+
+    assert.equal(result.status, 'failed', 'evidence of an open page must win the severity');
+    assert.equal(exitCodeFor([result]), 10);
+    // The escalating count is the asked-and-refused one, NOT the total — a
+    // headline of 14 probably-open pages is the overstatement being removed.
+    assert.match(result.detail, /3 tab\(s\) were asked to close and did not/u);
+    assert.doesNotMatch(result.detail, /14 tab\(s\) were asked/u);
+    // And the other population is still reported, in its own sentence.
+    assert.match(result.detail, /further 11 tab/u);
+    assert.match(result.detail, /never answered/u);
+  });
+
+  it('DOES NOT ESCALATE a row that was asked about but carries no refusal', () => {
+    // The third population, and the reason `closeFailed` is read from its own
+    // column rather than derived as `stranded - neverAttempted`. A row that
+    // was asked and refused stays at `closing` with `close_failed = 1`, so it
+    // remains eligible to be asked again — `close_attempts >= 1` with
+    // `close_failed = 0` is reachable, and it is neither population.
+    //
+    // Subtraction would file all four of these under "a page is probably
+    // still open", reintroducing by arithmetic the exact overstatement this
+    // split removes. This fixture is the one that tells the two
+    // implementations apart: by subtraction `closeFailed` is 4 and the status
+    // is `failed`; read from the column it is 0 and the status is `unknown`.
+    const result = checkStrandedTabs(
+      [{ browserId: 'regular', stranded: 4, closeFailed: 0, neverAttempted: 0 }],
+      600,
+    );
+
+    assert.equal(result.status, 'unknown');
+    assert.equal(exitCodeFor([result]), 0);
+    // The total is still reported in full — a row belonging to neither
+    // population is counted, not dropped.
+    assert.match(result.detail, /4 tab/u);
+  });
+
+  it('reports a detail whose parts add up to its own total', () => {
+    // A detail that says "14 stranded" and then accounts for 3 sends a reader
+    // looking for a bug in the instrument rather than at the finding. With a
+    // third population present, the escalating count and the unestablished
+    // count must still sum to the total.
+    const result = checkStrandedTabs(
+      [{ browserId: 'regular', stranded: 10, closeFailed: 2, neverAttempted: 5 }],
+      600,
+    );
+
+    assert.equal(result.status, 'failed');
+    // 2 asked-and-refused, and the remaining 8 unestablished — NOT 5, which
+    // is what reporting `neverAttempted` alone would print, losing 3 rows.
+    assert.match(result.detail, /2 tab\(s\) were asked to close and did not/u);
+    assert.match(result.detail, /further 8 tab/u);
+    assert.doesNotMatch(result.detail, /further 5 tab/u);
+  });
+
+  it('treats a breakdown carrying no provenance counts as the failed population', () => {
+    // Backward compatibility, stated as behaviour rather than left to be
+    // discovered. A caller that predates the split reports neither count; the
+    // honest default is the historical reading, which errs toward the rows
+    // being looked at rather than silently downgrading a real incident.
+    const result = checkStrandedTabs([{ browserId: 'regular', stranded: 22 }], 600);
+
+    assert.equal(result.status, 'failed');
+    assert.equal(exitCodeFor([result]), 10);
+    assert.match(result.detail, /22 tab/u);
+  });
 });

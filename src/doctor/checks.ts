@@ -343,18 +343,101 @@ export function checkStrandedTabs(
       detail: 'Every tab has either been closed or is still within a close round trip.',
     };
   }
+  // ── Two populations, told apart by provenance rather than by age ────────
+  //
+  // `close_failed = 1` is a browser's own answer that the page is still
+  // there. `close_attempts = 0` is a record nobody ever asked about. Only the
+  // first is evidence about a page, and reporting both at the same severity
+  // is how this check came to sit permanently red on a store whose browser
+  // had one tab open — telling an operator to go hunting for leaked pages
+  // that were never established to exist.
+  //
+  // Age is the wrong qualifier here and was considered: it would rank an old
+  // leak as less urgent than a new one, which is backwards. `close_attempts`
+  // is the column that exists for precisely this distinction.
+  //
+  // A breakdown that predates these fields reports neither, and an entry with
+  // no counts is treated as the failed population — the historical reading,
+  // and the one that errs toward being looked at.
+  //
+  // ── Both counts are read, and neither is derived from the other ─────────
+  //
+  // `close_failed = 1` and `close_attempts = 0` are **not** complements, so
+  // subtracting one from the total to get the other is wrong. A row that was
+  // asked and refused stays at `closing` with `close_failed = 1`, and is
+  // therefore still eligible to be asked again — so `close_attempts >= 1`
+  // with `close_failed = 0` is a reachable third population. Deriving
+  // `closeFailed` by subtraction would file every one of those under
+  // "a page is probably still open", which is the overstatement this split
+  // exists to remove, reintroduced by arithmetic.
+  //
+  // So each population is counted by its own predicate, and a row belonging
+  // to neither is counted in the total and escalated by neither.
+  // The fallback is the whole entry: a breakdown that reports no provenance
+  // at all cannot distinguish its rows, so they are all escalated — the
+  // reading that errs toward being looked at.
+  const closeFailed = byBrowser.reduce(
+    (total, entry) =>
+      total + (entry.closeFailed ?? (entry.neverAttempted === undefined ? entry.stranded : 0)),
+    0,
+  );
+
+  const perBrowser = byBrowser
+    .map((entry) => `${String(entry.stranded)} on ${entry.browserId}`)
+    .join(', ');
+  const window =
+    `${String(thresholdSeconds)} seconds, which is how long a lease may go without contact ` +
+    'before it is declared lapsed. A close outstanding for longer is not in flight.';
+
+  // Nothing was ever asked about any of them, so nothing here is evidence of
+  // an open page. `unknown` is already the vocabulary's word for a
+  // precondition that could not be evaluated, and it contributes to no
+  // failure code — which is the point: a health gate should not be held red
+  // by records whose subject has never been looked at.
+  if (closeFailed === 0) {
+    return {
+      group: 'store',
+      id: 'store.stranded_tabs',
+      title: 'No tab is waiting on a close that will not come',
+      status: 'unknown',
+      detail:
+        `${String(stranded)} tab(s) hold records waiting on a close that was never ` +
+        'answered, for longer than ' +
+        `${window} Whether a page is still open behind each one has not been established ` +
+        'from here — this counts records, not pages. ' +
+        `Per browser: ${perBrowser}.`,
+      remedy:
+        `Run \`broker reconcile\` against each browser named above: ${byBrowser
+          .map((entry) => `\`broker reconcile ${entry.browserId}\``)
+          .join(', ')}. It asks what the browser actually has open, ` +
+        'closes pages no live lease owns, and settles the records whose page is gone. ' +
+        'Ordinary use settles these too, as soon as a tab is closed on that browser.',
+    };
+  }
+
+  // At least one browser was asked and said the page is still there. The
+  // original incident, and the confident wording is correct for it.
+  // The remainder is the third population — asked at least once, and not
+  // flagged as refused. It is reported as part of the unestablished
+  // group rather than dropped: a detail whose parts do not add up to its own
+  // total is the kind of thing that sends a reader looking for a bug in the
+  // instrument instead of at the finding.
+  const unestablished = stranded - closeFailed;
+  const bothPopulations =
+    unestablished === 0
+      ? ''
+      : ` A further ${String(unestablished)} tab(s) hold records waiting on a close that was ` +
+        'never answered; whether a page is open behind those has not been established from here.';
+
   return {
     group: 'store',
     id: 'store.stranded_tabs',
     title: 'No tab is waiting on a close that will not come',
     status: 'failed',
     detail:
-      `${String(stranded)} tab(s) have been waiting on a close for longer than ` +
-      `${String(thresholdSeconds)} seconds, which is how long a lease may go without contact ` +
-      'before it is declared lapsed. A close outstanding for longer is not in flight. ' +
-      `Per browser: ${byBrowser
-        .map((entry) => `${String(entry.stranded)} on ${entry.browserId}`)
-        .join(', ')}.`,
+      `${String(closeFailed)} tab(s) were asked to close and did not, having waited longer than ` +
+      `${window} A page is probably still open for each.${bothPopulations} ` +
+      `Per browser: ${perBrowser}.`,
     remedy:
       `Run \`broker reconcile\` against each browser named above: ${byBrowser
         .map((entry) => `\`broker reconcile ${entry.browserId}\``)
