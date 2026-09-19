@@ -598,7 +598,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     operation: 'evaluate',
     description:
       'Evaluate an expression in the page and get its value back. For a fact about the page that ' +
-      'the snapshot does not carry. ' +
+      'the snapshot does not carry. The length limit is on the expression source, not on data it ' +
+      'fetches or moves — a short expression can drive a file upload of any size. ' +
       ANIMATION_SUPPRESSION_CAVEAT,
     arguments: [
       LEASE_KEY,
@@ -606,7 +607,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         name: 'expression',
         type: 'string',
         required: true,
-        description: 'The expression. Bounded in length; an over-long one is refused.',
+        description:
+          'The expression. Bounded in length; an over-long one is refused. The bound is on this ' +
+          'source text, not on data the expression fetches or moves.',
       },
     ],
   },

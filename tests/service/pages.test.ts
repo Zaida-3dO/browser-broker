@@ -755,6 +755,18 @@ test('an expression past its size cap is refused, because a program is not an ex
   assert.equal(refusal.detail.maximumBytes, MAX_EXPRESSION_BYTES);
 });
 
+test('the over-cap refusal says the bound is on the source, not on data the expression moves', () => {
+  // The cap bounds the expression's own text. It says nothing about what the
+  // page fetches once that text runs — a short expression can still move a
+  // file of any size over the network — and a caller holding a large file
+  // must not read the byte count here as a statement about the file.
+  const refusal = refusesWith('evaluate.expression_bounded', () =>
+    validateExpression('a'.repeat(MAX_EXPRESSION_BYTES + 1)),
+  );
+  assert.match(refusal.message, /bytes of source/u);
+  assert.match(refusal.message, /not on data the expression fetches/u);
+});
+
 test('the cap is measured in bytes, not characters', () => {
   // A multi-byte character counted as one would let an expression through at
   // several times the intended size.
