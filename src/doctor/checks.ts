@@ -505,8 +505,19 @@ export function checkRootWritable(id: string, title: string, root: string): Grou
 export interface DiscoveryProbeResult {
   /** Whether a record was recorded at all. */
   readonly recorded: boolean;
-  /** Whether the endpoint answered. */
-  readonly answered?: boolean;
+  /**
+   * Whether the endpoint answered.
+   *
+   * **`undefined` means nobody reached it**, which is a third state and not a
+   * quiet `false`. A caller that reads the record out of the store — the only
+   * caller the doctor has, because it does not open connections — knows that
+   * a record exists and cannot know whether the browser behind it is alive.
+   * Reporting that as *did not answer* would fail the check, and with it the
+   * command's exit code, on every installation that has ever launched a
+   * browser. The record surviving its browser is precisely why this check
+   * exists; it is not evidence either way on its own.
+   */
+  readonly answered?: boolean | undefined;
   /** The identifier the live browser gave for itself, if it answered. */
   readonly reportedUuid?: string;
   /** The identifier the record claims. */
@@ -515,10 +526,27 @@ export interface DiscoveryProbeResult {
 
 export function checkDiscoveryRecord(
   browser: BrowserId,
-  probe: DiscoveryProbeResult,
+  probe: DiscoveryProbeResult | undefined,
 ): GroupedCheck {
   const id = `browser.${browser}.discovery`;
   const title = `The ${browser} browser’s discovery record checks out`;
+
+  // **Not probed is not the same as probed and absent.** Substituting
+  // `{recorded: false}` for a probe nobody supplied reports a measurement
+  // nobody took. The two states read alike on this row — both `unknown` —
+  // but they do not read alike downstream, where the sign-in check treats
+  // *no browser running* as grounds for a negative verdict. The
+  // `boolean | undefined` convention `checkKeeperTab` and `checkAutomation`
+  // use is the one that keeps the difference.
+  if (probe === undefined) {
+    return {
+      group: 'browsers',
+      id,
+      title,
+      status: 'unknown',
+      detail: 'The discovery record was not examined, so nothing is known about this browser.',
+    };
+  }
 
   if (!probe.recorded) {
     return {
@@ -532,7 +560,25 @@ export function checkDiscoveryRecord(
     };
   }
 
-  if (probe.answered !== true) {
+  // **Unverified is not stale.** A record whose endpoint nobody tried is the
+  // ordinary state of a doctor run: the command reads files and rows and does
+  // not open connections, so it can see that a record exists and cannot see
+  // whether the browser behind it is alive. Calling that `failed` would go red
+  // on every installation that has ever launched a browser, and the remedy
+  // below would tell people their record was stale on the strength of a
+  // question that was never asked.
+  if (probe.answered === undefined) {
+    return {
+      group: 'browsers',
+      id,
+      title,
+      status: 'unknown',
+      detail:
+        'A discovery record is present. Whether the endpoint it names still answers was not checked, and the record outlives the browser it describes, so this says a record exists and nothing more.',
+    };
+  }
+
+  if (!probe.answered) {
     return {
       group: 'browsers',
       id,
@@ -855,6 +901,23 @@ export function checkSignInSession(browser: BrowserId, probe: SessionProbe): Gro
   // `no-session-found`. Reported as unknown rather than failed, and the
   // detail says exactly how strong the evidence is — the absence of a stored
   // cookie is not proof that nobody is signed in.
+  //
+  // ── Why the remedy lives only on this branch ──────────────────────────
+  //
+  // **A remedy asserts the reader's system is in a particular state.** It
+  // does not merely suggest; `broker login` tells somebody that signing in
+  // is the step they are missing, and a person who reads it on a machine
+  // that is already signed in concludes their sign-in did not take. So an
+  // `unknown` that carries a remedy has un-said its own uncertainty: the
+  // status word says *we could not tell* and the next line says *here is
+  // what is wrong with your installation*, and people act on the second.
+  //
+  // This branch is the only one that has earned it, and it is narrow by
+  // construction — the store was found, it opened, it genuinely held zero
+  // rows, and a browser was **measured** to be not running. `undetermined`
+  // reaches its own branch above and carries no remedy (a missing store, an
+  // unreadable one, and a zero whose meaning nothing established all land
+  // there), which is why no gate is written here beyond the ordering.
   return {
     group: 'session',
     id,

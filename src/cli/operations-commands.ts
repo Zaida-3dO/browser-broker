@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import { resolveAutomationProbe } from '../browser/automation-probe.ts';
-import { runDoctor, formatReport } from '../doctor/report.ts';
+import { discoveryProbesFromStore, runDoctor, formatReport } from '../doctor/report.ts';
 import type { AutomationProbe } from '../doctor/checks.ts';
 import { EXIT } from './adapter.ts';
 import type { Environment } from '../config/environment.ts';
@@ -285,9 +285,20 @@ export function runDoctorCommand(options: DoctorCommandOptions): number {
   // one were the doctor's own tests — see `resolveAutomationProbe` in
   // `browser/automation-probe.ts` for the real answer this call site now
   // supplies by default.
+  //
+  // **The discovery probe is passed for the same reason, and its absence was
+  // worse than the other two.** An unsupplied budget or automation probe made
+  // its own row report `unknown`, which is visibly a non-answer. An unsupplied
+  // discovery probe was substituted with a fabricated `{recorded: false}`,
+  // and the sign-in check read that fabrication as *no browser is running* —
+  // which is what licenses its negative verdict. So the omission did not
+  // produce a visible `unknown`; it produced a confident wrong answer about a
+  // profile that was signed in. See `discoveryProbesFromStore`.
+  const discovery = discoveryProbesFromStore(options.db);
   const report = runDoctor(options.environment, options.db, {
     configuredTabBudget: options.environment.tabBudget,
     automation: options.automationProbe ?? resolveAutomationProbe(),
+    ...(discovery === undefined ? {} : { discovery }),
   });
 
   if (options.json) {

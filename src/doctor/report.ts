@@ -88,6 +88,32 @@ export interface DoctorReport {
 }
 
 /**
+ * Whether a browser is live, from its discovery probe, in three values.
+ *
+ * Exported so the truth table is testable on its own: it is the expression
+ * whose collapse to `boolean` hid the defect this module was fixed for, and a
+ * two-valued version of it reads *no browser is running* on installations
+ * nobody asked about.
+ *
+ * - **No probe** — unasked. Nothing looked.
+ * - **No record** — `false`, and this is the one genuine negative a row can
+ *   support: a browser that has never been launched is not running.
+ * - **A record, endpoint unverified** — unasked. §1.2c: the record outlives
+ *   the browser it names, so its mere presence is not evidence of a live one,
+ *   and its presence is all a store read can establish.
+ * - **A record, endpoint reached** — whatever the endpoint said.
+ */
+export function browserIsRunning(probe: DiscoveryProbeResult | undefined): boolean | undefined {
+  if (probe === undefined) {
+    return undefined;
+  }
+  if (!probe.recorded) {
+    return false;
+  }
+  return probe.answered;
+}
+
+/**
  * Run the preconditions.
  *
  * `db` is optional because a store that does not exist yet is a legitimate
@@ -139,8 +165,13 @@ export function runDoctor(
     ...environment.privateBrowsers,
   ];
 
+  // **No fabricated default.** This used to substitute `{recorded: false}`
+  // for a probe nobody supplied, which reports *a record was looked for and
+  // was not there* on behalf of a caller that never looked. The row read the
+  // same either way, so the substitution was invisible here — and not
+  // invisible at the sign-in check below, which drew a verdict from it.
   for (const browser of configuredBrowsers) {
-    checks.push(checkDiscoveryRecord(browser, probes.discovery?.[browser] ?? { recorded: false }));
+    checks.push(checkDiscoveryRecord(browser, probes.discovery?.[browser]));
   }
 
   checks.push(checkCaptureSurface(probes.captureSurface));
@@ -158,9 +189,23 @@ export function runDoctor(
   // **Whether a browser is running changes what a zero count means**, so the
   // discovery probe's answer is passed through rather than re-derived. See
   // `session.ts`: a live browser has not necessarily flushed its cookies.
+  // **Three-valued, because `boolean` cannot say that nobody asked.** The
+  // previous expression was `recorded === true && answered === true`, which
+  // yields `false` for an absent probe — indistinguishable from a probe that
+  // reached the endpoint and found nothing. That is how this shipped: no
+  // production caller passed `discovery` at all, so `browserRunning` was
+  // permanently `false`, the live-browser guard in `session.ts` was
+  // unreachable outside tests, and every zero count was read as the negative.
+  //
+  // `undefined` now means unasked, and only a measured `false` licenses the
+  // negative verdict. There are two ways to be unasked and both must reach it:
+  // no probe at all, and a probe that read the record without reaching the
+  // endpoint — which is what the doctor's own store-reading probe supplies,
+  // since the command opens no connections. A browser with no record is the
+  // one genuine `false` available from a row: nothing has been launched, so
+  // nothing is running.
   const signInBrowser = SIGNABLE_BROWSER;
-  const discoveryProbe = probes.discovery?.[signInBrowser];
-  const browserRunning = discoveryProbe?.recorded === true && discoveryProbe.answered === true;
+  const browserRunning = browserIsRunning(probes.discovery?.[signInBrowser]);
   checks.push(
     checkSignInSession(
       signInBrowser,
@@ -235,6 +280,60 @@ export function readDiscoveryRecords(
     records[row.id] = { endpoint: row.endpoint, browserUuid: row.browser_uuid };
   }
   return records;
+}
+
+/**
+ * The discovery probes a caller can supply without reaching a browser.
+ *
+ * ── Why a half-answer is worth wiring, and is not a hollow one ──────────
+ *
+ * {@link DiscoveryProbeResult} has two halves. `recorded` is a row and this
+ * reads it. `answered` needs a driver to reach the endpoint, which the doctor
+ * deliberately does not do — *it reports and changes nothing*, and a check
+ * that attached to a browser is one edit away from restarting it. So
+ * `answered` is left `undefined` here and the discovery row reports what it
+ * always has for an unverified record.
+ *
+ * **What this buys is the honesty of the negative.** With no probe at all,
+ * `browserRunning` was a fabricated `false` and the sign-in check read every
+ * zero cookie count as *nobody is signed in*. With this, a browser that has a
+ * discovery record yields a genuine measurement on the one axis that can be
+ * measured from a row, and an installation with no record at all is reported
+ * as unasked rather than as answered-no.
+ *
+ * **This does change what rows say once real data arrives.** Discovery rows
+ * that read `unknown` on every shipped build will now read `unknown` for an
+ * unlaunched browser and `failed` for a record whose endpoint is unverified —
+ * the latter being the state the check was written to report. No exit code
+ * regresses on an installation that has never launched a browser, because
+ * `checkDiscoveryRecord` returns `unknown` and not `failed` for an absent
+ * record.
+ */
+export function discoveryProbesFromStore(
+  db: Database | undefined,
+): Partial<Record<string, DiscoveryProbeResult>> | undefined {
+  if (db === undefined) {
+    return undefined;
+  }
+
+  let records: Record<string, { endpoint: string | null; browserUuid: string | null }>;
+  try {
+    records = readDiscoveryRecords(db);
+  } catch {
+    // A store too old to hold the columns answers nothing, and `undefined`
+    // is the honest report of that — not an empty map, which would say every
+    // browser was looked at and none had a record.
+    return undefined;
+  }
+
+  const probes: Partial<Record<string, DiscoveryProbeResult>> = {};
+  for (const [browser, record] of Object.entries(records)) {
+    probes[browser] = {
+      recorded: record.endpoint !== null,
+      ...(record.browserUuid === null ? {} : { expectedUuid: record.browserUuid }),
+    };
+  }
+  return probes;
 }
 
 /**
