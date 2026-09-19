@@ -77,9 +77,9 @@ function find(spelling: string) {
 /**
  * THE HEADLINE GUARD: a snapshot with references comes back byte for byte.
  *
- * Every read that works today goes through this function, so the cost of
- * getting it wrong is paid on all of them rather than on the rare one this
- * feature is for.
+ * Every successful read goes through this function, so the cost of getting it
+ * wrong is paid on all of them rather than on the rare one this feature is
+ * for.
  */
 test('a snapshot carrying references is returned byte-identical', () => {
   assert.equal(annotateRefless(TREE), TREE);
@@ -125,8 +125,8 @@ test('a tree rich in interactive roles but minting no reference still gets the h
 /**
  * THE ASSERTION THIS FEATURE EXISTS FOR.
  *
- * The hint replaces misleading evidence. A hint that named a cause it cannot
- * observe would be misleading evidence with better manners — and the causes
+ * The hint exists to remove misleading evidence. A hint that named a cause it
+ * cannot observe would be misleading evidence with better manners — the causes
  * genuinely are indistinguishable from a string of text: a shell-mangled
  * `find`, a narrowed read, a page mid-build and a reference-free rendering
  * all arrive here looking identical.
@@ -166,7 +166,7 @@ test('the hint points at the route that needs no reference', () => {
   const result = annotateRefless(REFLESS);
 
   // The two halves of the focus path: the verb that needs no reference, and
-  // the marker that says where focus currently is.
+  // the marker that says which node holds focus.
   assert.match(result, /press/i);
   assert.ok(result.includes('[active]'), `the hint omits the focus marker:\n${result}`);
 });
@@ -270,7 +270,7 @@ test('a find that matched only reference-free lines still gets the hint', () => 
   assert.equal(
     narrowed.split('\n').filter((line) => line.trim() !== '').length,
     3,
-    `this fixture is meant to land on the hint floor exactly; it no longer does:\n${narrowed}`,
+    `this fixture is meant to land on the hint floor exactly, and does not:\n${narrowed}`,
   );
 
   assert.notEqual(annotateRefless(narrowed), narrowed);
