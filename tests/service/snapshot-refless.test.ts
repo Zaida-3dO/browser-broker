@@ -234,6 +234,19 @@ test('the no-match message does not also collect a no-reference hint', () => {
  * act on. Computing the hint against the unfiltered tree would miss exactly
  * this case, because the full tree has references.
  */
+/**
+ * ⚠️ **This fixture sits on the boundary with zero margin.** Narrowing
+ * `REFLESS` to `Select a branch` keeps the match plus its two ancestors —
+ * exactly three populated lines, which is exactly
+ * `REFLESS_HINT_MIN_LINES`. One line fewer and the floor swallows it, and
+ * this test would then pass for the wrong reason on a narrowing that no
+ * longer produces a hint at all.
+ *
+ * So if a change to the ancestry walk alters how many enclosing lines come
+ * back, **check this test still exercises the case it names** rather than
+ * only that it is green. The assertion below on the narrowed line count is
+ * there to make that drift fail loudly instead of silently.
+ */
 test('a find that matched only reference-free lines still gets the hint', () => {
   const mixed = [
     '- generic [ref=e1]:',
@@ -249,5 +262,16 @@ test('a find that matched only reference-free lines still gets the hint', () => 
   // also reference-free to get the case that matters.
   const narrowed = filterSnapshot(REFLESS, find('Select a branch'));
   assert.ok(!narrowed.includes('[ref='));
+
+  // The zero margin, asserted rather than trusted (see the note above). If the
+  // ancestry walk ever returns a different number of enclosing lines, this
+  // fails here — naming the drift — instead of the test below quietly going
+  // green for a reason that has nothing to do with what it claims to test.
+  assert.equal(
+    narrowed.split('\n').filter((line) => line.trim() !== '').length,
+    3,
+    `this fixture is meant to land on the hint floor exactly; it no longer does:\n${narrowed}`,
+  );
+
   assert.notEqual(annotateRefless(narrowed), narrowed);
 });
