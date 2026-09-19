@@ -4,7 +4,13 @@ import { describe, it } from 'node:test';
 import Database from 'better-sqlite3';
 
 import { DOCTOR_EXIT } from '../../src/doctor/checks.ts';
-import { formatReport, readDiscoveryRecords, runDoctor } from '../../src/doctor/report.ts';
+import {
+  browserIsRunning,
+  discoveryProbesFromStore,
+  formatReport,
+  readDiscoveryRecords,
+  runDoctor,
+} from '../../src/doctor/report.ts';
 import { makeTempStore, withSteppedStore } from '../helpers/temp-store.ts';
 
 /**
@@ -286,6 +292,157 @@ describe('reading the discovery records out of the store', () => {
 
       assert.equal(records.regular?.browserUuid, 'uuid-a');
       assert.equal(records.private?.endpoint, null);
+      await Promise.resolve();
+    });
+  });
+});
+
+describe('turning discovery records into probes', () => {
+  it('reports a browser with no endpoint as recorded-false, and one with an endpoint as recorded', async () => {
+    await withSteppedStore(async (store) => {
+      store.db
+        .prepare(
+          `UPDATE browsers SET endpoint = 'http://127.0.0.1:1/', browser_uuid = 'uuid-a'
+             WHERE id = 'regular'`,
+        )
+        .run();
+
+      const probes = discoveryProbesFromStore(store.db);
+
+      assert.equal(probes?.regular?.recorded, true);
+      assert.equal(probes.regular?.expectedUuid, 'uuid-a');
+      assert.equal(probes.private?.recorded, false);
+
+      // **`answered` is left unset, and that is the honest half.** Reaching
+      // the endpoint needs a driver and the doctor opens no connections, so
+      // a store read can say a record exists and cannot say whether the
+      // browser behind it is alive.
+      assert.equal(probes.regular?.answered, undefined);
+      await Promise.resolve();
+    });
+  });
+
+  it('reports nothing rather than an empty map when there is no store', () => {
+    // An empty map would say every browser was looked at and none had a
+    // record, which is a measurement nobody took.
+    assert.equal(discoveryProbesFromStore(undefined), undefined);
+  });
+});
+
+describe('whether a browser is running, in three values', () => {
+  it('SEPARATES unasked from measured-not-running, which a boolean cannot', () => {
+    // This is the expression whose collapse to `boolean` shipped the defect:
+    // with no probe, the old `recorded === true && answered === true` yielded
+    // `false`, and `false` is what licenses the negative sign-in verdict.
+    assert.equal(browserIsRunning(undefined), undefined, 'no probe was read as a measurement');
+    assert.equal(
+      browserIsRunning({ recorded: true }),
+      undefined,
+      'a record whose endpoint nobody reached was read as a measurement',
+    );
+
+    // A browser never launched is the one genuine negative a row supports.
+    assert.equal(browserIsRunning({ recorded: false }), false);
+    // And a probe that did reach the endpoint answers with what it found.
+    assert.equal(browserIsRunning({ recorded: true, answered: true }), true);
+    assert.equal(browserIsRunning({ recorded: true, answered: false }), false);
+  });
+});
+
+describe('the discovery probe reaching runDoctor from a production route', () => {
+  it('WIRES THE DISCOVERY PROBE THROUGH `runDoctorCommand` — every unit test passed while this did not', async () => {
+    // **The test the defect needed and did not have.** Every assertion in
+    // this file and in `session.test.ts` passed on a build where no
+    // production caller supplied `probes.discovery` at all, so `runDoctor`
+    // substituted a fabricated `{recorded: false}`, `browserRunning` was
+    // permanently `false`, and the sign-in check read every zero cookie
+    // count as a verdict. The checks were all correct functions of inputs
+    // nobody gave them.
+    //
+    // So this drives the real command and asserts on the observable that
+    // separates *probed* from *not probed*: a browser with a discovery
+    // record in the store. Unwired, `checkDiscoveryRecord` is handed
+    // `{recorded: false}` and says the browser has not been launched. Wired,
+    // it is handed the record and says one exists. Delete either call site's
+    // `discovery` argument and this fails.
+    const { runDoctorCommand } = await import('../../src/cli/operations-commands.ts');
+
+    await withSteppedStore(async (store, temp) => {
+      store.db
+        .prepare(
+          `UPDATE browsers SET endpoint = 'http://127.0.0.1:1/', browser_uuid = 'uuid-a'
+             WHERE id = 'regular'`,
+        )
+        .run();
+
+      const lines: string[] = [];
+      runDoctorCommand({
+        db: store.db,
+        environment: temp.environment,
+        streams: { out: (line: string) => lines.push(line), err: () => undefined },
+        json: true,
+        automationProbe: { present: true, detail: 'stubbed' },
+      });
+
+      const first = lines[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as {
+        checks: { id: string; status: string; detail: string }[];
+      };
+
+      const discovery = parsed.checks.find((check) => check.id === 'browser.regular.discovery');
+      assert.ok(discovery, 'the discovery check is missing from the report');
+      assert.doesNotMatch(
+        discovery.detail,
+        /has not been launched/u,
+        'the report says this browser has never been launched while its record sits in the store — the probe did not reach runDoctor',
+      );
+      assert.match(discovery.detail, /record is present/u);
+
+      // The private browser has no record, so it reads as the genuine
+      // negative — which is also what proves the probe is per-browser rather
+      // than a blanket substitution.
+      const privateRow = parsed.checks.find((check) => check.id === 'browser.private.discovery');
+      assert.ok(privateRow);
+      assert.match(privateRow.detail, /has not been launched/u);
+      await Promise.resolve();
+    });
+  });
+
+  it('does not go red merely because a record exists whose endpoint was not reached', async () => {
+    // A record the doctor did not verify is `unknown`, never `failed`. The
+    // alternative regresses the exit code on every installation that has
+    // ever launched a browser — the command reads rows and opens no
+    // connections, so it can never supply the `answered` half on its own.
+    const { runDoctorCommand } = await import('../../src/cli/operations-commands.ts');
+
+    await withSteppedStore(async (store, temp) => {
+      store.db
+        .prepare(
+          `UPDATE browsers SET endpoint = 'http://127.0.0.1:1/', browser_uuid = 'uuid-a'
+             WHERE id = 'regular'`,
+        )
+        .run();
+
+      const lines: string[] = [];
+      const code = runDoctorCommand({
+        db: store.db,
+        environment: temp.environment,
+        streams: { out: (line: string) => lines.push(line), err: () => undefined },
+        json: true,
+        automationProbe: { present: true, detail: 'stubbed' },
+      });
+
+      const first = lines[0];
+      assert.ok(first);
+      const parsed = JSON.parse(first) as { checks: { id: string; status: string }[] };
+      const discovery = parsed.checks.find((check) => check.id === 'browser.regular.discovery');
+      assert.equal(discovery?.status, 'unknown');
+      assert.notEqual(
+        code,
+        DOCTOR_EXIT.browsers,
+        'an unverified discovery record failed the command',
+      );
       await Promise.resolve();
     });
   });

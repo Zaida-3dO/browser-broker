@@ -4,7 +4,7 @@ import type { BrokerService, OperationOutcome, OperationRequest } from '../adapt
 import type { OperationName } from '../adapter/operations.ts';
 import { resolveAutomationProbe } from '../browser/automation-probe.ts';
 import type { Environment } from '../config/environment.ts';
-import { runDoctor } from '../doctor/report.ts';
+import { discoveryProbesFromStore, runDoctor } from '../doctor/report.ts';
 import { BrokerError } from '../errors.ts';
 import {
   recordFeedback,
@@ -489,13 +489,24 @@ function doctorReport(
   environment: Environment,
   db: Database | undefined,
 ): Readonly<Record<string, unknown>> {
-  // The same two probes the command line supplies at its own call site, and
-  // for the reason recorded there: both checks report `unknown` regardless of
-  // the truth when nothing supplies them, so a route that omitted them would
-  // ship a report that could not fail.
+  // The same probes the command line supplies at its own call site, and for
+  // the reason recorded there: both checks report `unknown` regardless of the
+  // truth when nothing supplies them, so a route that omitted them would ship
+  // a report that could not fail.
+  //
+  // **The discovery probe was missing from that list, and this comment was
+  // already the argument for including it.** Two probes were named and wired;
+  // `discovery` was neither, on both routes, in every shipped build. The
+  // resulting failure was worse than the one the comment describes: an absent
+  // discovery probe did not make a check unable to fail, it made the sign-in
+  // check unable to be *right*, because the fabricated `{recorded: false}`
+  // standing in for it was read downstream as a measurement that no browser
+  // was running.
+  const discovery = discoveryProbesFromStore(db);
   const report = runDoctor(environment, db, {
     configuredTabBudget: environment.tabBudget,
     automation: resolveAutomationProbe(),
+    ...(discovery === undefined ? {} : { discovery }),
   });
 
   return {
