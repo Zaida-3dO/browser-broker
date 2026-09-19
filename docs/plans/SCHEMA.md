@@ -2011,9 +2011,56 @@ absent.** This is the clause below being exercised, not overridden: the measurem
 priority, and a low priority is not the same ruling as an exclusion. It is in `PAGE_ACTIONS`, it
 takes two element references resolved from the same snapshot, and it is refused by
 `act.drag_ends_differ` when both resolve to the same element. **It is deliberately given no more
-machinery than the one call it needs** — there is no file-from-the-desktop shape, because a lease is
-a tab and the desktop is not in it. `browser_act`'s description is joined from `PAGE_ACTIONS`, so
-every caller sees the verb on the surface it actually reads.
+machinery than the one call it needs** — dragging a file in from the desktop is not part of it,
+because a lease is a tab and the desktop is not in it. Putting a file into a page is `upload`'s job
+and has its own argument and its own guard, below. `browser_act`'s description is joined from
+`PAGE_ACTIONS`, so every caller sees the verb on the surface it actually reads.
+
+#### `upload` — the one interaction a page cannot be made to do to itself
+
+**The admission test is non-workaroundability, and this is the verb that passes it on the strongest
+evidence.** Twelve of the other thirteen verbs do things a caller could also do by dispatching an
+event from `browser_evaluate` (§3.10), so for those `browser_act` is ergonomics. Putting a file into
+a file input is the one interaction browsers deliberately do not let a page perform on itself: a
+script cannot set `input.files` to a file the person did not choose.
+
+**Measured, and the measurement is what makes this different from a plausible-sounding ask.** The
+route that does exist — fetch the bytes over HTTP inside an expression, build a `File`, assemble a
+`DataTransfer`, assign it, dispatch `change` — was run live and it works: the file landed and the
+page's own listener fired. It also needs the bytes to already be reachable over HTTP, survives only
+where the page's content-security policy permits the fetch, and has several ways to report success
+having attached nothing. A verb is warranted because that route is fragile and precondition-laden,
+**not** because it is impossible.
+
+**Two corrections to arguments made in favour of this verb, recorded because they were wrong and the
+verb is justified anyway.** `MAX_EXPRESSION_BYTES` (§3.10) is not a blocker: it bounds the
+expression's **source text**, not data the expression fetches, and the working expression above was
+436 bytes. And an input being hidden does not explain a failed assignment — assignment was measured
+succeeding against `display:none`, detached, `disabled` and `readonly` inputs alike.
+
+**It takes a list of names, each relative to `BROKER_UPLOAD_ROOT`, and the root has no default.**
+With no root configured the verb refuses and this service reads no file from this machine. Every
+other setting falls back to something sensible; this one does not, because `upload` is the only
+operation that moves data *from this machine into a browser somebody is signed in to*, and a default
+would have granted that reach to every installation on upgrade without anyone choosing it.
+
+**The guard is the deliverable; the automation call is one line.** Containment is checked on the
+realpath, so a link at any component pointing out of the root is refused; the supplied name is tested
+for absoluteness in **both** namespaces as well as the computed result; the service reads the file
+itself and hands over bytes, so the automation library never receives a caller-influenced string; and
+startup refuses a root that overlaps the profile root, the artefact root or the store's directory in
+either direction. `browser_navigate` refuses `file://` (§3.7) to stop a lease becoming a read of this
+machine, and this verb approaches that line from the other side — which is why it is the one verb
+with a ratified exception recorded against a §7.3 build rule. See §7.3.
+
+**Target the `<input type=file>` or the visible `<label>` around it.** The real input is usually
+hidden and frequently mints no reference in an aria snapshot at all, so the reference a caller can
+obtain is often the label; the automation library retargets a label to its associated control, so
+both work through one code path.
+
+**One consequence a caller chose and should know it chose:** bytes put into a page may appear in a
+later snapshot or capture of that page. That is inherent in putting a file into a page rather than
+anything this verb does with it.
 
 **If any of them turns up in use, the number that justified leaving it out is written down and can be
 argued with**, which is the point of recording it rather than simply omitting the verbs.
@@ -3263,6 +3310,13 @@ build.
 | `act.dialog_answer_named` | Answering a dialog says **whether to accept or dismiss it** | answer required. A dialog left unanswered blocks the page, so there is no default to fall back on |
 | `act.form_fields_bounded` | A batch fill carries **at least one field and no more than the maximum**, each with a reference and a value | invalid fields, naming the maximum |
 | `act.drag_ends_differ` | A drag's two references **are not the same element** | invalid drag. A drag onto itself is a caller mistake rather than a no-op, and silently succeeding would hide it |
+| `act.upload_root_configured` | An upload happens only where **an operator has configured `BROKER_UPLOAD_ROOT`** (§3.8) | upload unavailable, naming the variable and what it is for. Refused **before a lease is renewed or a tab reached**, so an installation with the verb switched off says so and does nothing |
+| `act.upload_paths_required` · `act.upload_paths_bounded` | An upload names **at least one file and no more than the maximum** | invalid paths, naming the maximum and the count. It is a file-attachment verb, not a bulk-transfer channel |
+| `act.upload_path_shape` | Each name is **a non-empty string with no null byte, and absolute in neither namespace** | invalid path, naming which entry. Both namespaces, of the **supplied** name: one absolute in the other namespace is a legal relative filename to a path resolver, so it resolves quietly under the root and the computed answer looks clean |
+| `act.upload_path_contained` | Each name resolves **inside the upload root, after every component is resolved** | path not contained. On the **realpath**, so a link at any depth pointing out of the root is refused — an `lstat` of the final component is blind to a link three directories up |
+| `act.upload_file_readable` | Each name is **one ordinary readable file** | no readable file, naming the entry. A directory, a device, a socket and a link pointing at nothing are each refused, and none of them surfaces as a raw errno |
+| `act.upload_bytes_bounded` | An upload is **within the per-file and total size limits** | too large, with the number and the cap. Checked from the open descriptor **before** the bytes are read, and again after — the bytes are held in the process that arbitrates every lease, so an unbounded upload is a machine-wide outage rather than a slow call |
+| `act.upload_target_not_input` | An upload's reference **is a file input, or a label for one** | wrong target, saying to look for the label. The automation library's own message for this names its internals, and a caller reading it learns nothing it can act on |
 | `read.artifact_known` | A read names **which artefacts it wants**, from the known set (§3.9) | unknown artefact, listing the artefacts |
 | `read.find_shape` | A snapshot `find` is **a non-empty string within its length bound**, and one wrapped in `/slashes/` **compiles as a regular expression** | malformed find, showing both spellings. A pattern that does not compile is refused with the engine's own message and the way out — dropping the slashes searches for the text itself — rather than being let out as an internal error |
 | `read.refless_noted` | **A written snapshot carrying no `[ref=` handle says so, in the file** (§3.8, §3.9) | **Not a refusal — a note.** The gate is the absence of references rather than of role names, because a reference is what `browser_act` consumes; a tree naming a hundred roles and minting none is unusable for acting. **It states only what was observed** — the snapshot was taken, its line count, no handles — and **asserts no cause**, because a mangled `find`, a narrowed read, a page still building and a reference-free rendering are indistinguishable from here, and a hint that guessed would be the misleading evidence it exists to remove. It points at the `press`-without-a-reference route instead. A tree that does carry a reference is written **byte for byte** as it arrived, and a near-empty document is left alone because having no references is uninteresting there |
@@ -3327,6 +3381,57 @@ These prohibitions cannot be checked at run time, because the correct behaviour 
 | `config.no_secrets` | No variable this service reads is credential-shaped. Configuration is readable by anything that can read the process environment, so a value that would be unsafe to read aloud is in the wrong place (§6.1) |
 | `capture.never_refused_for_cost` | **No path refuses a capture for budget or resolution reasons.** This one asserts an absence, and it is what makes the "never a refusal" promise checkable |
 | `nothing.listens` | **No code path opens a listening socket.** Nothing is served (§4), and the way that stays true a year from now is a rule rather than a habit — a page somebody adds "just to look at it locally" is precisely how a served surface arrives |
+
+#### `artifact.no_request_path` and the `upload` verb — a ratified narrowing
+
+**`upload` (§3.8) accepts a filesystem name from a caller, and that is deliberate.** It is written
+down here because the rule above reads, at a glance, as though it forbids exactly that — and a
+reader who found the verb without finding this paragraph would be right to conclude the rule had
+been quietly sidestepped.
+
+**The distinction: the rule governs bytes going OUT, and `upload` moves bytes IN.** Its text is *"no
+path that **serves** bytes"*, and its scope is §1.9, which is the artefact-serving surface — the
+route by which a caller asks this service to hand it the contents of a file. Traversal there means a
+caller reading a file it was never meant to see. `upload` is the opposite direction: a file on this
+machine is read *by the service, under its own guard* and put into a page the caller already holds a
+lease on. Nothing is served to the caller, and the verb returns a snapshot exactly as the other
+thirteen do.
+
+**This was escalated rather than decided by the crew that built it, and it is recorded as ratified
+by Ope, 2026-09-19.** The reasoning for escalating was that the rule's *stated purpose* — "traversal
+has no input to arrive through" — is about the existence of caller-controlled path input at all,
+and a reading that narrows a security rule is not a reading a crew should adopt on its own
+authority. Writing it down is the condition on which the exception was granted.
+
+**What the narrowing does not do is leave the verb unguarded.** The exception is to one build rule,
+not to the concern behind it, and the replacement is deliberately stricter in the places the build
+rule could not have reached:
+
+- **`BROKER_UPLOAD_ROOT`, with no default, and the verb refuses until it is set.** Not the artefact
+  root: that is where this service *writes*, and `<root>/claims/<claim id>/` holds other leases'
+  snapshots, so an artefact-root default would have composed two harmless operations into a
+  cross-lease read. Unset means off, so no existing installation gains filesystem reach by upgrading.
+- **Containment on the realpath, not the string.** Every component is resolved, so a link three
+  directories above the file is caught — which an `lstat` of the final component is blind to.
+- **Both namespaces, of the supplied name as well as the computed result** — the trap
+  `src/artifacts/store.ts` documents, where a name absolute in the *other* Windows namespace is a
+  legal relative filename to `path.resolve` and so resolves quietly under the root.
+- **Startup refuses an upload root overlapping the profile root, the artefact root or the store's
+  directory, in either direction**, because those default to siblings under one parent and naming
+  that parent would have made every browser's cookie store uploadable.
+- **The service reads the file itself and passes bytes**, so the automation library never receives a
+  caller-influenced string and there is no second path resolver behind the guard.
+
+**What is honestly not covered:** an operator can still point the root at a directory full of things
+they did not think about. The startup check catches the overlaps it can see and cannot catch a home
+directory or a whole drive. That residual is the capability that was authorised, and `.env.example`
+says so in those words rather than implying the guard is total.
+
+**A note for whoever extends this next.** `scripts/check-artifact-path.mjs` is file-scoped by design
+— it names `src/service/artifacts.ts` and `src/artifacts/store.ts` individually — so the rule above
+would not have failed the build for `upload` whatever this section said. The exception is therefore
+argued rather than merely permitted. **A second verb that wants caller path input does not inherit
+it**: it gets its own escalation, on its own facts.
 
 ### 7.4 There is no rule that is only a warning
 

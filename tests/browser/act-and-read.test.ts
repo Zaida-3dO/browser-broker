@@ -64,6 +64,12 @@ const FIXTURE_HTML = [
   '<div id="hov" onmouseover="window.__hovered = true" onclick="window.__hovClicks = (window.__hovClicks || 0) + 1">hover target</div>',
   '<input id="one"><input id="two">',
   '<div id="src" draggable="true">DRAGME</div><div id="dst">DROPHERE</div>',
+  // A file input the page WATCHES, plus a visible label wrapping a second,
+  // hidden one. Both halves are the subject of the upload tests: the listener
+  // is what distinguishes "the property changed" from "the page reacted", and
+  // the hidden-plus-label shape is the one a real page almost always has.
+  "<input id='up' type='file' onchange='window.__uploaded = [...this.files].map(f => f.name + \":\" + f.size).join(\",\")'>",
+  "<label id='lab'>Attach a file<input id='hidden-up' type='file' style='display:none' onchange='window.__labelled = this.files.length + \":\" + (this.files[0] ? this.files[0].name : \"\")'></label>",
   '<div style="height:3000px"></div>',
   '<button id="dlg" onclick="window.__answer = confirm(\'really?\')">raise dialog</button>',
   '<script>console.log("a message from the page")</script>',
@@ -132,7 +138,7 @@ function referenceFor(snapshot: string, needle: string): string {
 // These are about the closed lists themselves, which are data on the seam, so
 // they run everywhere including a hosted runner.
 
-test('the seam declares exactly the thirteen verbs and four artefacts §3.8 and §3.9 list', () => {
+test('the seam declares exactly the fourteen verbs and four artefacts §3.8 and §3.9 list', () => {
   // Named as literals rather than iterated, deliberately. A test that walked
   // `PAGE_ACTIONS` and asserted something about each entry would still pass if
   // an entry were deleted — it would simply walk a shorter list. Writing them
@@ -162,6 +168,7 @@ test('the seam declares exactly the thirteen verbs and four artefacts §3.8 and 
       'dialog',
       'fill_form',
       'drag',
+      'upload',
     ],
   );
   assert.deepEqual([...READ_ARTIFACTS], ['snapshot', 'console', 'network', 'cookies']);
@@ -802,6 +809,131 @@ test(
           'an artefact must land in the directory the driver was given and nowhere else',
         );
       }
+    } finally {
+      await stopFixture(fixture);
+    }
+  },
+);
+
+/**
+ * `upload` against a real page — the one assumption nothing else can settle.
+ *
+ * ── Why these tests exist and what they are measuring ───────────────────
+ *
+ * `setInputFiles` takes either a filesystem path or an in-memory
+ * `{name, mimeType, buffer}`, and this service passes the second so that the
+ * automation library never receives a caller-influenced string. **Whether the
+ * buffer form drives a page the same way is a fact about the browser, not
+ * about this repository**, and it is the assumption the rest of the design
+ * rests on: if attaching bytes set the `files` property without dispatching
+ * the event a page listens for, every real upload form would sit there
+ * looking attached and doing nothing.
+ *
+ * So the assertion is deliberately **not** `files.length === 1`. That is the
+ * property, and a property can be set without a page ever hearing about it.
+ * The fixture page registers its own `change` listener and writes what it
+ * saw; what is asserted is **what the listener recorded**, which is the only
+ * thing that distinguishes the two outcomes.
+ *
+ * The second test is about reach rather than mechanism: a real file input is
+ * usually hidden and frequently mints no reference in an aria snapshot at
+ * all, so the reference a caller can actually obtain is the visible label
+ * around it. `setInputFiles` retargets a label to its associated control, and
+ * that is asserted here rather than assumed from its documentation.
+ */
+
+test(
+  'an upload attaches bytes and the page’s own change listener fires',
+  { skip: available ? false : skipReason() },
+  async () => {
+    const fixture = await startFixture();
+    try {
+      const reference = referenceFor(await snapshotText(fixture), 'ref=');
+      // The reference for the watched input, taken from our own snapshot the
+      // way a caller would have to take it.
+      const snapshot = await snapshotText(fixture);
+      const uploadRef = (() => {
+        const line = snapshot
+          .split('\n')
+          .find((candidate) => /file|upload/iu.test(candidate) && candidate.includes('[ref='));
+        assert.ok(line, `the snapshot must name a file input; it did not:\n${snapshot}`);
+        const found = /\[ref=([^\]]+)\]/u.exec(line);
+        assert.ok(found?.[1]);
+        return found[1];
+      })();
+      assert.ok(reference.length > 0);
+
+      await fixture.session.act(fixture.tab, {
+        action: 'upload',
+        ref: uploadRef,
+        files: [
+          {
+            name: 'evidence.txt',
+            mimeType: 'text/plain',
+            bytes: new TextEncoder().encode('twelve bytes'),
+          },
+        ],
+      });
+
+      // **What the page heard**, not what the property says. This is the
+      // measurement the design was waiting on.
+      assert.equal(await inPage(fixture, 'window.__uploaded'), 'evidence.txt:12');
+      // And the property too, so a listener that fired on nothing is
+      // distinguishable from one that fired on the file.
+      assert.equal(await inPage(fixture, 'document.getElementById("up").files.length'), 1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  },
+);
+
+test(
+  'an upload through a visible label reaches the hidden input it wraps',
+  { skip: available ? false : skipReason() },
+  async () => {
+    const fixture = await startFixture();
+    try {
+      const snapshot = await snapshotText(fixture);
+      const labelRef = referenceFor(snapshot, 'Attach a file');
+
+      await fixture.session.act(fixture.tab, {
+        action: 'upload',
+        ref: labelRef,
+        files: [{ name: 'via-label.png', mimeType: 'image/png', bytes: new Uint8Array([1, 2, 3]) }],
+      });
+
+      // The hidden input's own listener, reached through the label. A page
+      // that hid its input is the ordinary case, so this is the path most
+      // real uploads will take.
+      assert.equal(await inPage(fixture, 'window.__labelled'), '1:via-label.png');
+    } finally {
+      await stopFixture(fixture);
+    }
+  },
+);
+
+test(
+  'an upload aimed at something that is not a file input is refused by name',
+  { skip: available ? false : skipReason() },
+  async () => {
+    const fixture = await startFixture();
+    try {
+      const buttonRef = referenceFor(await snapshotText(fixture), 'Press me');
+      await assert.rejects(
+        fixture.session.act(fixture.tab, {
+          action: 'upload',
+          ref: buttonRef,
+          files: [{ name: 'a.txt', mimeType: 'text/plain', bytes: new Uint8Array([1]) }],
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          // The automation library's own message for this names its internals
+          // and a caller reading it learns nothing it can act on. What is
+          // asserted is that the reply says what to do next.
+          assert.match(error.message, /file input|label/iu);
+          return true;
+        },
+      );
     } finally {
       await stopFixture(fixture);
     }

@@ -740,6 +740,44 @@ export const STRUCTURED_UNIONS = [
         why: "drag's second element reference; a flat `target_ref` was refused as surface tax (#64)",
       },
     ],
+    /**
+     * Fields a caller is **not permitted to express at all**, each with the
+     * argument it is derived from instead.
+     *
+     * ── Why this is not a second spelling of `viaPassthrough` ───────────
+     *
+     * That list is for fields that arrive whole from a caller through one
+     * object-typed argument. These are the opposite: **no caller can send
+     * them, by design, and the surface must not declare anything that would
+     * let one try.** `upload`'s `files` carries the bytes of a file, read by
+     * the service inside its own containment guard from a name the caller
+     * gave. A caller that could put a value in that field could put arbitrary
+     * bytes into a page while bypassing the guard entirely, and a caller that
+     * could put a *path* there would be handing the automation library a
+     * string this service never checked.
+     *
+     * So the field's unreachability is the security property, not an
+     * oversight — and the assertion below is written in the strict direction
+     * to match. An entry here **fails** if the field ever becomes reachable
+     * from a declared argument, which is the inverse of `viaPassthrough`'s
+     * staleness rule and the only shape in which this list can be a gate:
+     * declaring an argument that reaches `files` is precisely the change that
+     * must not pass silently.
+     *
+     * `derivedFrom` names the argument a caller *does* send, so this cannot be
+     * used to hide a field that has no route to the surface at all: the named
+     * argument has to be declared, or the entry fails.
+     */
+    neverFromCaller: [
+      {
+        field: 'files',
+        derivedFrom: 'paths',
+        why:
+          "upload's bytes, read by the service from the caller's names under the configured " +
+          'upload root. A caller that could set this field would bypass the containment guard ' +
+          'that makes the verb safe to expose, so the surface must never declare a route to it.',
+      },
+    ],
   },
 ];
 
@@ -1038,6 +1076,14 @@ export function checkRequiredFieldsAreDeclarable({ toolsSource, bridgeSource, dr
         // Not reachable from any flat argument. Two very different situations
         // wear that description, and separating them is what makes this a gate
         // rather than noise.
+        // A field the surface must never offer a route to. Handled before
+        // the passthrough case because the two are opposites: one says a
+        // caller sends this inside another argument, this one says no caller
+        // sends it at all.
+        if ((union.neverFromCaller ?? []).some((entry) => entry.field === field)) {
+          continue;
+        }
+
         const known = union.viaPassthrough.find((entry) => entry.field === field);
 
         if (known === undefined) {
@@ -1097,6 +1143,30 @@ export function checkRequiredFieldsAreDeclarable({ toolsSource, bridgeSource, dr
           `it now has a flat route as well. Delete the entry: a record that misdescribes the tree ` +
           `stops being read, and this one is load-bearing for the fields that still need it.`,
       );
+    }
+
+    // **The strict direction, and the reason this list is a gate.** A field
+    // recorded as never arriving from a caller must stay unreachable: an
+    // argument that reaches it is a route around the guard the field exists
+    // behind. And the argument it IS derived from has to be declared, so this
+    // list cannot be used to excuse a field with no route to the surface at
+    // all — which is the defect the whole check is for.
+    for (const entry of union.neverFromCaller ?? []) {
+      if (reach.has(entry.field)) {
+        failures.push(
+          `"${entry.field}" is recorded as reachable from no caller argument on ${union.tool}, ` +
+            `and something reaches it. ${entry.why} Remove the argument that reaches it, or ` +
+            `— if the field is genuinely meant to be caller-supplied — say so here and in ` +
+            `SCHEMA.md, because it is a security boundary rather than a matter of surface tax.`,
+        );
+      }
+      if (!declared.includes(entry.derivedFrom)) {
+        failures.push(
+          `"${entry.field}" is recorded as derived from the "${entry.derivedFrom}" argument on ` +
+            `${union.tool}, and ${union.tool} declares no such argument. The verb is implemented ` +
+            `and uncallable: a caller has no way to say which files to send.`,
+        );
+      }
     }
   }
 

@@ -77,6 +77,9 @@ function environmentFor(store: StoreHandle): Parameters<typeof browserSessionPro
       configuredDatabasePath: undefined,
       artifactsRoot: 'artifacts',
       profileRoot: 'profiles',
+      // No upload root: the verb is off, which is what an installation that
+      // has configured nothing has. Nothing here uploads anything.
+      uploadRoot: undefined,
       tabBudget: 4,
       leaseSeconds: 600,
       queueSeconds: 300,

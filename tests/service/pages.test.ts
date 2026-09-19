@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { PAGE_ACTIONS, READ_ARTIFACTS, type CookieSummary } from '../../src/browser/driver.ts';
+import {
+  MAX_UPLOAD_FILES,
+  PAGE_ACTIONS,
+  READ_ARTIFACTS,
+  type CookieSummary,
+} from '../../src/browser/driver.ts';
 import { FakeBrowserDriver } from '../../src/browser/fake.ts';
 import {
   COOKIE_SUMMARY_FIELDS,
@@ -20,6 +25,7 @@ import {
   validateExpression,
   validateNavigationTarget,
 } from '../../src/service/pages.ts';
+import { BACK, localDrivePath, sharePath } from '../helpers/paths.ts';
 
 const RECORD = { endpoint: 'http://127.0.0.1:9000', browserUuid: 'fake-regular-uuid' };
 
@@ -104,6 +110,7 @@ test('an unknown action is refused with every action named, one by one', () => {
     'dialog',
     'fill_form',
     'drag',
+    'upload',
   ]) {
     assert.match(
       refusal.message,
@@ -114,7 +121,7 @@ test('an unknown action is refused with every action named, one by one', () => {
 
   // And the count, so an action added to the union without being added to the
   // list it is refused from is caught too.
-  assert.equal(PAGE_ACTIONS.length, 13);
+  assert.equal(PAGE_ACTIONS.length, 14);
   assert.deepEqual(refusal.detail.actions, [...PAGE_ACTIONS]);
 });
 
@@ -334,10 +341,16 @@ test('a resize reaches the driver as a viewport, not as a string it must re-pars
   const tab = await session.openTab();
   driver.clearCalls();
 
-  await session.act(
-    tab,
-    validateAction({ action: 'resize', viewport: { width: 375, height: 812 } }),
-  );
+  // `validateAction` returns the shape a request has **before** an upload's
+  // files are read, and a driver only ever takes the shape after. For every
+  // verb but `upload` the two are the same type, and narrowing away the one
+  // exception is what lets this pass one to the other — which is the seam
+  // working: there is no way to hand a driver an upload that has not been
+  // through the resolver.
+  const resized = validateAction({ action: 'resize', viewport: { width: 375, height: 812 } });
+  assert.notEqual(resized.action, 'upload');
+  if (resized.action === 'upload') throw new Error('unreachable');
+  await session.act(tab, resized);
 
   const call = driver.callsOf('act')[0];
   assert.equal(call?.detail?.action, 'resize');
@@ -877,4 +890,107 @@ test('a refused action never reaches the driver', async () => {
   assert.throws(() => validateExpression('a'.repeat(MAX_EXPRESSION_BYTES + 1)));
 
   assert.deepEqual(driver.calls, []);
+});
+
+/* ─────────────────── upload: shape, before any filesystem ─────────────────── */
+
+/**
+ * What `validateAction` owes `upload`, and deliberately what it does not.
+ *
+ * Everything here is about the **request**. Containment, the read and the size
+ * caps are `tests/uploads/resolve.test.ts`'s subject, because they are
+ * questions about this machine — and nothing in `validateAction` touches a
+ * filesystem, which is the boundary that lets every refusal below happen
+ * before a lease is renewed or a tab is reached.
+ */
+
+test('an upload names an element and at least one file', () => {
+  assert.deepEqual(validateAction({ action: 'upload', ref: 'e4', paths: ['invoice.pdf'] }), {
+    action: 'upload',
+    ref: 'e4',
+    paths: ['invoice.pdf'],
+  });
+});
+
+test('an upload with no reference is refused by the same rule every other verb uses', () => {
+  // Composed rather than re-invented: `upload` inherits whatever guards a
+  // reference for the other verbs instead of minting its own opinion of what
+  // one looks like.
+  refusesWith('act.ref_required', () => validateAction({ action: 'upload', paths: ['a.txt'] }));
+  refusesWith('act.ref_required', () =>
+    validateAction({ action: 'upload', ref: '  ', paths: ['a.txt'] }),
+  );
+});
+
+test('an upload with no files is refused, and the refusal names the command-line flag', () => {
+  const refusal = refusesWith('act.upload_paths_required', () =>
+    validateAction({ action: 'upload', ref: 'e1' }),
+  );
+  // The lesson the viewport refusal was rewritten for: a caller that cannot
+  // see the syntax cannot act on a message that describes only the semantics.
+  assert.match(refusal.message, /--path/u);
+  refusesWith('act.upload_paths_required', () =>
+    validateAction({ action: 'upload', ref: 'e1', paths: [] }),
+  );
+  // A bare string is the shape a caller reaches for first, and it is not a
+  // list. Refused rather than wrapped, so the caller learns the shape.
+  refusesWith('act.upload_paths_required', () =>
+    validateAction({ action: 'upload', ref: 'e1', paths: 'invoice.pdf' }),
+  );
+});
+
+test('an upload past the file count is refused, with the count and the maximum', () => {
+  const tooMany = Array.from({ length: MAX_UPLOAD_FILES + 1 }, (_, index) => `f${String(index)}`);
+  const refusal = refusesWith('act.upload_paths_bounded', () =>
+    validateAction({ action: 'upload', ref: 'e1', paths: tooMany }),
+  );
+  assert.match(refusal.message, new RegExp(String(MAX_UPLOAD_FILES)));
+  assert.match(refusal.message, new RegExp(String(tooMany.length)));
+  // And the boundary from the other side, so a cap written as `>=` fails.
+  const exactly = Array.from({ length: MAX_UPLOAD_FILES }, (_, index) => `f${String(index)}`);
+  const atTheCap = validateAction({ action: 'upload', ref: 'e1', paths: exactly });
+  assert.equal(atTheCap.action, 'upload');
+  if (atTheCap.action !== 'upload') throw new Error('unreachable');
+  assert.equal(atTheCap.paths.length, MAX_UPLOAD_FILES);
+});
+
+test('an upload path that is not a name is refused, saying which entry', () => {
+  for (const bad of ['', '   ', 'has\0null', 42, null, { name: 'x' }]) {
+    const refusal = refusesWith('act.upload_path_shape', () =>
+      validateAction({ action: 'upload', ref: 'e1', paths: ['fine.txt', bad] }),
+    );
+    // Which one, by index: a caller sending eight files needs to know which.
+    assert.equal(refusal.detail.index, 1);
+  }
+});
+
+// **The namespace trap, asked at the surface as well as in the resolver.**
+// This is the same question `src/artifacts/store.ts` asks of a filename, and
+// it is asked twice deliberately: here so a caller learns the shape is wrong
+// before a lease is admitted, and again in the resolver so the guard holds
+// whoever calls it. Deleting either leaves the other standing.
+test('an upload path absolute in either namespace is refused at the surface', () => {
+  for (const bad of [
+    '/etc/passwd',
+    localDrivePath('C', 'Windows', 'win.ini'),
+    'C:/Windows/win.ini',
+    sharePath('server', 'share', 'secret'),
+    `${BACK}etc${BACK}passwd`,
+  ]) {
+    refusesWith('act.upload_path_shape', () =>
+      validateAction({ action: 'upload', ref: 'e1', paths: [bad] }),
+    );
+  }
+});
+
+test('a traversal is NOT refused at the surface — it is the resolver that answers it', () => {
+  // Recorded rather than left to be discovered. `..` is a legal string and
+  // whether it escapes depends on the root, which this layer does not have.
+  // Asserting it here would be asserting a guard in the wrong place, and a
+  // reader finding no traversal test in this file should find this instead.
+  assert.deepEqual(validateAction({ action: 'upload', ref: 'e1', paths: ['../secret'] }), {
+    action: 'upload',
+    ref: 'e1',
+    paths: ['../secret'],
+  });
 });

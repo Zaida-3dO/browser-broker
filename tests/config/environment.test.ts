@@ -119,6 +119,10 @@ test('every variable this build declares is the set below, and no other', () => 
     'BROKER_QUEUE_SECONDS',
     'BROKER_REGULAR_BROWSERS',
     'BROKER_TAB_BUDGET',
+    // The one variable with no default: unset means the upload verb is off
+    // rather than that some fallback applies. Its own tests are in
+    // `upload-root.test.ts`.
+    'BROKER_UPLOAD_ROOT',
   ]);
 });
 

@@ -183,7 +183,7 @@ function record(parsed: Record<string, unknown>, key: string, value: unknown): v
  * Keyed by their normalised names. Deliberately a short list: an option
  * belongs here only when the operation behind it takes a collection.
  */
-const REPEATABLE = new Set(['field']);
+const REPEATABLE = new Set(['field', 'path']);
 
 function normaliseKey(key: string): string {
   return key.replaceAll('-', '_');

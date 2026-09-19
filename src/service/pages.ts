@@ -1,14 +1,16 @@
 import {
   ARTIFACT_COLLECTION,
+  MAX_UPLOAD_FILES,
   PAGE_ACTIONS,
   READ_ARTIFACTS,
-  type ActionRequest,
   type CookieSummary,
   type PageAction,
   type ReadArtifact,
   type SnapshotFilter,
+  type ValidatedAction,
 } from '../browser/driver.ts';
 import { BrokerError } from '../errors.ts';
+import { isAbsoluteInEitherNamespace } from '../artifacts/store.ts';
 
 /**
  * The page verbs: what a caller may ask of a tab it owns, and every way that
@@ -29,9 +31,16 @@ import { BrokerError } from '../errors.ts';
  *
  * So the functions here take a caller's arguments and either return the
  * typed request the driver seam declares, or throw. **They are the step that
- * turns `unknown` into `ActionRequest`** — the seam's own note says a cast at
- * the boundary makes its union decorative, and this is the code that makes
+ * turns `unknown` into `ValidatedAction`** — the seam's own note says a cast
+ * at the boundary makes its union decorative, and this is the code that makes
  * the cast unnecessary.
+ *
+ * `upload` is the one verb for which that is not the whole journey. What this
+ * file produces for it is the caller's **names**, shape-checked; the files
+ * those name are read by `src/uploads/resolve.ts` after the lease is admitted,
+ * and only then does the request become an `ActionRequest` a driver can be
+ * handed. The boundary above is why: reading a file is work against this
+ * machine, and nothing in this file touches a filesystem.
  *
  * ── Refusals are the specification ──────────────────────────────────────
  *
@@ -359,7 +368,7 @@ export const MAX_FORM_FIELDS = 64;
  * decorative — the compiler would then be checking a claim this function made
  * up rather than a fact it established. So every field is examined.
  */
-export function validateAction(raw: unknown): ActionRequest {
+export function validateAction(raw: unknown): ValidatedAction {
   if (typeof raw !== 'object' || raw === null) {
     throw new PageRefusal('act.action_known', 'An action names what to do and what to do it to.', {
       actions: [...PAGE_ACTIONS],
@@ -600,6 +609,70 @@ export function validateAction(raw: unknown): ActionRequest {
         );
       }
       return { action, ref, targetRef };
+    }
+
+    case 'upload': {
+      // **The one verb that moves data from this machine into a page**, and
+      // the only interaction a caller cannot reach by dispatching an event
+      // from inside the page — which is the admission argument §3.8 asks for.
+      //
+      // What is checked here is the **shape** of the request and nothing
+      // else: the reference, the count, and each name being a name at all.
+      // Nothing here touches a filesystem. Containment, the read and the size
+      // caps belong to `src/uploads/resolve.ts` and happen after `admit`,
+      // because they are questions about this machine rather than about the
+      // request — and this function's contract is that everything it refuses,
+      // it refuses before a tab is reached.
+      //
+      // The reference goes through `requireRef` unchanged, so `upload`
+      // inherits every refusal that guards a reference for the other verbs
+      // rather than minting its own opinion about what one looks like.
+      const ref = requireRef(input.ref, 'an element reference', action);
+      const paths = input.paths;
+      if (!Array.isArray(paths) || paths.length === 0) {
+        throw new PageRefusal(
+          'act.upload_paths_required',
+          'The "upload" action puts files into a file input, so it needs paths — a list of one or more files, each named relative to the service\'s configured upload root. On the command line: --path invoice.pdf.',
+          { action, maximum: MAX_UPLOAD_FILES },
+        );
+      }
+      if (paths.length > MAX_UPLOAD_FILES) {
+        throw new PageRefusal(
+          'act.upload_paths_bounded',
+          `An upload carries at most ${String(MAX_UPLOAD_FILES)} files, and this one names ${String(paths.length)}.`,
+          { action, count: paths.length, maximum: MAX_UPLOAD_FILES },
+        );
+      }
+      return {
+        action,
+        ref,
+        // The names, not the files. The bytes arrive later, from the
+        // resolver; this carries what the caller wrote so the layer that
+        // reads can refuse in terms of what was asked for.
+        paths: (paths as unknown[]).map((entry, index) => {
+          if (typeof entry !== 'string' || entry.trim() === '' || entry.includes('\0')) {
+            throw new PageRefusal(
+              'act.upload_path_shape',
+              `Path ${String(index)} of the upload is not a name this service will read. Each one is a file's name relative to the configured upload root.`,
+              { action, index },
+            );
+          }
+          // Absolute in **either** namespace, asked of the name the caller
+          // supplied. This is the same question `src/artifacts/store.ts` asks
+          // of a filename, for the same reason, and it is asked twice on
+          // purpose: here, so a caller learns the shape is wrong before a
+          // lease is admitted, and again in the resolver, which is the guard
+          // that must hold whoever calls it and however this path changes.
+          if (isAbsoluteInEitherNamespace(entry)) {
+            throw new PageRefusal(
+              'act.upload_path_shape',
+              `Path ${String(index)} of the upload names a location of its own. An upload path is relative to the configured upload root: no leading slash, no drive letter and no share prefix.`,
+              { action, index },
+            );
+          }
+          return entry;
+        }),
+      };
     }
   }
 }

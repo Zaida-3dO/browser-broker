@@ -368,7 +368,20 @@ export function createBroker(options: BrokerOptions): Broker {
         settings,
       }),
     navigate: (input) => run<NavigateInput, NavigateResult>('navigate', withBrowser(input)),
-    act: (input) => run<ActInput, ActResult>('act', withBrowser(input)),
+    // The upload root, for the one verb that reads a file from this machine.
+    // Read from the environment snapshot here and handed in, rather than read
+    // inside the handler — the same discipline as the arbitration settings
+    // above, and what makes the unconfigured-root refusal provable without a
+    // process environment. Spread away when unset, so that "no operator has
+    // configured one" arrives as an absent field rather than as an empty
+    // string a handler could mistake for a directory.
+    act: (input) =>
+      run<ActInput, ActResult>('act', {
+        ...withBrowser(input),
+        ...(options.environment.uploadRoot === undefined
+          ? {}
+          : { uploadRoot: options.environment.uploadRoot }),
+      }),
     read: (input) => run<ReadInput, ReadResult>('read', withBrowser(input)),
     evaluate: (input) =>
       run<EvaluateInput, EvaluateResult>('evaluate', {

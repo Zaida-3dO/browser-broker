@@ -520,6 +520,25 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       // name the CLI flag and not this argument) and are tracked separately;
       // until they land, this text is the only place an agent can learn the
       // shape — and it is the one surface an agent reliably reads each turn.
+      // `upload`'s own argument rather than a shape inside `request`, because
+      // a list of strings is a thing this surface can declare directly — and
+      // the verb is unusable without it, which is the distinction the note
+      // above draws between an escape hatch and a declaration. The description
+      // carries the root, because the first thing a caller meets on an
+      // installation that has not configured one is a refusal, and the second
+      // thing should not be a guess about what a path is relative to.
+      {
+        name: 'paths',
+        type: 'array',
+        required: false,
+        description:
+          'For "upload": the files to attach, each named RELATIVE to the upload root an ' +
+          'operator configured (BROKER_UPLOAD_ROOT). An absolute path, a drive letter, a share ' +
+          'prefix and anything climbing out with ".." are each refused, and so is every file ' +
+          'outside that root — including one reached through a link inside it. Target the ' +
+          '<input type=file>, or the visible <label> around it: the real input is usually ' +
+          'hidden and often carries no reference at all.',
+      },
       {
         name: 'request',
         type: 'object',

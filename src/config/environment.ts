@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { StartupRefusal } from '../errors.ts';
+import { resolveRealPath } from '../store/network-path.ts';
 
 /**
  * One snapshot of the process environment, read on the way in.
@@ -26,7 +27,7 @@ import { StartupRefusal } from '../errors.ts';
  * directory and the platform) and a number's default (a literal) cannot be
  * confused for one another at the point either is read.
  */
-type Kind = 'path' | 'positive-integer' | 'name-list' | 'enum';
+type Kind = 'path' | 'optional-path' | 'positive-integer' | 'name-list' | 'enum';
 
 interface PathDeclaration {
   readonly key: string;
@@ -38,6 +39,26 @@ interface PathDeclaration {
    * application-data path in this file fails `machine-path` or `profile-path`.
    */
   readonly fallback: (home: string, platform: NodeJS.Platform) => string;
+}
+
+/**
+ * A path with **no default at all**, which is a different thing from a path
+ * whose default happens to be computed.
+ *
+ * Its own shape rather than a nullable `fallback` on {@link PathDeclaration},
+ * because this file's own doctrine is "a declaration shape per member rather
+ * than one shape carrying a kind field, so a path's default and a number's
+ * default cannot be confused for one another at the point either is read". A
+ * `fallback` that is sometimes absent is exactly that confusion, one level in.
+ *
+ * **Unset means the capability is off, not that a default applies.** There is
+ * one of these — `BROKER_UPLOAD_ROOT` — and the reasoning is in its
+ * declaration below. Read as `string | undefined`, and every reader has to say
+ * what it does with the second case.
+ */
+interface OptionalPathDeclaration {
+  readonly key: string;
+  readonly kind: Extract<Kind, 'optional-path'>;
 }
 
 /**
@@ -112,7 +133,12 @@ interface EnumDeclaration {
   readonly unit: string;
 }
 
-type Declaration = PathDeclaration | IntegerDeclaration | NameListDeclaration | EnumDeclaration;
+type Declaration =
+  | PathDeclaration
+  | OptionalPathDeclaration
+  | IntegerDeclaration
+  | NameListDeclaration
+  | EnumDeclaration;
 
 /**
  * The per-user application-data location the platform defines, assembled from
@@ -148,6 +174,37 @@ const DECLARATIONS = [
     key: 'BROKER_PROFILE_ROOT',
     kind: 'path',
     fallback: (home, platform) => path.join(ownDirectory(home, platform), 'profiles'),
+  },
+  {
+    /**
+     * Where `upload` may read files from — and **the only variable here with
+     * no default**, deliberately.
+     *
+     * ── Why unset means off, rather than unset meaning somewhere ─────────
+     *
+     * `upload` is the one operation that moves data **from this machine** into
+     * a shared, signed-in browser. Every other thing this service does moves
+     * data that was already in a page. So a default root would hand inbound
+     * filesystem reach to every existing installation on upgrade, silently,
+     * without anyone choosing it — and §6.3's rule for a value nobody chose is
+     * the one this file applies everywhere else: "falling back to the default
+     * silently would run a configuration nobody chose with nothing to notice
+     * it by."
+     *
+     * **Not the artifact root, which is the obvious wrong answer.** That is
+     * where this service *writes*, and `<root>/claims/<claim id>/` holds other
+     * leases' snapshots of their own pages. An upload root containing it would
+     * let any lease read another lease's snapshot back into a web page — a
+     * cross-lease read, assembled out of two operations that are each harmless
+     * alone.
+     *
+     * A caller that tries `upload` on an installation that has not set this
+     * gets a refusal naming the variable. That refusal is the design working:
+     * it is the one moment anybody will read the sentence explaining that a
+     * capability with filesystem reach exists and is off.
+     */
+    key: 'BROKER_UPLOAD_ROOT',
+    kind: 'optional-path',
   },
   {
     /**
@@ -333,6 +390,16 @@ export interface Environment {
   readonly artifactsRoot: string;
   readonly profileRoot: string;
   /**
+   * Where `upload` may read files from, or **undefined when no operator has
+   * said** — in which case the verb refuses and reads nothing.
+   *
+   * `string | undefined` rather than a string with a sentinel, because "off"
+   * and "a directory" are different answers and a reader that could not tell
+   * them apart would have to invent one of them. Every reader of this field
+   * has to handle the second case, which is the point.
+   */
+  readonly uploadRoot: string | undefined;
+  /**
    * The total tab budget across both browsers (§2.3, §6.2).
    *
    * **This process's belief**, which is not yet known to agree with the
@@ -417,6 +484,36 @@ function readPath(declaration: PathDeclaration, raw: string | undefined, fallbac
   }
   // A null byte cannot appear in a path and every filesystem call would
   // throw on it far from here, naming neither the variable nor the value.
+  if (raw.includes('\0')) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set to a value that is not a filesystem path. Expected a path, found a string containing a null byte.`,
+    );
+  }
+  return path.resolve(raw);
+}
+
+/**
+ * Read a path that has no default: set and readable, or absent.
+ *
+ * The rejections are {@link readPath}'s, for the same reasons — somebody who
+ * wrote the variable meant something by it, and neither blank nor a string
+ * with a null byte is a path. What differs is only the unset case, which here
+ * is an answer rather than a signal to use a default.
+ */
+function readOptionalPath(
+  declaration: OptionalPathDeclaration,
+  raw: string | undefined,
+): string | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (raw.trim() === '') {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set but empty. Expected a filesystem path; unset it to leave the capability it enables switched off.`,
+    );
+  }
   if (raw.includes('\0')) {
     throw new StartupRefusal(
       'config.value_readable',
@@ -696,16 +793,101 @@ function readDeclaration(
   raw: string | undefined,
   home: string,
   platform: NodeJS.Platform,
-): string | number | readonly string[] {
+): string | number | readonly string[] | undefined {
   switch (declaration.kind) {
     case 'path':
       return readPath(declaration, raw, declaration.fallback(home, platform));
+    case 'optional-path':
+      return readOptionalPath(declaration, raw);
     case 'positive-integer':
       return readPositiveInteger(declaration, raw);
     case 'name-list':
       return readNameList(declaration, raw);
     case 'enum':
       return readEnum(declaration, raw);
+  }
+}
+
+/** One directory the upload root must not overlap, and the sentence saying why. */
+interface ReservedLocation {
+  readonly key: string;
+  readonly location: string;
+  readonly why: string;
+}
+
+/**
+ * Does one directory contain the other, either way round?
+ *
+ * Compared on resolved paths, and `path.relative` rather than a string prefix:
+ * `…/broker` and `…/broker-uploads` share a prefix and neither contains the
+ * other, so a `startsWith` test would refuse a configuration that is fine. An
+ * empty relative answer means they are the same directory, which counts.
+ */
+function overlaps(one: string, other: string): boolean {
+  const oneToOther = path.relative(one, other);
+  const otherToOne = path.relative(other, one);
+  const contains = (relative: string): boolean =>
+    relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return contains(oneToOther) || contains(otherToOne);
+}
+
+/**
+ * How a path is compared: as written, and as the filesystem resolves it.
+ *
+ * **Both, because each is blind where the other sees** — the same structure
+ * `src/store/network-path.ts` uses, and for the same reason.
+ *
+ * The lexical form catches the ordinary case and is always meaningful. The
+ * resolved form is what catches a link or a junction making two
+ * lexically-distinct paths one directory, which is the trap the upload guard
+ * exists for, applied here to configuration.
+ *
+ * ── Why a resolved form is only trusted for a path that exists ──────────
+ *
+ * {@link resolveRealPath} answers for the **nearest existing ancestor** of a
+ * path that is not there yet. That is right for the question it was written
+ * for — which volume will this file land on — and wrong for this one: two
+ * sibling directories that do not exist yet both resolve to their shared
+ * parent, and comparing those answers reports an overlap between paths that
+ * do not overlap at all.
+ *
+ * That is not hypothetical. **Every first spawn** has an upload root beside a
+ * profile root that has never been created, and a check that resolved both
+ * would refuse to start on a configuration that is entirely correct. So a
+ * path that does not exist contributes its lexical form only, which is the
+ * exact information available about it.
+ */
+function comparableForms(target: string): readonly string[] {
+  const lexical = path.resolve(target);
+  if (!fs.existsSync(lexical)) {
+    return [lexical];
+  }
+  const resolved = resolveRealPath(lexical);
+  return resolved === lexical ? [lexical] : [lexical, resolved];
+}
+
+/**
+ * Refuse the spawn if the upload root overlaps anything this service owns.
+ *
+ * Every form of one is compared against every form of the other, so an
+ * overlap visible in either the written paths or the resolved ones refuses.
+ */
+function refuseOverlappingUploadRoot(
+  uploadRoot: string,
+  reserved: readonly ReservedLocation[],
+): void {
+  const uploadForms = comparableForms(uploadRoot);
+  for (const entry of reserved) {
+    const reservedForms = comparableForms(entry.location);
+    const overlapping = uploadForms.some((one) =>
+      reservedForms.some((other) => overlaps(one, other)),
+    );
+    if (overlapping) {
+      throw new StartupRefusal(
+        'config.value_readable',
+        `BROKER_UPLOAD_ROOT is ${uploadRoot}, which overlaps ${entry.key} (${entry.location}). ${entry.why} Point BROKER_UPLOAD_ROOT at a directory that holds only files you intend to be uploadable.`,
+      );
+    }
   }
 }
 
@@ -726,7 +908,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
   // declared variable that nothing reads is impossible: every key in the
   // table is resolved here, and the accessors below fail loudly on a key
   // that is not.
-  const resolved = new Map<string, string | number | readonly string[]>();
+  const resolved = new Map<string, string | number | readonly string[] | undefined>();
   for (const declaration of DECLARATIONS) {
     const raw = env[declaration.key];
     resolved.set(declaration.key, readDeclaration(declaration, raw, home, platform));
@@ -746,6 +928,25 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     const value = resolved.get(key);
     if (typeof value !== 'number') {
       throw new Error(`${key} was declared as a number but not resolved as one`);
+    }
+    return value;
+  };
+
+  /**
+   * A declared path that may legitimately be absent.
+   *
+   * Separate from {@link get} rather than a flag on it, because the two have
+   * different notions of a bug: a missing value is an error there and an
+   * answer here, and one function serving both would have to be told which
+   * this call is — which is the declaration's kind, said twice.
+   */
+  const getOptional = (key: string): string | undefined => {
+    const value = resolved.get(key);
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== 'string') {
+      throw new Error(`${key} was declared as an optional path but not resolved as one`);
     }
     return value;
   };
@@ -774,6 +975,44 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
         `${JSON.stringify(name)} is named in both BROKER_REGULAR_BROWSERS and BROKER_PRIVATE_BROWSERS. A browser name is what a caller claims by, so a name in both kinds has no single answer: rename one of them.`,
       );
     }
+  }
+
+  // **The upload root may not overlap anything this service owns**, and this
+  // is checked rather than assumed because the default layout makes the
+  // mistake a natural one to make. `ownDirectory` puts the store, the artefact
+  // root and the profile root under a single parent, so an operator who sets
+  // `BROKER_UPLOAD_ROOT` to that parent — an entirely reasonable-looking thing
+  // to type — makes every browser profile's cookie store and saved-password
+  // database readable into any web page. That is a credential-exfiltration
+  // primitive produced by a plausible typo, so it refuses the spawn.
+  //
+  // **Both directions**, because "the upload root is inside the profile root"
+  // and "the profile root is inside the upload root" are both fatal and only
+  // one of them is the one people picture.
+  //
+  // **On realpath-resolved values**, because two lexically different paths can
+  // be one directory through a link or a junction — which is the same trap the
+  // upload guard itself is built around, applied here to configuration. A
+  // purely lexical comparison would pass while describing nothing true.
+  const uploadRoot = getOptional('BROKER_UPLOAD_ROOT');
+  if (uploadRoot !== undefined) {
+    refuseOverlappingUploadRoot(uploadRoot, [
+      {
+        key: 'BROKER_PROFILE_ROOT',
+        location: get('BROKER_PROFILE_ROOT'),
+        why: "The profile root holds each browser's cookie store and saved passwords, so an upload root overlapping it would let any lease read a credential into a web page.",
+      },
+      {
+        key: 'BROKER_ARTIFACTS_ROOT',
+        location: get('BROKER_ARTIFACTS_ROOT'),
+        why: "The artefact root holds every lease's snapshots and captures, so an upload root overlapping it would let one lease read another lease's page content back into a web page.",
+      },
+      {
+        key: 'BROKER_DB',
+        location: path.dirname(get('BROKER_DB')),
+        why: "The store records every claim and every event, so an upload root overlapping its directory would make the service's own bookkeeping uploadable.",
+      },
+    ]);
   }
 
   // Read after the two lists, because the set of keys **is** a function of
@@ -816,6 +1055,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     configuredDatabasePath: env['BROKER_DB'],
     artifactsRoot: get('BROKER_ARTIFACTS_ROOT'),
     profileRoot: get('BROKER_PROFILE_ROOT'),
+    uploadRoot,
     tabBudget: getNumber('BROKER_TAB_BUDGET'),
     leaseSeconds: getNumber('BROKER_LEASE_SECONDS'),
     queueSeconds: getNumber('BROKER_QUEUE_SECONDS'),

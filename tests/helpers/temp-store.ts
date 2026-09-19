@@ -47,6 +47,15 @@ export interface TempStoreOptions {
    * into another's process.
    */
   readonly browserPaths?: ReadonlyMap<string, string>;
+  /**
+   * Where `upload` may read from, for the tests that exercise the verb.
+   *
+   * **Absent by default, which is what an installation that has configured
+   * nothing has** — and what makes the unconfigured refusal provable: a
+   * fixture supplying a root by default would leave the off state untestable
+   * through this helper, which is the state every existing installation is in.
+   */
+  readonly uploadRoot?: string;
 }
 
 /**
@@ -99,6 +108,8 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       configuredDatabasePath: path.join(directory, 'broker.db'),
       artifactsRoot: path.join(directory, 'artefacts'),
       profileRoot: path.join(directory, 'profiles'),
+      // Undefined unless a test asks otherwise. See the option's own note.
+      uploadRoot: options.uploadRoot,
       // The declared defaults (§6.2). A test that needs a different budget
       // overrides this field rather than reaching for the environment, so
       // one test's ceiling cannot leak into another's process.
