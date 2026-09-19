@@ -1,10 +1,12 @@
-import { recordTabCloseFailed, recordTabClosed } from './arbitration.ts';
+import { recordTabCloseFailed, recordTabClosed, settleUnopenedTab } from './arbitration.ts';
+import { settleStrandedTabs } from './reconcile.ts';
+import { countStrandedTabsFor } from './tabs.ts';
 import type { BrokerService } from '../adapter/service-seam.ts';
 import type { EventAdapter } from './events.ts';
 import { readEnvironment, type Environment } from '../config/environment.ts';
 import { prepareStore, type StoreHandle } from '../store/open.ts';
 import { ArtifactStore } from '../artifacts/store.ts';
-import type { BrowserDriver } from '../browser/driver.ts';
+import type { BrowserDriver, BrowserSession } from '../browser/driver.ts';
 import { browserSessionProvider, type BrowserSessionProvider } from './browser-session.ts';
 import { serviceFor } from './bridge.ts';
 import { createBroker, type Broker } from './broker.ts';
@@ -172,6 +174,60 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     ...(options.driver === undefined ? {} : { driver: options.driver }),
   });
 
+  /**
+   * Settle the stranded backlog, using the tab list this close already needs.
+   *
+   * ── Why here, and why it is not a new verb ──────────────────────────────
+   *
+   * A row stranded at `closing` under a lease that has ended is reachable by
+   * exactly one thing today: `broker reconcile <browser>`, a shell command a
+   * person has to run. So `doctor` reports a permanent red floor and tells an
+   * operator to go and fix by hand something that ordinary operation is
+   * already in a position to settle — a store was found carrying eleven such
+   * rows unchanged across two days, multiple sessions and clean releases.
+   *
+   * The proof that settling is safe is a **live tab list**, and this is a
+   * place the service already holds a session and has just done its close
+   * pass. So the backlog drains as a side effect of the browser being used,
+   * on the identical evidence `broker reconcile` uses, with no new surface.
+   *
+   * **Not at startup**: there is no browser and no tab list there, so it
+   * could only settle on age, which is guessing about pages. **Not on
+   * claim**: that path is latency-sensitive, and the backlog is deliberately
+   * reported as a note rather than acted on there.
+   *
+   * ── The keeper tab, which is the dangerous edge ─────────────────────────
+   *
+   * `listTabs` excludes the keeper (§3.15), so a row naming it would look
+   * absent from the list and be settled. That is safe *here* and would not be
+   * safe in a close path: settlement writes a row to `closed` and never asks
+   * a browser to end a page, so the worst case is a database row that stops
+   * describing the keeper — not a closed keeper and a dead browser. Nothing
+   * on this path is handed a driver name to act on.
+   *
+   * Gated on a count first, so a healthy store pays one indexed read and no
+   * round trip. Failures are swallowed for the reason §2.4b gives: the
+   * capacity is already back, and failing a release over a bookkeeping pass
+   * would fail a call that did its job.
+   */
+  const drainStrandedTabs = async (browserId: string, session: BrowserSession): Promise<void> => {
+    try {
+      if (countStrandedTabsFor(store.db, browserId, environment.leaseSeconds) === 0) {
+        return;
+      }
+      const pages = await session.listTabs();
+      settleStrandedTabs(
+        store.db,
+        browserId,
+        pages.map((page) => page.driverTabId),
+        new Date().toISOString(),
+      );
+    } catch {
+      // A backlog that did not drain is still reported by `doctor`, and the
+      // release this rode in on has already succeeded.
+    }
+  };
+
   const broker = createBroker({
     store,
     environment,
@@ -195,6 +251,43 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
       const session = await browsers.session(tab.browserId);
       const opened = await resolveDriverTab(store.db, tab.tabId);
       if (opened === undefined) {
+        // **A row with no driver name is settled here, not left behind.**
+        //
+        // This used to return without calling either recorder, which left the
+        // row at `closing` — the state meaning "the tool was asked and has not
+        // answered" — with `close_attempts` at zero, forever. Nothing later
+        // could reach it: the vanished-page path reads only tabs of *active*
+        // leases, and this lease has ended. That is a leak with the same
+        // fingerprint as the one `recordTabClosed` was written to fix, and it
+        // survived that fix because it never reaches the recorders at all.
+        //
+        // ── Which `undefined` this actually is ────────────────────────────
+        //
+        // `resolveDriverTab` answers `undefined` for two different stores: a
+        // row whose `driver_tab_id` is null, and **no row at all**. Only the
+        // second can arrive here, and the schema is what decides that:
+        // `step-004-tab-never-opened.ts` CHECKs that a live row must say
+        // whether it has a driver name —
+        //
+        //   state NOT IN ('opening','open','closing')
+        //   OR (state = 'opening') = (driver_tab_id IS NULL)
+        //
+        // — so `closing` with a null name cannot exist, and `closing` is
+        // exactly what `updateSweptTabs` selects the rows handed here. The
+        // null-name case belongs to `opening`, which that function settles
+        // straight to `closed` without ever passing through `closing`.
+        //
+        // So this branch means the row is gone: deleted, or never written.
+        // There is no page to ask about and nothing to wait for either way.
+        //
+        // Settled to `closed` rather than recorded as a failure because
+        // `close_failed = 1` means a browser said the page is still there,
+        // and no browser said anything here. The UPDATE is a no-op when the
+        // row is genuinely absent, which is the common case and is harmless
+        // — it is written so that a row present but unresolvable for any
+        // other reason is still settled rather than left waiting forever.
+        settleUnopenedTab(store.db, tab.tabId, new Date().toISOString());
+        await drainStrandedTabs(tab.browserId, session);
         return;
       }
       // **The answer is written down either way.** `closing` means "the tool
@@ -238,6 +331,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
       } catch {
         recordTabCloseFailed(store.db, tab.tabId, new Date().toISOString());
       }
+      await drainStrandedTabs(tab.browserId, session);
     },
   });
 
