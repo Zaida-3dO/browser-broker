@@ -230,13 +230,61 @@ export function isPageAction(action: unknown): action is PageAction {
   return typeof action === 'string' && (PAGE_ACTIONS as readonly string[]).includes(action);
 }
 
-/** An element reference, refused when it is absent or empty. */
+/**
+ * The shape of a reference a snapshot mints.
+ *
+ * **The optional `f<n>` prefix is the whole reason this is not `/^e\d+$/`.**
+ * The automation library mints an identifier as `refPrefix + "e" + n`, where
+ * `refPrefix` is `"f" + frameSeq` for anything inside an iframe and empty
+ * otherwise, and its own resolver matches `/^f(\d+)e\d+$/` for the framed
+ * case. So `e14` and `f1e23` are both references this service will resolve,
+ * and a check that recognised only the unframed form would refuse every
+ * reference to an element in an iframe — turning a message that misdiagnoses
+ * into a refusal that is simply wrong, which is worse.
+ */
+const REF_SHAPE = /^(?:f\d+)?e\d+$/u;
+
+/** How much of a caller's value a refusal quotes back before cutting it off. */
+const REF_ECHO_LIMIT = 24;
+
+/** A caller's value, shortened so the refusal names it without reprinting it. */
+function echoRef(value: string): string {
+  return value.length > REF_ECHO_LIMIT ? `${value.slice(0, REF_ECHO_LIMIT)}...` : value;
+}
+
+/**
+ * An element reference, refused when it is absent, empty, or not a reference
+ * at all.
+ *
+ * ── Why the shape is checked here rather than at resolution ──────────────
+ *
+ * A caller passed a CSS selector as a reference and was told, at length, that
+ * references go stale — so they re-read the page repeatedly, with the message
+ * endorsing a hypothesis that was never true. The two failures look identical
+ * at the point of resolution, where all that is known is that nothing
+ * matched; they are plainly different *here*, where the value itself is still
+ * in hand and a selector does not have the shape of a reference.
+ *
+ * So this is a conventional refusal, which is what {@link validateAction} is
+ * for: it is answered from the argument alone, and answering it here means no
+ * tab is touched and the driver is never asked. What remains at the
+ * resolution site is genuine staleness — a well-formed reference to an
+ * element that has since gone — and its message is free to explain staleness
+ * because by then staleness is the only thing left to explain.
+ */
 function requireRef(value: unknown, field: string, action: PageAction): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new PageRefusal(
       'act.ref_required',
       `The "${action}" action addresses an element, so it needs ${field} — a reference taken from the tab's most recent snapshot.`,
       { action, field },
+    );
+  }
+  if (!REF_SHAPE.test(value.trim())) {
+    throw new PageRefusal(
+      'act.ref_shaped',
+      `"${echoRef(value.trim())}" is not an element reference. A reference is a handle a snapshot minted — the value in [ref=...] on a line of the accessibility tree, like e14 or f1e23 — and never a selector composed by the caller. Read the page (browser_read with what: "snapshot") and use a [ref=...] value from it.`,
+      { action, field, [field]: value },
     );
   }
   return value;
@@ -509,6 +557,16 @@ export function validateAction(raw: unknown): ActionRequest {
               'act.ref_required',
               `Field ${String(index)} of the batch fill needs an element reference taken from the tab's most recent snapshot.`,
               { action, index },
+            );
+          }
+          // The same shape gate as {@link requireRef}, because a selector
+          // passed here is the same caller mistake and deserves the same
+          // answer rather than a staleness story from the resolution site.
+          if (!REF_SHAPE.test(entry.ref.trim())) {
+            throw new PageRefusal(
+              'act.ref_shaped',
+              `Field ${String(index)} of the batch fill carries "${echoRef(entry.ref.trim())}", which is not an element reference. A reference is a handle a snapshot minted — the value in [ref=...] on a line of the accessibility tree, like e14 or f1e23 — and never a selector composed by the caller. Read the page (browser_read with what: "snapshot") and use a [ref=...] value from it.`,
+              { action, index, ref: entry.ref },
             );
           }
           if (typeof entry.value !== 'string') {

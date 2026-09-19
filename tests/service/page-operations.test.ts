@@ -412,7 +412,7 @@ test('act turns loose arguments into one of the thirteen, and refuses the rest',
     const result = await fixture.broker.act({
       key: lease.key,
       tabId: lease.tabId,
-      request: { action: 'click', ref: 'a-ref' },
+      request: { action: 'click', ref: 'e1' },
       session: () => driver.session,
     });
 
@@ -434,6 +434,32 @@ test('act turns loose arguments into one of the thirteen, and refuses the rest',
       ['openTab', 'act:click'],
       'the invalid action still reached the driver',
     );
+  });
+});
+
+test('a selector passed as a reference is refused before the driver is asked', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await grantedLease(fixture);
+    const driver = recordingSession();
+
+    // A conventional refusal is answered from the argument alone, so the
+    // physical side-effect is the assertion: no tab is opened and no click is
+    // attempted. A guard that refused only once the page had been driven
+    // would be the defect it is meant to prevent.
+    await assert.rejects(
+      fixture.broker.act({
+        key: lease.key,
+        tabId: lease.tabId,
+        request: { action: 'click', ref: '[data-gandalf-target="branchpicker"]' },
+        session: () => driver.session,
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        /is not an element reference/.test(error.message) &&
+        !/stale/i.test(error.message),
+    );
+
+    assert.deepEqual(driver.calls, [], 'the driver was asked to act despite the refusal');
   });
 });
 
@@ -859,7 +885,7 @@ test('an ended lease cannot drive its tab, and the driver is never asked', async
       fixture.broker.act({
         key: lease.key,
         tabId: lease.tabId,
-        request: { action: 'click', ref: 'a-ref' },
+        request: { action: 'click', ref: 'e1' },
         session: () => driver.session,
       }),
       (error: unknown) => error instanceof CallRefusal && error.code === 'lease_ended',

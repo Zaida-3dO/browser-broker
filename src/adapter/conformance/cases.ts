@@ -374,7 +374,10 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     name: 'act: a named verb is performed',
     operation: 'act',
     seed: withALiveLease,
-    input: { action: 'click', target: 'the-button' },
+    // A reference in the shape a snapshot mints, because `act.ref_shaped`
+    // refuses anything else before the verb is reached — a placeholder that
+    // was never a reference would make this accepted case a refused one.
+    input: { action: 'click', target: 'e14' },
     expect: { outcome: 'accepted' },
   },
   {
