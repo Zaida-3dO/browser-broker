@@ -13,11 +13,17 @@ import { chromium } from 'playwright-core';
  * problem wearing a green tick — so when these tests do not run, they say so
  * by name, and the reason appears in the output.
  *
- * **Continuous integration runs on hosted runners with no browser installed
- * and no display**, so the browser suites are skipped there and run locally.
- * That is recorded plainly here and in each suite, because the failure mode
- * this avoids is somebody reading a green pipeline as evidence that the
- * keeper-tab test passed when it never executed.
+ * **These suites are run locally. Continuous integration cannot cold-start a
+ * browser, and that is a decision rather than a gap** — see
+ * `scripts/check-browser-tests.mjs` for the measurement and the four options
+ * weighed. In short: hosted runners forbid the sandbox the browser needs, and
+ * the only way past it removes the browser's process isolation on a machine
+ * that executes untrusted pull-request code. That trade was declined.
+ *
+ * So the practical rule for anyone changing the browser path: **run these
+ * suites on your own machine before merging.** A green pipeline is not
+ * evidence that they passed — the hosted job proves only that they were not
+ * silently skipped, which is a weaker and different claim.
  */
 
 /**

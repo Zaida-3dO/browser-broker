@@ -57,8 +57,35 @@
  * test can supply it — it needs a deliberate change where the launch
  * arguments are built. And it is a real trade rather than a formality:
  * `--no-sandbox` removes the browser's own process isolation on a runner
- * that executes untrusted pull-request code. That decision belongs to
- * whoever owns the launch path, recorded as a decision.
+ * that executes untrusted pull-request code.
+ *
+ * ── THE DECISION: hosted runners stay unable to cold-start (2026-09-19) ──
+ *
+ * Four options were weighed, and this one was chosen deliberately. It is
+ * written down so that nobody re-opens it by accident, and so the next person
+ * to find a red job knows this is the intended state rather than neglect.
+ *
+ * | Option | Why not |
+ * |---|---|
+ * | An opt-in flag only the workflow sets | Puts a sandbox-disabling switch into a **public** repository permanently, where its narrow intent is the first thing to be forgotten |
+ * | Relax the kernel restriction before launching | The same weakening as the flag, but invisible — nothing in the argv records that the protection was dropped, which is strictly worse |
+ * | A self-hosted runner | The only option that trades nothing away. Real money and real maintenance; revisit if that changes |
+ * | **Leave hosted runners unable to cold-start** ← chosen | Verifies no browser behaviour. Accepted, because the value already banked is the part that was missing |
+ *
+ * **What was banked:** before this, forty-seven tests could skip and still
+ * render a green tick. That is now impossible. The gate below does not verify
+ * the browser works — it verifies that nobody can claim it was checked when it
+ * was not. Those are different guarantees, and only the second was ever on
+ * offer here.
+ *
+ * **What it costs:** real browser behaviour is proven on developer machines
+ * and nowhere else. So a change to the launch, close or capture path must be
+ * validated locally — `npm run check:browser-tests` on a machine with a
+ * browser — before it merges. Treat a green hosted job as silence on that
+ * question, not as an answer.
+ *
+ * Revisit if the repository stops accepting outside pull requests, or if a
+ * self-hosted runner becomes worth its upkeep — both change the arithmetic.
  *
  * **So what is this gate worth?** It is worth the thing that was
  * missing: a hosted runner that *installs a browser, runs these

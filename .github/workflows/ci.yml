@@ -342,14 +342,29 @@ jobs:
   # `scripts/check-browser-tests.mjs` rather than left as an absence nobody
   # can see.
   #
-  # ── Not a required check on day one ────────────────────────────────────
+  # ── Advisory, and it stays advisory until the launch path changes ──────
   #
-  # `continue-on-error` is set deliberately for the first soak: a browser job
-  # on a hosted runner has no track record here, and the honest way to earn a
-  # required check is to watch it be green on its own for a while first. It
-  # still reports, and its failures are still visible. REMOVE THIS ONCE THE
-  # JOB HAS PROVED STEADY, and add it to the required set — a permanently
-  # advisory gate is a gate nobody has to obey.
+  # `continue-on-error` is set because THIS JOB IS EXPECTED TO BE RED, and
+  # that is a recorded decision, not a backlog item: a hosted runner forbids
+  # the sandbox the browser needs, and the only way past it removes the
+  # browser's process isolation on a machine that runs untrusted pull-request
+  # code. The measurement and the four options weighed are in
+  # `scripts/check-browser-tests.mjs`; the choice was to decline that trade.
+  #
+  # ⚠️ DO NOT REMOVE `continue-on-error` TO TIDY THIS UP. Until a browser can
+  # cold-start here, doing so turns every pull request red for a reason no
+  # author can act on — and the predictable next step is that someone deletes
+  # the job, which costs the one guarantee it does provide: that these suites
+  # cannot silently skip and still show a green tick.
+  #
+  # What the job is worth as it stands: it proves the tests RAN. It does not
+  # prove the browser works — that is proven locally, and must be, before any
+  # change to the launch, close or capture path merges.
+  #
+  # Make it required when, and only when, the ceiling in
+  # `check-browser-tests.mjs` reaches 0 — a self-hosted runner, or a
+  # deliberate change to how launch arguments are built. The falling ceiling
+  # is the signal; nothing else is.
   browser-tests:
     name: browser-tests
     runs-on: ubuntu-latest
