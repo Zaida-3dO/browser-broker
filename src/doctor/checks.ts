@@ -531,14 +531,13 @@ export function checkDiscoveryRecord(
   const id = `browser.${browser}.discovery`;
   const title = `The ${browser} browser’s discovery record checks out`;
 
-  // **Not probed is not the same as probed and absent**, and this parameter
-  // used to be unable to say so: the caller defaulted a missing probe to
-  // `{recorded: false}`, which is a measurement nobody took. The two states
-  // read alike on this row — both `unknown` — but they do not read alike
-  // downstream, where the sign-in check treats *no browser running* as
-  // grounds for a negative verdict. The `boolean | undefined` convention
-  // `checkKeeperTab` and `checkAutomation` already use is the one that keeps
-  // the difference.
+  // **Not probed is not the same as probed and absent.** Substituting
+  // `{recorded: false}` for a probe nobody supplied reports a measurement
+  // nobody took. The two states read alike on this row — both `unknown` —
+  // but they do not read alike downstream, where the sign-in check treats
+  // *no browser running* as grounds for a negative verdict. The
+  // `boolean | undefined` convention `checkKeeperTab` and `checkAutomation`
+  // use is the one that keeps the difference.
   if (probe === undefined) {
     return {
       group: 'browsers',

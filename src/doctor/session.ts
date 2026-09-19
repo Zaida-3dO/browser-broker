@@ -86,10 +86,11 @@ export const COOKIE_STORE_RELATIVE: readonly string[] = ['Default', 'Network', '
  *
  * ── Why this is a list and not the single path above ────────────────────
  *
- * Chromium moved the cookie store under `Default/Network/` in M96. Both
- * layouts are real and both are current somewhere: a profile built by a
- * recent build has the first, a profile built by an older one — or carried
- * forward from before the move — has the second. A check that knows only one
+ * Chromium keeps the cookie store under `Default/Network/` from M96 onward
+ * and directly under `Default/` before it. Both layouts are real and both are
+ * in use: which one a profile has depends on the Chromium version that built
+ * it, and a profile carried across the boundary keeps what it had. A check
+ * that knows only one
  * of them does not report "I looked in one place"; it reports **the profile
  * has never been used**, which is a statement about the world drawn from a
  * statement about one path. That is the defect this list exists to fix, and
@@ -128,9 +129,9 @@ export interface SessionProbe {
   /**
    * How many stored cookies were counted, when counting was possible.
    *
-   * **Absent whenever no store was opened.** A zero here used to be set on
-   * the branch where the file was never found, which reads as a measurement
-   * and is not one — the same overstatement as the prose that accompanied it.
+   * **Absent whenever no store was opened.** A zero set on a branch that
+   * never found a file to read reads as a measurement and is not one, which
+   * is the same overstatement in a number that prose can make in words.
    */
   readonly cookieCount?: number;
   /**
@@ -138,9 +139,10 @@ export interface SessionProbe {
    * directory.
    *
    * Reported because naming the file is what lets somebody check the answer
-   * against their own machine — the reporter of this check's original defect
-   * could not tell which path had been looked in. **Relative, never
-   * absolute**: §1.7a's rule is that no absolute path is stored or emitted.
+   * against their own machine. A verdict about a profile that does not say
+   * which path it read leaves a person with no way to tell a real negative
+   * from a check looking in the wrong place. **Relative, never absolute**:
+   * §1.7a's rule is that no absolute path is stored or emitted.
    */
   readonly storeRelativePath?: string;
   /** Why the answer is not a plain yes or no. Always set when it is not. */
@@ -337,7 +339,7 @@ export function inspectProfileSession(
       evidence: 'undetermined',
       cookieCount: 0,
       storeRelativePath: store.relative,
-      reason: `The stored cookie count at ${store.relative} is zero, and nothing established whether a browser is currently running against this profile. A zero means the store has nothing flushed yet while a browser is live, and means no session is stored once one has exited — so without that answer the count does not distinguish the two.${alsoNote}`,
+      reason: `The stored cookie count at ${store.relative} is zero, and nothing established whether a browser is running against this profile. A zero means the store has nothing flushed yet while a browser is live, and means no session is stored once one has exited — so without that answer the count does not distinguish the two.${alsoNote}`,
     };
   }
 

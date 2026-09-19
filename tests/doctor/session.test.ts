@@ -241,13 +241,12 @@ test('A PROFILE WITH NO COOKIE STORE CONCLUDES NOTHING, AND CLAIMS NOTHING ABOUT
   }
 });
 
-test('THE LEGACY PRE-M96 LAYOUT IS FOUND — the reporter’s machine', () => {
+test('THE PRE-M96 LAYOUT IS FOUND, AND IS A SESSION LIKE ANY OTHER', () => {
   const profile = temporaryProfile('regular');
   try {
-    // Only `Default/Cookies`. This is the layout Chromium used before M96 and
-    // the one the person who reported the defect actually had; it was
-    // reported as "no browser has ever run against this profile" while being
-    // signed in.
+    // Only `Default/Cookies`, the layout Chromium uses before M96. A check
+    // that looks only under `Default/Network/` finds nothing here and calls a
+    // signed-in profile unused.
     writeStoreAt(profile.directory, LEGACY_LAYOUT);
 
     const probe = inspectProfileSession(profile.root, 'regular', {
@@ -337,10 +336,10 @@ test('ORDERING IS PINNED: a modern store holding zero beats a legacy one holding
     });
 
     // **This is the assertion that pins the order rather than merely
-    // exercising it.** Read the legacy store first, or sum the two, and this
-    // reports `session-present` from five stale rows that the live browser
-    // has already migrated away from. The live store says zero, so the answer
-    // is the negative.
+    // exercising it.** Read `Default/Cookies` first, or sum the two, and this
+    // reports `session-present` from five rows the browser in use has already
+    // migrated away from. The store the browser writes to says zero, so the
+    // answer is the negative.
     assert.equal(probe.evidence, 'no-session-found');
     assert.equal(probe.storeRelativePath, 'Default/Network/Cookies');
   } finally {

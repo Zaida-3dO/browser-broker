@@ -331,9 +331,10 @@ describe('turning discovery records into probes', () => {
 
 describe('whether a browser is running, in three values', () => {
   it('SEPARATES unasked from measured-not-running, which a boolean cannot', () => {
-    // This is the expression whose collapse to `boolean` shipped the defect:
-    // with no probe, the old `recorded === true && answered === true` yielded
-    // `false`, and `false` is what licenses the negative sign-in verdict.
+    // Collapsing this to a `boolean` is what produces the defect: an
+    // expression of the form `recorded === true && answered === true` yields
+    // `false` when no probe was supplied, and `false` is what licenses the
+    // negative sign-in verdict.
     assert.equal(browserIsRunning(undefined), undefined, 'no probe was read as a measurement');
     assert.equal(
       browserIsRunning({ recorded: true }),
