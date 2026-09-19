@@ -373,8 +373,9 @@ export function checkStrandedTabs(
   //
   // So each population is counted by its own predicate, and a row belonging
   // to neither is counted in the total and escalated by neither.
-  // The fallback is the whole entry: a breakdown carrying no provenance at
-  // all is the pre-split shape, and its rows are read the way they used to be.
+  // The fallback is the whole entry: a breakdown that reports no provenance
+  // at all cannot distinguish its rows, so they are all escalated — the
+  // reading that errs toward being looked at.
   const closeFailed = byBrowser.reduce(
     (total, entry) =>
       total + (entry.closeFailed ?? (entry.neverAttempted === undefined ? entry.stranded : 0)),
@@ -416,8 +417,8 @@ export function checkStrandedTabs(
 
   // At least one browser was asked and said the page is still there. The
   // original incident, and the confident wording is correct for it.
-  // The remainder is the third population — asked at least once, not
-  // currently flagged as refused. It is reported as part of the unestablished
+  // The remainder is the third population — asked at least once, and not
+  // flagged as refused. It is reported as part of the unestablished
   // group rather than dropped: a detail whose parts do not add up to its own
   // total is the kind of thing that sends a reader looking for a bug in the
   // instrument instead of at the finding.

@@ -179,10 +179,10 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
    *
    * ── Why here, and why it is not a new verb ──────────────────────────────
    *
-   * A row stranded at `closing` under a lease that has ended is reachable by
-   * exactly one thing today: `broker reconcile <browser>`, a shell command a
-   * person has to run. So `doctor` reports a permanent red floor and tells an
-   * operator to go and fix by hand something that ordinary operation is
+   * A row stranded at `closing` under a lease that has ended is otherwise
+   * reachable by exactly one thing: `broker reconcile <browser>`, a shell
+   * command a person has to run. Without this, `doctor` reports a permanent
+   * red floor and tells an operator to fix by hand something ordinary use is
    * already in a position to settle — a store was found carrying eleven such
    * rows unchanged across two days, multiple sessions and clean releases.
    *

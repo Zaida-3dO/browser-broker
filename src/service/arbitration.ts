@@ -791,7 +791,7 @@ export function recordTabClosed(db: Database, tabId: string, at: string): void {
 /**
  * Settle a row whose page was never resolvable, so nothing can be asked.
  *
- * ── The third outcome, which used to be written down as nothing ─────────
+ * ── The third outcome a close can have ──────────────────────────────────
  *
  * {@link recordTabClosed} and {@link recordTabCloseFailed} both answer the
  * question *"what did the browser say"*. This one is for the case where the
