@@ -997,7 +997,7 @@ export function validateExpression(expression: unknown): string {
   if (bytes > MAX_EXPRESSION_BYTES) {
     throw new PageRefusal(
       'evaluate.expression_bounded',
-      `That expression is ${String(bytes)} bytes and the limit is ${String(MAX_EXPRESSION_BYTES)}. This evaluates an expression in the page — a measurement, a computed style, some geometry — rather than running a program.`,
+      `That expression is ${String(bytes)} bytes of source and the limit is ${String(MAX_EXPRESSION_BYTES)}. The limit is on the code, not on data the expression fetches — a short expression can move a file of any size over the network. This evaluates an expression in the page — a measurement, a computed style, some geometry — rather than running a program.`,
       { bytes, maximumBytes: MAX_EXPRESSION_BYTES },
     );
   }
