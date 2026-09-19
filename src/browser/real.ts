@@ -500,6 +500,110 @@ export function filterSnapshot(snapshot: string, find: SnapshotFilter): string {
 }
 
 /**
+ * The smallest number of lines a snapshot must have before its lack of
+ * references is worth remarking on.
+ *
+ * `about:blank` and a page whose body has not arrived yet render as nothing or
+ * near enough, and **a document with no content has no references for an
+ * entirely uninteresting reason**. Saying "none of these lines carries a
+ * reference" about two lines of empty document is noise dressed as a finding,
+ * and the hint's whole value is that it only appears when something is
+ * genuinely worth a caller's attention. So a tree this short is left alone:
+ * the snapshot is already short enough to read in full, which answers the
+ * question faster than any hint could.
+ */
+const REFLESS_HINT_MIN_LINES = 3;
+
+/**
+ * The opening words of {@link filterSnapshot}'s no-match message.
+ *
+ * That message is prose rather than a tree, so it carries no reference and
+ * would otherwise attract the hint below — stacking two notices about one
+ * miss, both telling the caller to read again without `find`. It already
+ * explains itself and names its own way out, so it is recognised and left
+ * alone. Matched on the opening rather than the whole text because the line
+ * count is interpolated into it.
+ */
+const NO_MATCH_MESSAGE_OPENING = 'No line of the accessibility tree matched ';
+
+/**
+ * Say so when a snapshot carries nothing that can be acted on.
+ *
+ * ── The failure this exists to prevent ──────────────────────────────────
+ *
+ * A caller reads a page, gets back six hundred lines of tree, searches it for
+ * the control they can see in a screenshot, and finds nothing. The reasonable
+ * conclusion — *my search is wrong* — is the expensive one: one caller spent
+ * twenty minutes rewriting `find` patterns against a snapshot that could not
+ * have answered any of them, then abandoned `browser_act` for the rest of a
+ * five-hour session. The snapshot was not empty, so nothing about it looked
+ * like a failure. It simply had nothing to act **with**.
+ *
+ * This is the same misleading-evidence class {@link filterSnapshot} handles
+ * for a `find` that matched nothing, and it is answered the same way: in the
+ * artefact, where the caller is already looking.
+ *
+ * ── Why the test is `[ref=` and not a list of roles ─────────────────────
+ *
+ * The tempting gate is "no button, no link, no textbox" — and it is the wrong
+ * one twice over. It bakes in a list of role names that goes stale as the
+ * rendering changes, and more importantly it asks a question nobody has. What
+ * a caller needs from a snapshot is **a reference to hand to `browser_act`**,
+ * and `[ref=` is exactly, and only, what mints one. A tree full of named
+ * regions and headings with no reference anywhere in it is unusable for
+ * acting no matter how many roles it names; a tree with a single
+ * `[ref=e1]` is usable. So the gate is the thing the caller actually
+ * consumes.
+ *
+ * ── Why it asserts nothing about the cause, which is the point ──────────
+ *
+ * There are several honest explanations — a `find` that a shell mangled, a
+ * narrowed read, a page still building, a genuinely reference-free
+ * rendering — and **this cannot tell which**. A hint that guessed would be
+ * the same defect it is fixing: confident evidence pointing somewhere wrong.
+ * So it reports what was observed (a snapshot, a line count, no references)
+ * and stops. Naming the observation without inventing the cause is the whole
+ * deliverable; the words "broken", "degenerate" and "not exposing" do not
+ * appear here on purpose, and a test pins their absence.
+ *
+ * ── What it offers instead ──────────────────────────────────────────────
+ *
+ * The route that needs no reference at all: `press` without a target goes to
+ * whatever the page has focused, and an AI-mode snapshot marks that node
+ * `[active]`. That is a real way to drive a page from here, and a caller
+ * with no reference has no way to discover it from the refusals, which only
+ * ever say a reference is required.
+ *
+ * The hint is appended rather than prepended so the tree still begins where a
+ * reader expects it to, and so a caller reading only the head of a long file
+ * sees unchanged content. A snapshot that does carry a reference is returned
+ * **byte for byte** as it arrived.
+ */
+export function annotateRefless(snapshot: string): string {
+  if (snapshot.includes('[ref=')) return snapshot;
+  if (snapshot.startsWith(NO_MATCH_MESSAGE_OPENING)) return snapshot;
+
+  const lines = snapshot.split('\n');
+  // Blank lines are not content, and a "document" of three empty lines should
+  // count as the empty page it is rather than clearing the bar on whitespace.
+  const populated = lines.filter((line) => line.trim() !== '').length;
+  if (populated < REFLESS_HINT_MIN_LINES) return snapshot;
+
+  return (
+    `${snapshot}\n\n` +
+    `No line of this snapshot carries a reference to act on. ` +
+    `It was taken and has ${String(populated)} lines, and none of them contains a [ref=…] ` +
+    `handle, which is what browser_act takes as its target. ` +
+    `This says what is in the snapshot, not why — a narrowed read, a page still building ` +
+    `and a page that renders no references all look like this from here. ` +
+    `If you read with find, read again without it to see the whole tree. ` +
+    `To act without a reference: press with no target sends the key to whatever the page has ` +
+    `focused, and the focused node is marked [active] in a snapshot — so Tab to move focus, ` +
+    `read, and check which line carries [active].`
+  );
+}
+
+/**
  * How the next native dialog on a page will be answered.
  *
  * ── Why this is a standing disposition and not "answer the dialog up now" ──
@@ -1589,6 +1693,13 @@ class RealBrowserSession implements BrowserSession {
    * A `find` narrows what is **written to the file**. The return is a path
    * either way — see {@link filterSnapshot} for why filtering happens here,
    * at the last moment before the write, rather than anywhere earlier.
+   *
+   * {@link annotateRefless} runs **after** the narrowing, on whatever is about
+   * to be written, because that is the text the caller will actually read. A
+   * `find` can match lines that carry no reference at all, and a hint computed
+   * against the unfiltered tree would stay silent about precisely the file
+   * that needed it — the caller cannot act on references the file does not
+   * contain, whoever narrowed it away.
    */
   async #writeSnapshot(tab: TabHandle, page: Page, find?: SnapshotFilter): Promise<ArtifactResult> {
     const snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
@@ -1597,12 +1708,8 @@ class RealBrowserSession implements BrowserSession {
     // no query of its own. Worth stating because the cost is not what a
     // caller might assume — `find` saves the caller's context window, not the
     // browser's work.
-    return this.#write(
-      tab,
-      'snapshot',
-      page.url(),
-      find === undefined ? snapshot : filterSnapshot(snapshot, find),
-    );
+    const narrowed = find === undefined ? snapshot : filterSnapshot(snapshot, find);
+    return this.#write(tab, 'snapshot', page.url(), annotateRefless(narrowed));
   }
 
   /**
