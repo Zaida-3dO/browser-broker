@@ -311,6 +311,9 @@ test('the action list is the fixed set §3.8 names, with no way to move the fore
       // transcripts.
       'fill_form',
       'drag',
+      // The one interaction a page cannot be made to perform on itself, and
+      // the only verb that moves data from this machine into a page.
+      'upload',
     ],
   );
   // `foreground.never_moved` (`SCHEMA.md` §7.3) is a build rule and not this

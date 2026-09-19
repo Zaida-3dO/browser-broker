@@ -176,6 +176,14 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
           'For fill_form, one field to fill. Repeat it once per field; only the first = ' +
           'separates, so a value may contain one.',
       },
+      {
+        flag: '--path <file>',
+        summary:
+          'For upload, one file to attach, named relative to the configured upload root ' +
+          '(BROKER_UPLOAD_ROOT). Repeat it once per file. An absolute path, a drive letter or ' +
+          'anything resolving outside that root is refused; so is a link inside it pointing ' +
+          'out. Target the file input or the visible label around it.',
+      },
     ],
   },
   {

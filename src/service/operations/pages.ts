@@ -6,6 +6,7 @@ import type {
   NavigationResult,
   ReadArtifact,
   TabHandle,
+  ValidatedAction,
 } from '../../browser/driver.ts';
 import { append, type EventKind } from '../events.ts';
 import { claimIdForKey, extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
@@ -19,6 +20,7 @@ import {
   resolveSnapshotFilter,
   validateAction,
   validateExpression,
+  PageRefusal,
   validateNavigationTarget,
   validateNavigationWait,
 } from '../pages.ts';
@@ -40,6 +42,7 @@ import { captureSource } from '../capture-seam.ts';
 import { insertComparison } from '../comparison-store.ts';
 import { runComparison, type ComparisonResult } from '../comparison.ts';
 import { DEFAULT_DIFF_SETTINGS, type DiffSettings } from '../../diff/settings.ts';
+import { readUploadFiles } from '../../uploads/resolve.ts';
 
 /**
  * The six tab-addressed operations, joined to the arbitration transaction.
@@ -745,6 +748,21 @@ export function decideNavigate(
 
 export interface ActInput extends TabOperationInput {
   readonly request: unknown;
+  /**
+   * Where `upload` may read files from, or **undefined when no operator has
+   * configured one** — in which case `upload` refuses and reads nothing.
+   *
+   * Handed in rather than read from the environment here, for the reason
+   * `broker.ts` gives about the arbitration settings: a second snapshot taken
+   * at a different instant would let two rules inside one operation see two
+   * configurations. It is also what makes the refusal testable without a
+   * process environment — a test proving that an unconfigured root refuses
+   * must not depend on what happens to be set on the machine running it.
+   *
+   * Every other verb ignores it. That is the same arrangement `artifacts` has,
+   * and it is preferable to a separate input type per verb.
+   */
+  readonly uploadRoot?: string | undefined;
 }
 
 export interface ActResult extends TabOperationResult {
@@ -823,6 +841,50 @@ export const EMULATION_SCOPE_NOTE =
   'connection spans the calls.';
 
 /**
+ * Turn a validated request into the one a driver can be handed, reading an
+ * upload's files on the way.
+ *
+ * Every other verb passes through untouched, because for every other verb the
+ * two shapes are already the same thing. `upload` is where a caller's names
+ * become bytes, and this is the only place that conversion happens — the
+ * driver seam has no variant that carries a name, so there is no second route.
+ *
+ * ── Why the read happens before `admit` rather than after the commit ────
+ *
+ * The rule this file keeps is that **browser** work happens after the
+ * transaction commits (§2.4b), and the read is not browser work — it touches
+ * this machine's filesystem and no connection. Doing it here means a refusal
+ * from the containment guard behaves like every other conventional refusal:
+ * no lease renewed, no event appended, no tab reached. Doing it in the
+ * after-commit closure would have appended an `act` event describing an upload
+ * that then refused, which is a ledger row for something that did not happen.
+ *
+ * What it costs is that an upload reads its files before it knows the tab is
+ * still owned, so a caller whose lease has lapsed pays for a read that is then
+ * thrown away. That is bounded by the size caps and it is the cheaper of the
+ * two mistakes.
+ */
+function resolveActionFiles(
+  validated: ValidatedAction,
+  uploadRoot: string | undefined,
+): ActionRequest {
+  if (validated.action !== 'upload') {
+    return validated;
+  }
+  // Established by the caller, which refuses before reaching here when no
+  // root is configured. A throw rather than a refusal: reaching this with no
+  // root would be a bug in this file, not something a caller did.
+  if (uploadRoot === undefined) {
+    throw new Error('an upload reached the resolver with no upload root configured');
+  }
+  return {
+    action: validated.action,
+    ref: validated.ref,
+    files: readUploadFiles(uploadRoot, validated.paths),
+  };
+}
+
+/**
  * `act` (§3.6) — one interaction against an owned tab.
  *
  * The argument shape is turned from `unknown` into the driver's discriminated
@@ -830,7 +892,23 @@ export const EMULATION_SCOPE_NOTE =
  * no cast, and thirteen actions each with their own required fields.
  */
 export function decideAct(scope: ArbitrationScope, input: ActInput): ArbitrationOutcome<ActResult> {
-  const request = validateAction(input.request);
+  const validated = validateAction(input.request);
+
+  // **`upload` is refused for an unconfigured root before `admit`**, with
+  // everything else it needs, so that a caller on an installation where the
+  // verb is switched off is told so without a lease being renewed, an event
+  // being appended or a tab being reached. That ordering is this file's rule
+  // for every conventional refusal and it is not relaxed for the one verb
+  // that needs configuration to answer.
+  if (validated.action === 'upload' && input.uploadRoot === undefined) {
+    throw new PageRefusal(
+      'act.upload_root_configured',
+      "This service has no upload root configured, so it cannot read files from this machine. An operator sets BROKER_UPLOAD_ROOT to a directory holding the files that may be uploaded; until then, upload is off. It must not be the profile root, the artefact root or the store's directory — the service refuses to start if it overlaps any of them.",
+      { action: 'upload' },
+    );
+  }
+
+  const request = resolveActionFiles(validated, input.uploadRoot);
   const { lease, tab, expiresAt } = admit(scope, input, 'act');
 
   append(scope.db, {
@@ -841,7 +919,24 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
     tabId: tab.tabId,
     sessionId: lease.sessionId,
     browserId: tab.browserId,
-    detail: { action: request.action },
+    // **Richer detail for the one verb that moves data from this machine
+    // into a shared, signed-in browser**, following the precedent `evaluate`
+    // sets with `expressionBytes`. If a file ever does leave by this route,
+    // this row is the only thing that will say which lease, which session and
+    // which file.
+    //
+    // **Names, never resolved paths.** The relative name is what identifies
+    // the file to anyone reading the ledger; the absolute path is specific to
+    // one machine, which is rule one of `src/artifacts/store.ts`.
+    detail:
+      request.action === 'upload'
+        ? {
+            action: request.action,
+            files: request.files.length,
+            bytes: request.files.reduce((total, file) => total + file.bytes.byteLength, 0),
+            names: request.files.map((file) => file.name),
+          }
+        : { action: request.action },
   });
 
   const work = afterCommitWork(

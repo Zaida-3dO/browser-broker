@@ -113,6 +113,9 @@ test('opening a store on a network location refuses before the file is created',
           configuredDatabasePath: location,
           artifactsRoot: location,
           profileRoot: location,
+          // No upload root: the verb is off, which is what an installation that
+          // has configured nothing has. Nothing here uploads anything.
+          uploadRoot: undefined,
           tabBudget: 15,
           leaseSeconds: 600,
           queueSeconds: 600,

@@ -166,6 +166,9 @@ test('processes starting together against a stepped store settle on one budget r
       configuredDatabasePath: databasePath,
       artifactsRoot: path.join(directory, 'artefacts'),
       profileRoot: path.join(directory, 'profiles'),
+      // No upload root: the verb is off, which is what an installation that
+      // has configured nothing has. Nothing here uploads anything.
+      uploadRoot: undefined,
       tabBudget: FIRST_BUDGET,
       leaseSeconds: 600,
       queueSeconds: 600,

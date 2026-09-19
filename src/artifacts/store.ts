@@ -155,8 +155,18 @@ function safeSegment(value: string, what: string): string {
  *
  * A guard that only fires on the platform it was written on is worse than no
  * guard, because it reports a protection that does not exist.
+ *
+ * ── Exported, and deliberately still defined here ───────────────────────
+ *
+ * `src/uploads/resolve.ts` asks the same question of a caller's upload name,
+ * and importing this is the point: two copies of a both-namespaces test are
+ * two things to keep in step, and the one that falls behind is the one that
+ * stops refusing. It stays **defined in this file** rather than moving to a
+ * shared module because `scripts/check-artifact-path.mjs`'s scan D asserts
+ * this function's name and both namespace checks by string match against
+ * this source — moving the definition would turn that check off silently.
  */
-function isAbsoluteInEitherNamespace(target: string): boolean {
+export function isAbsoluteInEitherNamespace(target: string): boolean {
   // POSIX: a leading forward slash. Named for its own sake — see above.
   if (path.posix.isAbsolute(target)) {
     return true;

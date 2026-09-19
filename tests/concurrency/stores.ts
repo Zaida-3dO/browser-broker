@@ -117,6 +117,10 @@ export async function withArbitrationStore(
       configuredDatabasePath: databasePath,
       artifactsRoot: path.join(directory, 'artefacts'),
       profileRoot: path.join(directory, 'profiles'),
+      // No upload root, which is what a default installation has: the verb is
+      // off until an operator configures one. Nothing these tests race over
+      // uploads anything.
+      uploadRoot: undefined,
       tabBudget: options.tabBudget ?? 15,
       leaseSeconds: options.leaseSeconds ?? 600,
       queueSeconds: options.queueSeconds ?? 600,

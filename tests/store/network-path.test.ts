@@ -326,6 +326,9 @@ test('the configured value is checked, not only the resolved one', () => {
     configuredDatabasePath: configured,
     artifactsRoot: flattened,
     profileRoot: flattened,
+    // No upload root: the verb is off, which is what an installation that
+    // has configured nothing has. Nothing here uploads anything.
+    uploadRoot: undefined,
     tabBudget: 15,
     leaseSeconds: 600,
     queueSeconds: 600,
@@ -356,6 +359,9 @@ test('a location that was never configured is still checked on its own account',
     configuredDatabasePath: undefined,
     artifactsRoot: target,
     profileRoot: target,
+    // No upload root: the verb is off, which is what an installation that
+    // has configured nothing has. Nothing here uploads anything.
+    uploadRoot: undefined,
     tabBudget: 15,
     leaseSeconds: 600,
     queueSeconds: 600,

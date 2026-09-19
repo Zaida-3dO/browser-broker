@@ -631,6 +631,7 @@ function actionFrom(args: Readonly<Record<string, unknown>>): unknown {
   const preferences = preferencesFrom(args);
   const response = responseFrom(args);
   const fields = fieldsFrom(args);
+  const paths = pathsFrom(args);
 
   return {
     action,
@@ -641,7 +642,36 @@ function actionFrom(args: Readonly<Record<string, unknown>>): unknown {
     ...(preferences === undefined ? {} : { preferences }),
     ...(response === undefined ? {} : { response }),
     ...(fields === undefined ? {} : { fields }),
+    ...(paths === undefined ? {} : { paths }),
   };
+}
+
+/**
+ * The files an `upload` attaches, assembled from whatever the caller could
+ * express.
+ *
+ * A list on the tool surface and a repeatable `--path` on the command line,
+ * which produces either one string or an array of them depending on how many
+ * times it was written. Both spellings become a list, because "one file" and
+ * "one file, and I only wrote the flag once" are the same request and a caller
+ * should not have to know which shape the parser happened to produce.
+ *
+ * Anything that is not a string is handed on **unchanged** rather than
+ * coerced. `validateAction` refuses it and says which entry is wrong; a
+ * `String()` here would turn a caller's mistake into a filename nobody meant,
+ * and the refusal would then be about a name the caller never wrote.
+ */
+function pathsFrom(args: Readonly<Record<string, unknown>>): unknown {
+  const given = argument(args, 'paths');
+  if (given !== undefined && Array.isArray(given)) {
+    return given;
+  }
+
+  const flag = argument(args, 'path');
+  if (flag === undefined) {
+    return given;
+  }
+  return Array.isArray(flag) ? flag : [flag];
 }
 
 /**

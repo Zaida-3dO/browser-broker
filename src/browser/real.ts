@@ -1413,6 +1413,70 @@ class RealBrowserSession implements BrowserSession {
           await this.#locate(page, request.ref)
         ).dragTo(await this.#locate(page, request.targetRef));
         break;
+
+      case 'upload': {
+        // **The bytes are already here**, read and bounded by
+        // `src/uploads/resolve.ts` before this request was built. Nothing in
+        // this method opens a file, and the `ActionRequest` variant is shaped
+        // so that nothing in it could: there is no path on it to open. That
+        // is the property that keeps the automation library from becoming a
+        // second path resolver behind this service's containment guard —
+        // given a relative path it would resolve one against `process.cwd()`,
+        // under rules nothing here checks.
+        //
+        // `setInputFiles` retargets through a label: its own documentation
+        // says that for an element inside a `<label>` with an associated
+        // control it "targets the control instead". That matters because a
+        // real `input[type=file]` is usually hidden and frequently mints no
+        // reference in an aria snapshot at all, so the reference a caller can
+        // actually obtain is often the visible label — and this handles that
+        // case without a second code path.
+        const locator = await this.#locate(page, request.ref);
+        try {
+          await locator.setInputFiles(
+            request.files.map((file) => ({
+              name: file.name,
+              mimeType: file.mimeType,
+              // A copy rather than the original view, because the automation
+              // library's serialiser wants a `Buffer` and the request holds
+              // the bytes as a plain array view.
+              buffer: Buffer.from(file.bytes),
+            })),
+          );
+        } catch (cause) {
+          // The library's own message for a target that is not a file input
+          // describes its internals — it names the element handle and talks
+          // about node types — so a caller reading it learns nothing it can
+          // act on. Translated here into the thing to do next, which is the
+          // job §3.14 gives a refusal.
+          //
+          // Narrowed by matching the library's wording rather than swallowing
+          // every failure: a timeout, a detached page or a crashed browser
+          // are different problems, and reporting one of those as "not a file
+          // input" would send a caller looking at their reference for a fault
+          // that is somewhere else entirely.
+          //
+          // **The patterns are the messages this library actually produces**,
+          // measured against a real browser rather than guessed from the
+          // shape of the words. A reference to an ordinary button reports
+          // `Node is not an HTMLInputElement`; a reference to an input of
+          // some other type reports that it is not a file input. A matcher
+          // written from intuition missed the first of those entirely and let
+          // the raw message through — which is the defect this translation
+          // exists to prevent, so the test that caught it names the element
+          // it aimed at.
+          const message = cause instanceof Error ? cause.message : String(cause);
+          if (/HTMLInputElement|not.*input.*file|input.*type.*file|non-file/iu.test(message)) {
+            throw new BrokerError(
+              'act.upload_target_not_input',
+              `The element "${request.ref}" is not a file input and is not a label for one. An upload needs a reference to the <input type=file> itself, or to the visible <label> that wraps it — the real input is often hidden, so read the page and look for the label around it.`,
+              { cause },
+            );
+          }
+          throw cause;
+        }
+        break;
+      }
     }
 
     // A fresh snapshot **after** the change, for the reason at the top of this

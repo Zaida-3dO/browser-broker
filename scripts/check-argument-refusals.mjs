@@ -303,6 +303,107 @@ const CASES = [
       },
     },
   },
+  /*
+   * `upload`'s arguments, which are reachable without a lease because
+   * `validateAction` runs before `admit` — the ordering every conventional
+   * refusal in this service keeps. A key is supplied and is not a real one,
+   * so a case here proves the argument is checked **first**: were the order
+   * ever reversed, these would start failing on `key.valid` and say so.
+   *
+   * The verb reads a file from this machine, so getting its refusals right
+   * matters more than for an argument that only shapes a click. A raw errno
+   * or a resolved absolute path reaching a caller is the defect this whole
+   * check exists to prevent, and the storage-vocabulary scan below applies to
+   * these answers as it does to every other.
+   */
+  {
+    what: 'upload with no paths',
+    rule: 'act.upload_paths_required',
+    argv: ['act', '--key', 'not-a-real-key', '--action', 'upload', '--ref', 'e1'],
+    tool: {
+      name: 'browser_act',
+      arguments: { lease_key: 'not-a-real-key', action: 'upload', target: 'e1' },
+    },
+  },
+  {
+    // The type case: a bare string is the shape a caller reaches for first,
+    // and it is not a list. The command line cannot express it — a repeated
+    // flag always assembles a list — so it is checked on the tool surface.
+    what: 'upload with paths that are not a list',
+    rule: 'act.upload_paths_required',
+    argv: undefined,
+    tool: {
+      name: 'browser_act',
+      arguments: {
+        lease_key: 'not-a-real-key',
+        action: 'upload',
+        target: 'e1',
+        paths: 'invoice.pdf',
+      },
+    },
+  },
+  {
+    what: 'upload with an empty path',
+    rule: 'act.upload_path_shape',
+    argv: ['act', '--key', 'not-a-real-key', '--action', 'upload', '--ref', 'e1', '--path', ''],
+    tool: {
+      name: 'browser_act',
+      arguments: { lease_key: 'not-a-real-key', action: 'upload', target: 'e1', paths: [''] },
+    },
+  },
+  {
+    // The escape a caller is most likely to try first, refused on the shape
+    // of the name rather than on where it would have resolved.
+    what: 'upload with an absolute path',
+    rule: 'act.upload_path_shape',
+    argv: [
+      'act',
+      '--key',
+      'not-a-real-key',
+      '--action',
+      'upload',
+      '--ref',
+      'e1',
+      '--path',
+      '/etc/passwd',
+    ],
+    tool: {
+      name: 'browser_act',
+      arguments: {
+        lease_key: 'not-a-real-key',
+        action: 'upload',
+        target: 'e1',
+        paths: ['/etc/passwd'],
+      },
+    },
+  },
+  {
+    // No `BROKER_UPLOAD_ROOT` is set for this check's runs, which is what a
+    // default installation has — so a well-formed upload reaches the refusal
+    // that says the capability is off, and it says which variable turns it on.
+    what: 'a well-formed upload where no upload root is configured',
+    rule: 'act.upload_root_configured',
+    argv: [
+      'act',
+      '--key',
+      'not-a-real-key',
+      '--action',
+      'upload',
+      '--ref',
+      'e1',
+      '--path',
+      'invoice.pdf',
+    ],
+    tool: {
+      name: 'browser_act',
+      arguments: {
+        lease_key: 'not-a-real-key',
+        action: 'upload',
+        target: 'e1',
+        paths: ['invoice.pdf'],
+      },
+    },
+  },
 ];
 
 function containsStorageVocabulary(text) {

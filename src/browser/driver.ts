@@ -312,7 +312,8 @@ export type PageAction =
   | 'emulate'
   | 'dialog'
   | 'fill_form'
-  | 'drag';
+  | 'drag'
+  | 'upload';
 
 /** Every action, in the order §3.8 lists them, for a refusal that names them all. */
 export const PAGE_ACTIONS: readonly PageAction[] = [
@@ -329,6 +330,7 @@ export const PAGE_ACTIONS: readonly PageAction[] = [
   'dialog',
   'fill_form',
   'drag',
+  'upload',
 ];
 
 /**
@@ -460,6 +462,63 @@ export interface FormField {
  * whole union decorative, because the compiler is then checking a claim the
  * boundary made up rather than a fact anybody established.
  */
+/**
+ * The most files one upload carries.
+ *
+ * This is a file-attachment verb, not a bulk-transfer channel, and the bound
+ * is what stops the second reading from becoming available by accident. Real
+ * multi-file forms take a handful.
+ */
+export const MAX_UPLOAD_FILES = 8;
+
+/** The largest single file an upload carries. Generous for a document or an image. */
+export const MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The largest one upload carries in total.
+ *
+ * Separate from the per-file cap so that eight files at the per-file maximum
+ * cannot become eighty megabytes. The bytes are held in the process that
+ * arbitrates every lease, so an unbounded upload is a machine-wide outage
+ * rather than a slow call.
+ *
+ * ── Why the three limits live on the seam ───────────────────────────────
+ *
+ * They are read from two sides that must not import one another: the
+ * validator refuses the count before a lease is admitted, and the resolver
+ * refuses the sizes while reading. The resolver already imports this file for
+ * {@link UploadFile}, and the validator already imports it for
+ * {@link ValidatedAction}, so the numbers sit where both can reach them
+ * without a cycle — and where an implementer of the seam can see what a
+ * driver will and will not be handed.
+ */
+export const MAX_UPLOAD_TOTAL_BYTES = 25 * 1024 * 1024;
+
+/**
+ * One file on its way into a page: a name, a type, and the bytes.
+ *
+ * **Declared on the seam rather than in `src/uploads/resolve.ts`, which is
+ * what produces it.** The dependency has to point this way round: the
+ * resolver imports `PageRefusal` from the service layer, which imports this
+ * file, so a seam that imported the resolver would close a cycle. Beyond
+ * avoiding that, it is the right home — this is the shape a *driver* is
+ * handed, and the driver seam is where what a driver is handed is written
+ * down. The resolver is one producer of it and should not be the only place
+ * an implementer of this seam can learn what arrives.
+ */
+export interface UploadFile {
+  /**
+   * The file's name as the page will see it. A basename: the resolver strips
+   * any directories before this point, because a caller's directory layout is
+   * not something a web page has any business being told.
+   */
+  readonly name: string;
+  /** What the page is told the file is, derived from the extension. */
+  readonly mimeType: string;
+  /** The contents, already read and already size-checked. */
+  readonly bytes: Uint8Array;
+}
+
 export type ActionRequest =
   | {
       /**
@@ -526,6 +585,65 @@ export type ActionRequest =
       readonly ref: string;
       /** Where it is being dragged to. Both come from the same snapshot. */
       readonly targetRef: string;
+    }
+  | {
+      /**
+       * Put files into a file input.
+       *
+       * **The one interaction that is not reachable by dispatching an event
+       * from inside the page**, by browser security design — which is what
+       * distinguishes it from the other thirteen verbs, for which `act` is
+       * ergonomics over something an expression could also do.
+       *
+       * ── The files are BYTES, and that is the seam's decision ────────────
+       *
+       * This request carries the file's contents, not a name for the driver
+       * to go and read. By the time a request reaches this seam the reading
+       * has already happened, in `src/uploads/resolve.ts`, under the upload
+       * root's containment guard — so **a driver never receives a filesystem
+       * path from a caller and never opens a file**. A variant carrying a
+       * path would have put a second path resolver behind that guard, with
+       * its own rules about what a relative name means, checked by nobody;
+       * Playwright resolves one against `process.cwd()`.
+       *
+       * That the driver cannot read a file is the property worth keeping. It
+       * is visible here, in the type, rather than left as a convention the
+       * next implementation of this seam might not know about.
+       */
+      readonly action: 'upload';
+      /** The file input, or a visible label whose control is one. */
+      readonly ref: string;
+      /** What to attach: a name, a type, and the bytes themselves. */
+      readonly files: readonly UploadFile[];
+    };
+
+/**
+ * What a request looks like **before** the files have been read: every other
+ * verb exactly as it will reach the driver, and `upload` carrying the names
+ * the caller sent rather than the bytes.
+ *
+ * ── Why the two shapes are separate types ───────────────────────────────
+ *
+ * `upload` is the one verb whose validated form and whose driver form are not
+ * the same thing, because a step happens between them: the resolver reads the
+ * named files under the upload root, which is where containment is enforced
+ * and where a name becomes bytes. One type spanning both would have to make
+ * that field either loose enough to hold a name or loose enough to hold a
+ * buffer — and either way the compiler would stop being able to say which
+ * stage a given value is at, which is exactly the fact worth keeping.
+ *
+ * So `validateAction` returns this, `readUploadFiles` turns it into an
+ * {@link ActionRequest}, and **a driver can only be handed the second**. That
+ * a driver cannot be passed an unresolved name is a property the type system
+ * holds rather than a convention someone has to remember.
+ */
+export type ValidatedAction =
+  | Exclude<ActionRequest, { action: 'upload' }>
+  | {
+      readonly action: 'upload';
+      readonly ref: string;
+      /** The caller's names, relative to the upload root. Not yet resolved. */
+      readonly paths: readonly string[];
     };
 
 /** The kinds of artefact a read can ask for (`SCHEMA.md` §3.9). */

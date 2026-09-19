@@ -42,6 +42,9 @@ describe('the store’s location', () => {
         configuredDatabasePath: local,
         artifactsRoot: local,
         profileRoot: local,
+        // No upload root: the verb is off, which is what an installation that
+        // has configured nothing has. Nothing here uploads anything.
+        uploadRoot: undefined,
         // The declared defaults (SCHEMA 6.2). These checks are about path
         // resolution; the numbers are here to complete the shape.
         tabBudget: 15,
@@ -74,6 +77,9 @@ describe('the store’s location', () => {
         configuredDatabasePath: share,
         artifactsRoot: share,
         profileRoot: share,
+        // No upload root: the verb is off, which is what an installation that
+        // has configured nothing has. Nothing here uploads anything.
+        uploadRoot: undefined,
         // The declared defaults (SCHEMA 6.2). These checks are about path
         // resolution; the numbers are here to complete the shape.
         tabBudget: 15,
@@ -106,6 +112,9 @@ describe('the store’s location', () => {
         configuredDatabasePath: mapped,
         artifactsRoot: mapped,
         profileRoot: mapped,
+        // No upload root: the verb is off, which is what an installation that
+        // has configured nothing has. Nothing here uploads anything.
+        uploadRoot: undefined,
         // The declared defaults (SCHEMA 6.2). These checks are about path
         // resolution; the numbers are here to complete the shape.
         tabBudget: 15,
@@ -137,6 +146,9 @@ describe('the store’s location', () => {
         configuredDatabasePath: share,
         artifactsRoot: share,
         profileRoot: share,
+        // No upload root: the verb is off, which is what an installation that
+        // has configured nothing has. Nothing here uploads anything.
+        uploadRoot: undefined,
         // The declared defaults (SCHEMA 6.2). These checks are about path
         // resolution; the numbers are here to complete the shape.
         tabBudget: 15,
