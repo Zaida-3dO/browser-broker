@@ -468,11 +468,21 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         required: true,
         description: 'One of the verbs above. An unknown verb is refused with the full list.',
       },
+      // **The no-reference route is named here because this is where a caller
+      // stuck without one is standing.** `press` has always gone to
+      // `page.keyboard` when no target is given, which is a real way to drive
+      // a page that has no reference to offer — but nothing said so. The
+      // refusals only ever say a reference is required, which is unfollowable
+      // advice when there is no reference to be had, and a caller discovered
+      // this path by accident after abandoning the verb entirely.
       {
         name: 'target',
         type: 'string',
         required: false,
-        description: 'The element reference, from a snapshot, where the action needs one.',
+        description:
+          'The element reference, from a snapshot, where the action needs one. Without one, ' +
+          'press sends the key to whatever the page has focused — so Tab, then press, drives a ' +
+          'page you have no reference for. A snapshot marks the focused node [active].',
       },
       {
         name: 'value',

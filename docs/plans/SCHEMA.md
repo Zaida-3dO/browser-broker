@@ -1871,6 +1871,25 @@ are the difference between a whole kind of review being possible and being inexp
 `browser_act`'s own description are both built from, so a verb added there reaches every surface
 without a second list being remembered.
 
+#### `press` without a reference — the one route that needs no snapshot handle
+
+**`press` is the only verb whose reference is optional, and the two spellings are different acts
+rather than one with a default.** With a reference the key goes to that element. **Without one it
+goes to whatever the page has focused** — `page.keyboard` rather than a located element — which is
+how a caller sends a key to a *page* rather than to a field, and is what `Escape`, `Enter` on a
+focused control, and `Tab` to walk the focus order all need.
+
+This matters beyond convenience because it is **the only way to drive a page for which the caller
+has no reference**. `act.ref_required` above tells such a caller that a reference is required, which
+is true and unfollowable: there is no reference to be had, and the refusal names no alternative. A
+caller in exactly that position abandoned the verb for a whole session and drove the page through
+`browser_evaluate` instead, having found this path only by accident.
+
+The focus is **readable, not guessed at**: an AI-mode snapshot marks the focused node `[active]`, so
+the loop is `press` `Tab`, read, look for the line carrying `[active]`, repeat until it is the
+control wanted, then `press` `Enter`. A snapshot that carries no references at all says so and
+points here (§3.9).
+
 #### `resize` — and the measurement that put it here
 
 **Measured**, over a month of real transcripts: **578 calls across 140 sessions — 58% of every
@@ -3246,6 +3265,7 @@ build.
 | `act.drag_ends_differ` | A drag's two references **are not the same element** | invalid drag. A drag onto itself is a caller mistake rather than a no-op, and silently succeeding would hide it |
 | `read.artifact_known` | A read names **which artefacts it wants**, from the known set (§3.9) | unknown artefact, listing the artefacts |
 | `read.find_shape` | A snapshot `find` is **a non-empty string within its length bound**, and one wrapped in `/slashes/` **compiles as a regular expression** | malformed find, showing both spellings. A pattern that does not compile is refused with the engine's own message and the way out — dropping the slashes searches for the text itself — rather than being let out as an internal error |
+| `read.refless_noted` | **A written snapshot carrying no `[ref=` handle says so, in the file** (§3.8, §3.9) | **Not a refusal — a note.** The gate is the absence of references rather than of role names, because a reference is what `browser_act` consumes; a tree naming a hundred roles and minting none is unusable for acting. **It states only what was observed** — the snapshot was taken, its line count, no handles — and **asserts no cause**, because a mangled `find`, a narrowed read, a page still building and a reference-free rendering are indistinguishable from here, and a hint that guessed would be the misleading evidence it exists to remove. It points at the `press`-without-a-reference route instead. A tree that does carry a reference is written **byte for byte** as it arrived, and a near-empty document is left alone because having no references is uninteresting there |
 | `evaluate.result_serialisable` | An evaluation's result **has a plain representation** — no cycles, nothing the service cannot return (§3.9) | unserialisable result, saying to evaluate to plain data. **The refusal carries the reason and never the value**, for the same reason a cookie read returns no values |
 | `feedback.rating_in_scale` | A rating is **a whole number within the scale**, on a help-versus-hinder axis rather than a satisfaction one (§3.12) | rating out of range, naming the bounds and the anchors |
 | `feedback.category_known` | The category is one of the five | unknown category, listing all five with their descriptions |
