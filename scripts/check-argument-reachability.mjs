@@ -537,14 +537,45 @@ export function declaredToolArguments(source = readFileSync(TOOLS_SOURCE, 'utf8'
     if (argumentsAt === -1) continue;
     const listRegion = region.slice(argumentsAt);
 
+    // A folded tool (`actions: { request: 'sign_in', done: 'sign_in_done' }`)
+    // performs a different operation per action, and an argument is read by
+    // the branch of every action it belongs to (`forActions`, or all of them).
+    // The `action` argument itself is consumed by the tool layer — it selects
+    // the operation and never reaches the bridge — so it is not collected.
+    const actionsMatch = /actions:\s*\{([^}]*)\}/.exec(region.slice(0, argumentsAt));
+    const actionOperations = new Map();
+    if (actionsMatch !== null) {
+      for (const pair of actionsMatch[1].matchAll(/([a-z_]+):\s*'([a-z_]+)'/g)) {
+        actionOperations.set(pair[1], pair[2]);
+      }
+    }
+    const operationsFor = (forActions) =>
+      actionOperations.size === 0
+        ? [tool.operation]
+        : (forActions ?? [...actionOperations.keys()])
+            .map((action) => actionOperations.get(action))
+            .filter((operation) => operation !== undefined);
+
     // Names written inline in this tool's argument list.
-    for (const match of listRegion.matchAll(/name:\s*'([a-z_]+)'/g)) {
-      declarations.push({ tool: tool.tool, operation: tool.operation, name: match[1] });
+    const inlineNames = [...listRegion.matchAll(/name:\s*'([a-z_]+)'/g)];
+    for (const [index, match] of inlineNames.entries()) {
+      if (actionOperations.size > 0 && match[1] === 'action') continue;
+      const until = inlineNames[index + 1]?.index ?? listRegion.length;
+      const forActions = /forActions:\s*\[([^\]]*)\]/.exec(listRegion.slice(match.index, until));
+      const actions =
+        forActions === null
+          ? undefined
+          : [...forActions[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+      for (const operation of operationsFor(actions)) {
+        declarations.push({ tool: tool.tool, operation, name: match[1] });
+      }
     }
     // Shared constants spliced in by identifier.
     for (const [identifier, name] of sharedNames) {
       if (new RegExp(`\\b${identifier}\\b`).test(listRegion)) {
-        declarations.push({ tool: tool.tool, operation: tool.operation, name });
+        for (const operation of operationsFor(undefined)) {
+          declarations.push({ tool: tool.tool, operation, name });
+        }
       }
     }
   }

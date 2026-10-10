@@ -264,23 +264,11 @@ const CASES = [
       '--note',
       'a note comfortably longer than the twenty character floor',
     ],
-    tool: {
-      name: 'browser_feedback',
-      arguments: {
-        rating: 9,
-        category: 'worked-well',
-        note: 'a note comfortably longer than the twenty character floor',
-      },
-    },
   },
   {
     what: 'feedback with a note under its floor',
     rule: 'feedback.note_bounded',
     argv: ['feedback', '--rating', '3', '--category', 'worked-well', '--note', 'short'],
-    tool: {
-      name: 'browser_feedback',
-      arguments: { rating: 3, category: 'worked-well', note: 'short' },
-    },
   },
   {
     what: 'feedback with a category outside the set',
@@ -294,14 +282,6 @@ const CASES = [
       '--note',
       'a note comfortably longer than the twenty character floor',
     ],
-    tool: {
-      name: 'browser_feedback',
-      arguments: {
-        rating: 3,
-        category: 'nonsense',
-        note: 'a note comfortably longer than the twenty character floor',
-      },
-    },
   },
   /*
    * `upload`'s arguments, which are reachable without a lease because
@@ -466,6 +446,13 @@ export async function runArgumentRefusalCheck({ root = repositoryRoot } = {}) {
           leaked.length === 0,
           `found ${leaked.join(', ')} in: ${output.slice(0, 300)}`,
         );
+      }
+
+      // A case with no `tool` half is one whose tool was retired
+      // (`browser_feedback`): the operation is still refused on the command
+      // line, which is the half above, and there is no tool to speak to.
+      if (testCase.tool === undefined) {
+        continue;
       }
 
       const toolResult = await spawnBinary(toolShim, [], {

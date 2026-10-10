@@ -613,7 +613,11 @@ test('the result carries what the calling agent has to relay onward', async () =
       new RegExp(SIGNABLE_BROWSER, 'u'),
       'the relay does not name the browser',
     );
-    assert.match(asked.relay, /browser_sign_in_done/u, 'the relay does not say how to finish');
+    assert.match(
+      asked.relay,
+      /browser_sign_in with action "done"/u,
+      'the relay does not say how to finish',
+    );
     assert.match(asked.relay, /browser_status/u, 'the relay does not say how to hold the lease');
     assert.equal(
       asked.what,

@@ -131,7 +131,7 @@ browser serves nobody: requests for it are refused with a retry hint, and **queu
 their places and their timers** — a sign-in is a pause, not a cancellation.
 
 **A sign-in a caller asked for ends differently**, and the difference is worth knowing before you
-meet it: the person tells the agent they are done and the agent calls `browser_sign_in_done`, so
+meet it: the person tells the agent they are done and the agent calls `browser_sign_in` with `action: "done"`, so
 closing the window is not what ends that one. If nobody answers at all it lapses on its own and the
 browser goes back to serving — the caller keeps its lease and its tab throughout, and can ask again.
 

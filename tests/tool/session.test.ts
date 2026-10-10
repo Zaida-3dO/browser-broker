@@ -13,7 +13,7 @@ import {
   toJsonRpcCode,
 } from '../../src/tool/protocol.ts';
 import { linesFrom, listTools, serveSession, withoutSecrets } from '../../src/tool/session.ts';
-import { TOOL_DEFINITIONS } from '../../src/tool/tools.ts';
+import { TOOL_DEFINITIONS, TOOL_OPERATIONS } from '../../src/tool/tools.ts';
 import { asyncLines } from '../helpers/async-lines.ts';
 
 /**
@@ -148,7 +148,7 @@ function callIsError(response: Record<string, unknown> | undefined): unknown {
   return (response?.['result'] as Record<string, unknown> | undefined)?.['isError'];
 }
 
-test('tools/list returns the thirteen tools, NAMED', () => {
+test('tools/list returns the eleven tools, NAMED', () => {
   // Named rather than counted: `MILESTONES.md` records a hollow test that
   // "iterated a list rather than naming its entries, so deleting an entry
   // stayed green". Deleting a tool changes this list and fails here.
@@ -166,8 +166,6 @@ test('tools/list returns the thirteen tools, NAMED', () => {
       'browser_evaluate',
       'browser_capture',
       'browser_sign_in',
-      'browser_sign_in_done',
-      'browser_feedback',
       'browser_doctor',
     ],
   );
@@ -182,11 +180,27 @@ test('every tool has a description, because the description is the only place a 
   }
 });
 
-test('the thirteen tools cover the thirteen operations, one each', () => {
+test('the eleven tools cover every operation but the retired feedback tool, one action each', () => {
+  // Eleven tools, twelve operations: `browser_sign_in` carries two (`request`
+  // and `done`). `feedback` is the one operation with no tool, on purpose.
+  assert.equal(TOOL_DEFINITIONS.length, 11);
   assert.deepEqual(
-    [...TOOL_DEFINITIONS.map((tool) => tool.operation)].sort((a, b) => a.localeCompare(b)),
-    [...OPERATION_NAMES].sort((a, b) => a.localeCompare(b)),
+    [...TOOL_OPERATIONS].sort((a, b) => a.localeCompare(b)),
+    OPERATION_NAMES.filter((operation) => operation !== 'feedback').sort((a, b) =>
+      a.localeCompare(b),
+    ),
   );
+  const folded = TOOL_DEFINITIONS.filter((tool) => tool.actions !== undefined);
+  assert.deepEqual(
+    folded.map((tool) => [tool.name, tool.actions]),
+    [['browser_sign_in', { request: 'sign_in', done: 'sign_in_done' }]],
+  );
+});
+
+test('the retired tools are gone from the tool list', () => {
+  const names = TOOL_DEFINITIONS.map((tool) => tool.name);
+  assert.equal(names.includes('browser_sign_in_done'), false, 'browser_sign_in_done is back');
+  assert.equal(names.includes('browser_feedback'), false, 'browser_feedback is back');
 });
 
 test('THERE IS NO BROWSER-SCOPED DESTRUCTIVE VERB on this surface', () => {
@@ -653,7 +667,7 @@ test('INITIALIZE is answered with a negotiated version, capabilities and serverI
   // The single change that breaks this test: deleting the `initialize` branch
   // from `handleRequest`. That is precisely the state the surface shipped in,
   // where a real client got `method_not_found` on its first message and hung
-  // up before reaching the twelve tools.
+  // up before reaching the tools.
   const { service, requests } = recordingService();
   const [response] = await serve(
     service,
@@ -767,11 +781,7 @@ test('the whole handshake runs in order and the session still serves tools after
     'responses did not correlate with the requests that caused them',
   );
   const listed = responses[1]?.['result'] as { tools: { name: string }[] };
-  assert.equal(
-    listed.tools.length,
-    13,
-    'the thirteen tools were not reachable after the handshake',
-  );
+  assert.equal(listed.tools.length, 11, 'the eleven tools were not reachable after the handshake');
 });
 
 test('an error response carries the numeric code AND the internal name, on the same message', () => {
@@ -801,7 +811,7 @@ test('an error response carries the numeric code AND the internal name, on the s
  *
  * Asserting it over **every** tool rather than one pins the advertised-vs-
  * enforced match for the entire surface at once, and fails loudly the day a
- * thirteenth tool is added without it — which a spot check on a named tool
+ * twelfth tool is added without it — which a spot check on a named tool
  * could not do.
  */
 test('every advertised inputSchema refuses undeclared arguments', () => {

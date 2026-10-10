@@ -1503,7 +1503,7 @@ surface (§3.13), never on the agent's.
 
 ### 3.1 The list, and what it costs
 
-**Thirteen tools.** Every description sits in a connected session's context on every turn whether or
+**Eleven tools.** Every description sits in a connected session's context on every turn whether or
 not anything calls it, so surface area is a standing tax and the list is short on purpose.
 
 | # | Tool | One line |
@@ -1517,14 +1517,32 @@ not anything calls it, so surface area is a standing tax and the list is short o
 | 7 | `browser_read` | The page snapshot by default; console, network or cookies on request. Written to disk, returned as a path. |
 | 8 | `browser_evaluate` | Evaluate an expression in the page and get its value. |
 | 9 | `browser_capture` | Take a picture — **and, if you name an earlier capture, the difference from it.** Returns paths, never the image. |
-| 10 | `browser_sign_in` | **Hit a login wall? Ask, on the tab you already hold** (§5.5.2). Your lease and your tab survive the wait. |
-| 11 | `browser_sign_in_done` | The person confirmed: give the browser back, **keeping this lease and its tab**. |
-| 12 | `browser_feedback` | Record that something here helped or got in the way. **No lease needed**, written locally, and **built to be removed** (§3.16). |
-| 13 | `browser_doctor` | **Why is the browser not working?** Every precondition, reported separately with its remedy. **No lease needed, and it only looks** (§3.17). |
+| 10 | `browser_sign_in` | **Hit a login wall? Ask, on the tab you already hold** (§5.5.2). Your lease and your tab survive the wait. **`action` is `request` (ask) or `done` (the person confirmed: give the browser back, keeping this lease and its tab).** |
+| 11 | `browser_doctor` | **Why is the browser not working?** Every precondition, reported separately with its remedy. **No lease needed, and it only looks** (§3.17). |
 
 **Plus one thing that is not a tool: the operations snapshot** (§4.5). A command generates a
 self-contained file a person opens. It is deliberately absent from this list because no agent needs
 it, and a description on this list costs every session on every turn whether it is wanted or not.
+
+#### One tool was folded and one retired, after the first list above
+
+**`browser_sign_in_done` is now `action: "done"` on `browser_sign_in`, and the operations did not
+change.** Folding is a change to the agent-facing surface only: `sign_in` and `sign_in_done` remain two
+operations, the tool layer maps `action` to one of them and strips it before the service sees the call,
+so the ledger, the arbitration rules and the refusal rules still match on two distinct operation names —
+the property the earlier "Two names rather than one" argument was protecting. One flat schema carries
+`action`, `lease_key`, `what` and `request_seconds`; **`what` and `request_seconds` belong to `request`
+and are refused by name when sent with `done`** (`call.arguments_declared`), and a missing or unknown
+`action` is refused listing the two valid ones (`call.arguments_declared`). The preconditions differ and are
+in the description: `request` needs `what` and takes the browser only while no other lease holds a tab
+on it; `done` is refused unless the calling lease is the one that asked.
+
+**`browser_feedback` is retired from the tool surface** (§3.16's exit condition: the signal was a long
+stretch with nothing logged; the installation's last row was written weeks before this change and
+agents report in prose notes instead). Only the tool went. The `feedback` operation, `broker feedback`,
+the table and the operations snapshot stay, so the tool route carries a written waiver for it, covered
+by the command line — see `OperationWaiver.coveredBy` in `src/adapter/contract.ts`. Deleting the rest is
+still a deletion and still a later decision.
 
 #### Two tools were removed, and each for a reason worth keeping
 
@@ -1579,9 +1597,8 @@ carrying the key extends the lease. There is no keyed call that does not extend 
 would be a hole in the one rule the whole liveness model rests on, and it would produce leases that
 lapse while their caller was politely only looking.
 
-**Three tools take no key, and each for its own reason.** `browser_claim` is what issues one.
-`browser_feedback` must reach the caller whose claim was just refused (§3.16), which is the
-population a key requirement would silence. `browser_doctor` reports on the installation rather than
+**Two tools take no key, and each for its own reason.** `browser_claim` is what issues one.
+`browser_doctor` reports on the installation rather than
 on any lease (§3.17), and the caller most likely to need it is the one that cannot get a lease at
 all. `browser_status` is a fourth case and a different one: it takes the key *optionally*, because
 it answers a lease-scoped question with one and a pool-scoped question without (§3.3).
@@ -2446,6 +2463,10 @@ report on it whether or not anybody generates a view.
 
 ### 3.16 `browser_feedback` — the tenth tool, and the one with a planned removal
 
+> **Status: the tool is retired; the operation, `broker feedback` and the table remain.** The exit
+> condition below was met for the tool (see §3.1, "One tool was folded and one retired"). Read what
+> follows as the design of the operation, which the command line still serves.
+
 **An agent that hit a problem using this service records it here.** One call, no lease required,
 written to the installation's own store and read back with a command.
 
@@ -2677,7 +2698,7 @@ a `detail` blob that could hold a rating and a note. Folding it in would add no 
 **What it does borrow is the ledger's cursor discipline:** a counter primary key, so reading
 "everything since I last looked" is the same one query it is everywhere else here.
 
-### 3.17 `browser_doctor` — the thirteenth tool, and the only one that does not write
+### 3.17 `browser_doctor` — the eleventh tool, and the only one that does not write
 
 Takes nothing. Returns every precondition separately, each with its own status and, where it failed,
 what to do about it — the store, the schema version, the automation tool, the roots, each configured
@@ -2691,7 +2712,7 @@ free to drift from the first, which is exactly what §8 exists to prevent.
 #### Why it earns its place on a surface that charges per turn
 
 §3.1 opens by saying every description here is a standing tax paid on every turn of every session, so
-a thirteenth has to justify itself.
+a further tool has to justify itself.
 
 > **The condition it answers is the one where this service's own diagnosis is unreachable to the
 > caller who needs it.** Measured on 2026-09-14: ten tabs left stranded by a crashed session made
@@ -2946,7 +2967,7 @@ the service for that reason, not merely for tidiness.
 
 Every §3 operation has one, so parity is real rather than claimed: `claim`, `status`, `release`,
 `tab replace`, `navigate`, `act`, `read`, `evaluate`, `capture`, `feedback`, `sign in`, `sign in
-done`. **Twelve commands for twelve tools**, and the diff rides on `capture` here exactly as it does
+done`. **Twelve commands**, one per operation (the tool surface folds the last two into `browser_sign_in` and has no feedback tool), and the diff rides on `capture` here exactly as it does
 there (§3.11) rather than being a command of its own.
 
 **`broker sign in` is not `broker login`, and both stay.** The first is a *caller* asking a person to
@@ -3063,7 +3084,7 @@ can be asked whether they are coming.
 
 So the bound is the evidence-substitute: **fifteen minutes, longer than a lease lifetime**, after which
 the browser serves other callers again. A request that lapses **costs the caller its request and not
-its work** — the lease and the tab are untouched, and the refusal it gets from `browser_sign_in_done`
+its work** — the lease and the tab are untouched, and the refusal it gets from `browser_sign_in` with `action: "done"`
 says so and says to ask again. The number is not a claim about how fast people answer; it bounds what
 one unanswered request may cost everybody else, and getting it wrong in the generous direction
 reinstates the unrecoverable browser this whole mechanism exists to prevent.
@@ -3076,7 +3097,7 @@ written against `signing-in` alone would have ended exactly the sign-ins §5.5.1
 
 `end_sign_in` takes a browser name and no key. Putting *that* on the agent surface would hand every
 caller a verb that ends **somebody else's** sign-in by naming a browser — including a person's
-`broker login`, mid-password. `browser_sign_in_done` is refused unless the calling lease is the one
+`broker login`, mid-password. `browser_sign_in` with `action: "done"` is refused unless the calling lease is the one
 that asked, which keeps §3.13's ceiling intact: **the worst thing an agent can do through this surface
 is give back something it asked for itself.**
 
@@ -3260,7 +3281,7 @@ build.
 
 | Rule | What it requires | Refuses with |
 |---|---|---|
-| `call.arguments_declared` | **A call carries only argument names the tool it names declares** (§3.1). Checked on the tool surface, before the call reaches an operation | undeclared argument, **naming the offending names and listing what the tool does take**, so the caller can correct it without a second round trip to `tools/list`. **This is the one rule about what the caller did not ask for rather than about what it asked for**, and it exists because the alternative is silence: the arguments record travels to the bridge as an opaque set of names, each operation reads the ones it knows, and a name no tool declares is therefore invisible to every layer that could object. Unguarded it is dropped while the call answers `accepted` — so a caller sending `resize` to an operation that has never declared one gets a result computed without it and no indication that anything was ignored. **That is the failure `check-argument-reachability` (§7.3) exists to prevent, arriving from the other direction**: there a declared name is read by nothing, here an undeclared one is accepted by everything, and both hand back a truthful-looking success for a request that was partly ignored. **Accepting and warning was rejected**: a warning rides on a response whose `outcome` still reads `accepted` and whose `isError` is still false, which are the two fields a client branches on, so the false conclusion would survive it. The cost is borne honestly — a caller sending a stray name is refused where it was answered, and the behaviour it believed it had is the behaviour it never had |
+| `call.arguments_declared` | **A call carries only argument names the tool it names declares** (§3.1) — and, on a folded tool, only the ones its `action` takes, naming a missing or unknown `action` the same way. Checked on the tool surface, before the call reaches an operation | undeclared argument, **naming the offending names and listing what the tool does take**, so the caller can correct it without a second round trip to `tools/list`. **This is the one rule about what the caller did not ask for rather than about what it asked for**, and it exists because the alternative is silence: the arguments record travels to the bridge as an opaque set of names, each operation reads the ones it knows, and a name no tool declares is therefore invisible to every layer that could object. Unguarded it is dropped while the call answers `accepted` — so a caller sending `resize` to an operation that has never declared one gets a result computed without it and no indication that anything was ignored. **That is the failure `check-argument-reachability` (§7.3) exists to prevent, arriving from the other direction**: there a declared name is read by nothing, here an undeclared one is accepted by everything, and both hand back a truthful-looking success for a request that was partly ignored. **Accepting and warning was rejected**: a warning rides on a response whose `outcome` still reads `accepted` and whose `isError` is still false, which are the two fields a client branches on, so the false conclusion would survive it. The cost is borne honestly — a caller sending a stray name is refused where it was answered, and the behaviour it believed it had is the behaviour it never had |
 | `key.present` | Every operation except requesting a lease carries a key, **written out explicitly by the caller and never derived from a session** (§3.1) | key missing |
 | `key.valid` | The key matches a lease | unrecognised key |
 | `claim.live` | That lease is queued or active | lease has ended, naming the state and when |
@@ -3563,7 +3584,7 @@ Each is a change rather than a clarification, and is listed so nobody reconciles
 | **Nothing is served; the operations view is a generated file** | One self-contained document a command writes and a person opens. **It is a snapshot and is labelled with the moment it was taken** (§4). The health endpoint is deleted with it — `broker doctor` answers the same question in a better shape (§4.4) |
 | **Addresses are read live from the browsers at generation time, with a timeout** | The generating process is attached to both browsers, so it asks rather than reading a cached copy. A browser that does not answer renders as unreachable rather than hanging the run (§4.2a) |
 | **`tabs.last_url` is deleted** | A cached copy of something the browser already knows, read only when the source was reachable anyway. **Deleting it removes the most sensitive column in the design**, leaves nothing to retain or redact, makes the private browser trivially leak-free, and makes a clear-history command unnecessary. **`captures.url` is a different column and survives** (§1.4) |
-| **The tool surface is ten, plus a command-line snapshot** | `browser_compare` folded into capture as an argument; `browser_tab_close` deleted outright, because it produced a lease owning nothing while still consuming budget; **`browser_feedback` added as the tenth** (§3.1, §3.16) |
+| **The tool surface is ten, plus a command-line snapshot** | `browser_compare` folded into capture as an argument; `browser_tab_close` deleted outright, because it produced a lease owning nothing while still consuming budget; **`browser_feedback` added as the tenth** (§3.1, §3.16); later `browser_sign_in_done` folded into `browser_sign_in` and the feedback tool retired, leaving eleven |
 | **The "execute arbitrary code" arguments were sampled, and the refusal is now evidence-backed** | **Measured: 101 of 328 calls, across 33 of 53 sessions, exercised a real shared-pool hazard** — including **16 calls in one session that enumerated other callers' tabs and drove one it did not own**, **2 that read a local environment file and extracted administrative credentials in cleartext**, and **49 that made outbound authenticated network requests from the server process.** The §3.10 box that flagged this as counts-only is replaced by the finding. **Outbound network calls and cross-tab reach stay unreachable** — an agent that needs authenticated network calls does not need a browser (§3.10, §3.13) |
 | **Browser choice is guidance now, and it is a correction** | **Nothing here ever assigned a kind of caller to a browser** — the two are a choice at claim time. **Measured: 25 sessions hand-seeded auth tokens into an isolated browser while the signed-in one sat unused.** Authenticated surface → the signed-in browser; genuinely-fresh-visitor work → the private one. **With the caveat stated alongside: tabs in the signed-in browser share one cookie jar**, so two callers there are clean-room relative to nothing, and two identities at once stays unsupported (§1.2, §3.2) |
 | **`storage_seed` is added to `browser_claim`** | **Measured: 40 calls across 25 sessions**, all the same shape — fetch a token, seed it before load, navigate. **Applied by the service through a storage interface, never caller code executed as code**, bounded at 16 entries and 4 KB each, and refusing cookies. **The browser guidance shrinks this without deleting it:** the signed-in browser covers anything a person can log into by hand, and does not cover a token obtained from an API (§3.2) |

@@ -31,7 +31,7 @@ import { TOOLS_BY_NAME, TOOL_OPERATIONS } from './tools.ts';
  */
 
 /**
- * Every operation this route offers — all ten, from the tool table.
+ * Every operation this route offers, from the tool table (a folded tool offers one per action).
  *
  * Read from the table rather than written out again, so the tools a caller
  * can see and the operations the parity suite drives cannot drift.
@@ -41,18 +41,27 @@ export const TOOL_SURFACE_OPERATIONS: readonly OperationName[] = TOOL_OPERATIONS
 /**
  * Operations this route does not offer, with the reason each is absent.
  *
- * **Empty, and that is the claim.** §3.1 lists twelve tools and §5.3 lists twelve
- * commands for them, so every operation is on both routes. The array exists
- * so that a later row removing a tool has somewhere to write down why — and
- * so the runner's waiver rule has something to check rather than an absence
- * to interpret.
+ * **One, and it is the `browser_feedback` tool, retired.** §3.16 built that
+ * tool to be removed once callers had gone quiet: its per-turn description
+ * cost is the thing being stopped. The *operation* and its store stay, reached
+ * by `broker feedback` on the command line, so the waiver names that route in
+ * `coveredBy` — which is what lets a route exposing write operations waive
+ * one (the runner checks the cover really offers it). Everything else is on
+ * both routes; the two sign-in operations are one folded tool here, not a gap.
  *
  * Note what a waiver could *not* buy here: this route declares `readOnly:
  * false`, and the runner refuses a write waiver from a route that is not
- * read-only. Declaring it read-only to buy waivers would be the loophole, so
- * the declaration is made honestly.
+ * read-only unless another route covers it. Declaring it read-only to buy
+ * waivers would be the loophole, so the declaration is made honestly.
  */
-export const TOOL_OPERATION_WAIVERS: readonly OperationWaiver[] = [];
+export const TOOL_OPERATION_WAIVERS: readonly OperationWaiver[] = [
+  {
+    operation: 'feedback',
+    reason:
+      'The browser_feedback tool was retired once callers stopped using it (SCHEMA 3.16 exit condition); the command line still records and reads feedback.',
+    coveredBy: 'cli',
+  },
+];
 
 /**
  * The tool-surface adapter.
@@ -89,11 +98,14 @@ export const toolStdioAdapter: Adapter = {
     if (tool === undefined) {
       throw new TypeError(`no tool named "${call.name}"`);
     }
-    // A tool maps to exactly one operation, so a call naming a tool whose
-    // operation is not the one asked for is a wiring bug in the caller rather
+    // A tool maps to one operation (a folded tool, one per action), so a call
+    // naming a tool that does not perform the operation asked for is a wiring bug in the caller rather
     // than something to reconcile silently.
-    if (tool.operation !== operation) {
-      throw new TypeError(`${call.name} performs "${tool.operation}", not "${String(operation)}"`);
+    const performed = tool.actions === undefined ? [tool.operation] : Object.values(tool.actions);
+    if (!performed.includes(operation)) {
+      throw new TypeError(
+        `${call.name} performs "${performed.join('" or "')}", not "${String(operation)}"`,
+      );
     }
 
     const args =

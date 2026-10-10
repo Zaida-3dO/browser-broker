@@ -2,17 +2,17 @@ import { OPERATION_NAMES, type OperationName } from '../adapter/operations.ts';
 import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
 
 /**
- * The thirteen tools, their descriptions, and their argument schemas.
+ * The eleven tools, their descriptions, and their argument schemas.
  *
  * ── Surface area is a standing tax, and this file is where it is paid ────
  *
  * `SCHEMA.md` §3.1 opens with it: every description here sits in a connected
  * session's context **on every turn**, whether or not anything calls the
- * tool. Thirteen descriptions is the whole agent-facing documentation of this
+ * tool. Eleven descriptions is the whole agent-facing documentation of this
  * service and it is also a per-turn cost on every session, so each one is
  * written to be the shortest text that still prevents a wrong call.
  *
- * **The thirteenth had to argue for its own cost, and the argument is the
+ * **`browser_doctor` had to argue for its own cost, and the argument is the
  * condition it answers.** `browser_doctor` is the diagnosis half of a remedy
  * whose other half is a shell command. §3.13's evidence: ten tabs stranded by
  * a crashed session make *every claim succeed and every navigate fail*, and
@@ -25,7 +25,7 @@ import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
  * **The description is the only place a calling agent reliably reads.** Not
  * `SCHEMA.md`, not a wiki, not a refusal it has not hit yet. So where a fact
  * changes what a caller does — that `browser_status` is also the renew verb,
- * that the browser choice has no default, that feedback needs no lease — the
+ * that the browser choice has no default, that `browser_doctor` needs no lease — the
  * fact is in the description rather than only in the argument list.
  *
  * **`browser_sign_in`'s description is the strongest case of that rule, and
@@ -48,11 +48,11 @@ import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
  * tab**, and that ceiling is the reason this surface can be handed to an
  * arbitrary caller at all.
  *
- * **`browser_sign_in` and `browser_sign_in_done` move a browser's state and
- * do not breach that ceiling**, which is worth stating because they look like
- * the exception. Both are keyed, and both act only on the lease that called
- * them: the first takes the browser only when no *other* lease holds a tab on
- * it, and the second is refused unless the calling lease is the one that
+ * **`browser_sign_in` (both actions) moves a browser's state and
+ * does not breach that ceiling**, which is worth stating because they look like
+ * the exception. Both actions are keyed, and both act only on the lease that called
+ * them: `request` takes the browser only when no *other* lease holds a tab on
+ * it, and `done` is refused unless the calling lease is the one that
  * asked — so a caller can neither interrupt somebody else's work nor end a
  * person's sign-in command mid-password. The unkeyed pair that could do those
  * things, `begin_sign_in` and `end_sign_in`, is deliberately not on this
@@ -248,14 +248,32 @@ export interface ToolArgument {
   readonly required: boolean;
   /** For a calling agent. Short: this is per-turn context, not a manual. */
   readonly description: string;
+  /**
+   * On a folded tool, the actions this argument belongs to. Absent means every
+   * action. A call naming the argument under any other action is refused by
+   * name (`foldedArgumentRefusal` in `session.ts`) rather than forwarded and
+   * dropped.
+   */
+  readonly forActions?: readonly string[];
 }
 
 /** One tool on the surface. */
 export interface ToolDefinition {
   /** The name a caller calls, exactly as `SCHEMA.md` §3.1 spells it. */
   readonly name: string;
-  /** The one service operation behind it. */
+  /**
+   * The one service operation behind it. On a folded tool (one with
+   * {@link actions}) this is the operation of the first action.
+   */
   readonly operation: OperationName;
+  /**
+   * A folded tool: an `action` argument picks which service operation a call
+   * performs, and each action keeps its own operation name so the ledger and
+   * every rule keyed on the name still see them apart (`SCHEMA.md` §3.1).
+   * The `action` argument is consumed by the tool layer and never reaches the
+   * service.
+   */
+  readonly actions?: Readonly<Record<string, OperationName>>;
   readonly description: string;
   readonly arguments: readonly ToolArgument[];
 }
@@ -319,7 +337,7 @@ const OPTIONAL_LEASE_KEY: ToolArgument = {
 };
 
 /**
- * The thirteen, in §3.1's order.
+ * The eleven, in §3.1's order.
  *
  * The list is data rather than a switch statement for the same reason the
  * command table is: the conformance driver reads it to translate a neutral
@@ -682,6 +700,11 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     name: 'browser_sign_in',
     operation: 'sign_in',
+    // The two halves of asking a person to sign in, folded under `action`.
+    // Each action keeps its own service operation (`sign_in`, `sign_in_done`),
+    // so the ledger and the arbitration rules keyed on the operation name
+    // still see them apart; only the agent-facing surface is one tool.
+    actions: { request: 'sign_in', done: 'sign_in_done' },
     // **Row #67 lands here, and §3.2's sentence is the reason.** The
     // description is the only place a calling agent reliably reads, and the
     // measured failure this tool exists to end is one no refusal can reach: a
@@ -691,85 +714,39 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     // refusals do — rather than left to be inferred from the tool existing.
     description:
       'Hit a login wall? Ask the person to sign in, on the tab you already have. Do NOT abandon ' +
-      'the task and do NOT fabricate a session by seeding tokens or cookies — ask. Your lease and ' +
-      'your tab survive the wait: keep calling browser_status while the person signs in, then ' +
-      'call browser_sign_in_done when they say they are finished. The result carries a sentence ' +
-      'to relay to them. If nobody answers, the request lapses and the browser serves others ' +
-      'again — you keep your tab either way.',
+      'the task and do NOT fabricate a session by seeding tokens or cookies — ask. ' +
+      'action is required: "request" asks (needs what; takes the browser only while no other ' +
+      'lease holds a tab on it), "done" is for when the person says they are finished (only the ' +
+      'lease that asked can call it; it gives the browser back and keeps your lease and tab). ' +
+      'Your lease and your tab survive the wait: keep calling browser_status while the person ' +
+      'signs in. The result carries a sentence to relay to them. If nobody answers, the request ' +
+      'lapses and the browser serves others again — you keep your tab either way.',
     arguments: [
+      {
+        name: 'action',
+        type: 'string',
+        required: true,
+        description: '"request" to ask the person to sign in, "done" once they say they have.',
+      },
       LEASE_KEY,
       {
         name: 'what',
         type: 'string',
-        required: true,
+        required: false,
+        forActions: ['request'],
         description:
-          'What they are signing into, 3-200 characters, relayed to them verbatim. Name the site ' +
-          'or account — "the account dashboard" — not the step you are on.',
+          'Only with action "request", where it is required. What they are signing into, 3-200 ' +
+          'characters, relayed to them verbatim. Name the site or account — "the account ' +
+          'dashboard" — not the step you are on.',
       },
       {
         name: 'request_seconds',
         type: 'integer',
         required: false,
+        forActions: ['request'],
         description:
-          'Ask for a shorter wait than the default. Capped, never extended; the wait you actually ' +
-          'got comes back on the response.',
-      },
-    ],
-  },
-  {
-    name: 'browser_sign_in_done',
-    operation: 'sign_in_done',
-    description:
-      'The person says they have signed in. Gives the browser back to other callers and keeps ' +
-      'your lease and your tab exactly as they were, so carry straight on. Only the lease that ' +
-      'asked can call this.',
-    arguments: [LEASE_KEY],
-  },
-  {
-    name: 'browser_feedback',
-    operation: 'feedback',
-    description:
-      'Tell this service that something helped or got in the way. No lease needed — if your ' +
-      'claim was just refused, you are exactly who this is for. Rate 1 (it stalled my work) to ' +
-      '5 (it made my work faster); 3 is neutral. The lease, your last operation and the refusal ' +
-      'you hit are captured for you: say what you were trying to achieve and what you expected. ' +
-      'Written locally, never transmitted.',
-    arguments: [
-      {
-        name: 'rating',
-        type: 'integer',
-        required: true,
-        description:
-          '1 it stalled the work · 2 substantial friction · 3 neutral · 4 it helped, with a ' +
-          'rough edge · 5 it made the work faster. The axis is help versus hinder, not liking.',
-      },
-      {
-        name: 'category',
-        type: 'string',
-        required: true,
-        description:
-          'refusal-unclear · no-path · worked-around · surprised-me · worked-well. One of those five.',
-      },
-      {
-        name: 'note',
-        type: 'string',
-        required: true,
-        description:
-          '20-2000 characters: what you were trying to achieve, what you expected, and what you ' +
-          'did instead. Do not type the lease id, the operation or the rule — those are captured.',
-      },
-      {
-        name: 'session_id',
-        type: 'string',
-        required: false,
-        description: 'Your identity, when there is no lease to read one from.',
-      },
-      {
-        name: 'lease_key',
-        type: 'string',
-        required: false,
-        description:
-          'When you hold one. It only attaches the row to a lease; it authorises nothing.',
+          'Only with action "request". Ask for a shorter wait than the default. Capped, never ' +
+          'extended; the wait you actually got comes back on the response.',
       },
     ],
   },
@@ -805,8 +782,8 @@ export const TOOLS_BY_NAME: ReadonlyMap<string, ToolDefinition> = new Map(
 );
 
 /** Every operation this surface offers, read from the tool table. */
-export const TOOL_OPERATIONS: readonly OperationName[] = TOOL_DEFINITIONS.map(
-  (tool) => tool.operation,
+export const TOOL_OPERATIONS: readonly OperationName[] = TOOL_DEFINITIONS.flatMap((tool) =>
+  tool.actions === undefined ? [tool.operation] : Object.values(tool.actions),
 );
 
 /**
@@ -818,5 +795,5 @@ export const TOOL_OPERATIONS: readonly OperationName[] = TOOL_DEFINITIONS.map(
  * comparing lengths does not.
  */
 export const OPERATIONS_WITH_TOOLS: readonly OperationName[] = OPERATION_NAMES.filter((operation) =>
-  TOOL_DEFINITIONS.some((tool) => tool.operation === operation),
+  TOOL_OPERATIONS.includes(operation),
 );

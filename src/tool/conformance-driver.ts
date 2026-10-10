@@ -43,12 +43,26 @@ export function toolCallFor(testCase: ConformanceCase): {
   readonly name: string;
   readonly arguments: Readonly<Record<string, unknown>>;
 } {
-  const tool = TOOL_DEFINITIONS.find((entry) => entry.operation === testCase.operation);
+  // A folded tool is found by any of its actions' operations, and the case
+  // then drives it with the `action` that selects that operation.
+  const tool = TOOL_DEFINITIONS.find((entry) =>
+    entry.actions === undefined
+      ? entry.operation === testCase.operation
+      : Object.values(entry.actions).includes(testCase.operation),
+  );
   if (tool === undefined) {
     throw new Error(`the tool surface has no tool for "${testCase.operation}"`);
   }
 
   const args: Record<string, unknown> = {};
+  if (tool.actions !== undefined) {
+    const action = Object.entries(tool.actions).find(
+      ([, operation]) => operation === testCase.operation,
+    );
+    if (action !== undefined) {
+      args['action'] = action[0];
+    }
+  }
   for (const [key, value] of Object.entries(testCase.input)) {
     if (value === undefined || value === null) {
       continue;
