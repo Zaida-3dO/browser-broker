@@ -217,14 +217,24 @@ export async function runConformance(options: ConformanceRunOptions): Promise<Co
       // otherwise a driver that declines to expose anything passes the first
       // assertion vacuously.
       if (!adapter.readOnly && isWriteOperation(waiver.operation)) {
-        findings.push({
-          kind: 'waiver-not-permitted',
-          adapter: adapterId,
-          operation: waiver.operation,
-          detail:
-            'a route exposing a write operation may not waive one; declare the route read-only, or cover it',
-        });
-        continue;
+        // A write operation may be waived only where another route really
+        // offers it. The cover must be a different route and must itself
+        // *offer* the operation — a route that waives it too would let two
+        // routes cover each other into nothing.
+        const cover =
+          waiver.coveredBy === undefined || waiver.coveredBy === adapterId
+            ? undefined
+            : options.drivers[waiver.coveredBy].adapter;
+        if (cover === undefined || !cover.operations.includes(waiver.operation)) {
+          findings.push({
+            kind: 'waiver-not-permitted',
+            adapter: adapterId,
+            operation: waiver.operation,
+            detail:
+              'a route exposing a write operation may not waive one; declare the route read-only, cover it, or name another route that offers it in coveredBy',
+          });
+          continue;
+        }
       }
       waived.add(waiver.operation);
     }

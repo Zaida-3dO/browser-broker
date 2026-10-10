@@ -100,7 +100,7 @@ test('a SPAWNED session serves its caller and EXITS WHEN THE INPUT ENDS', async 
     result: { tools: { name: string }[] };
   };
   assert.equal(response.id, 1);
-  // The thirteen tools came back over a real pipe.
+  // The eleven tools came back over a real pipe.
   assert.deepEqual(
     response.result.tools.map((tool) => tool.name),
     [
@@ -114,8 +114,6 @@ test('a SPAWNED session serves its caller and EXITS WHEN THE INPUT ENDS', async 
       'browser_evaluate',
       'browser_capture',
       'browser_sign_in',
-      'browser_sign_in_done',
-      'browser_feedback',
       'browser_doctor',
     ],
   );
@@ -276,10 +274,10 @@ test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () 
   const manifest = await import('../../package.json', { with: { type: 'json' } });
   assert.equal(handshake.serverInfo.version, manifest.default.version);
 
-  // `tools/list` after the handshake: the thirteen, reached the way a client
+  // `tools/list` after the handshake: the eleven, reached the way a client
   // reaches them.
   const tools = (listed?.['result'] as { tools: { name: string }[] }).tools;
-  assert.equal(tools.length, 13);
+  assert.equal(tools.length, 11);
   assert.ok(
     tools.some((tool) => tool.name === 'browser_status'),
     'the tool the next message calls was not listed',
@@ -336,23 +334,14 @@ test('EVERY tools/call REPLY CARRIES CONTENT A CLIENT CAN RENDER — a success a
       },
     }),
     JSON.stringify({ jsonrpc: JSONRPC_VERSION, method: 'notifications/initialized' }),
-    // A SUCCESS. `feedback` needs no lease and reaches no browser, so it is
-    // the one operation that genuinely succeeds against a fresh store in a
-    // spawned process — which is what makes the accepted branch reachable
-    // here at all.
+    // A SUCCESS. `doctor` needs no lease and reaches no browser, so it
+    // genuinely succeeds against a fresh store in a spawned process — which
+    // is what makes the accepted branch reachable here at all.
     JSON.stringify({
       jsonrpc: JSONRPC_VERSION,
       id: 2,
       method: 'tools/call',
-      params: {
-        name: 'browser_feedback',
-        arguments: {
-          rating: 5,
-          category: 'worked-well',
-          note: 'Asserting that an accepted tool call comes back with content a client can render.',
-          session_id: 'spawned-content-test',
-        },
-      },
+      params: { name: 'browser_doctor', arguments: {} },
     }),
     // A REFUSAL, from the arbitration core: this key names no lease in this
     // spawn's fresh store.
@@ -667,27 +656,23 @@ test('a call carrying ONLY DECLARED ARGUMENTS still reaches the service, over th
   // while breaking the surface — so this proves a well-formed call is
   // untouched by it and still gets through to a real operation.
   //
-  // `browser_feedback` is used for the same reason the content test uses it:
-  // it needs no lease and reaches no browser, so it genuinely SUCCEEDS
-  // against a fresh store in a spawned process. A refusal here would not
-  // distinguish "the guard let it through" from "the guard stopped it".
+  // `browser_sign_in` with `action: "done"` is used because it declares the
+  // names the guard has to let through (`action`, `lease_key`) and a fresh
+  // store refuses it by a *service* rule, `key.valid`. That distinguishes "the
+  // guard let it through" (the core refused it) from "the guard stopped it"
+  // (`call.arguments_declared`).
   //
   // The single change that breaks this test: making the guard compare against
   // anything other than the tool's own declared names — for instance checking
-  // a fixed list, which would refuse `session_id` on this tool.
+  // a fixed list that lacks `action`, which would refuse it here.
   const result = await spawnSession([
     JSON.stringify({
       jsonrpc: JSONRPC_VERSION,
       id: 1,
       method: 'tools/call',
       params: {
-        name: 'browser_feedback',
-        arguments: {
-          rating: 4,
-          category: 'worked-well',
-          note: 'Asserting a call using only declared argument names is not caught by the undeclared-argument guard.',
-          session_id: 'spawned-declared-arguments-test',
-        },
+        name: 'browser_sign_in',
+        arguments: { action: 'done', lease_key: 'a-key-naming-no-lease' },
       },
     }),
   ]);
@@ -698,8 +683,8 @@ test('a call carrying ONLY DECLARED ARGUMENTS still reaches the service, over th
     result?: { structuredContent?: { outcome?: string; rule?: string } };
   };
   assert.equal(
-    response.result?.structuredContent?.outcome,
-    'accepted',
-    `a call using only declared names was refused: ${line}`,
+    response.result?.structuredContent?.rule,
+    'key.valid',
+    `a call using only declared names did not reach the service: ${line}`,
   );
 });

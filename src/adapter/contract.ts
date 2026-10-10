@@ -51,6 +51,18 @@ export interface OperationWaiver {
   readonly operation: OperationName;
   /** Why this route does not offer it. Must say something (asserted). */
   readonly reason: string;
+  /**
+   * The other route that does offer it, which is what lets a route that
+   * exposes write operations waive one.
+   *
+   * Without it a write-operation waiver is refused outright (`MILESTONES.md`:
+   * a route is read-only by declaration or fully covered, so a driver that
+   * declines to expose things cannot pass vacuously). With it, the runner
+   * checks that the named route is not this one and itself **offers** the
+   * operation — offers, not waives, so two routes cannot cover each other
+   * into nothing. The operation is still exercised, on that route.
+   */
+  readonly coveredBy?: AdapterId;
 }
 
 /**

@@ -801,7 +801,7 @@ export function relaySentence(options: {
     `Tell the person: the ${options.browser} browser has a tab open on the sign-in page for ${options.what} — ` +
     `please sign in there, then say when you are done. The tab is already on the page, so nothing needs opening. ` +
     `While you wait, keep calling browser_status to hold your lease; your lease and your tab are untouched by the sign-in. ` +
-    `Call browser_sign_in_done once they confirm. If nobody answers within about ${String(minutes)} minutes the request lapses ` +
+    `Call browser_sign_in with action "done" once they confirm. If nobody answers within about ${String(minutes)} minutes the request lapses ` +
     `and the browser serves other callers again — ask again if that happens.`
   );
 }

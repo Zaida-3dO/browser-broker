@@ -1,3 +1,4 @@
+import type { OperationName } from '../adapter/operations.ts';
 import type { BrokerService } from '../adapter/service-seam.ts';
 import { toolStdioAdapter } from './adapter.ts';
 import {
@@ -99,7 +100,7 @@ export const SERVER_INFO = {
  * claiming either would make a client offer its user a menu that answers
  * `method_not_found` when chosen. An empty object is the specification's way
  * of saying "this capability, with no optional extras" — notably not
- * `listChanged`, since the twelve tools are fixed at build time and a surface
+ * `listChanged`, since the tools are fixed at build time and a surface
  * that promised change notifications would owe notifications it can never
  * have a reason to send.
  */
@@ -113,7 +114,7 @@ export function initializeResult(
   };
 }
 
-/** What `tools/list` returns: the twelve, with their descriptions and schemas. */
+/** What `tools/list` returns: the tools, with their descriptions and schemas. */
 export function listTools(): Readonly<Record<string, unknown>> {
   return {
     tools: TOOL_DEFINITIONS.map((tool) => ({
@@ -359,6 +360,83 @@ function undeclaredArgumentRefusal(
   });
 }
 
+/**
+ * Resolve which service operation a call to a folded tool performs.
+ *
+ * ── What a fold refuses, and why by name ────────────────────────────────
+ *
+ * A tool with `actions` takes an `action` argument that is consumed here and
+ * never reaches the service. Three things are refused rather than coerced:
+ * a missing `action`, an unknown one (the message lists the valid ones), and
+ * an argument that belongs to a different action (named, with the action it
+ * does belong to). The last matters most: the bridge reads the names its own
+ * operation knows and drops the rest, so `what` sent with `action: "done"`
+ * would answer `accepted` for a request that was partly ignored — the
+ * inert-argument defect from the other direction (see
+ * {@link undeclaredArgumentRefusal}).
+ *
+ * Returns the operation and the arguments with `action` removed, or a
+ * refusal to send back as the result.
+ */
+function resolveAction(
+  tool: ToolDefinition,
+  args: unknown,
+):
+  | { readonly refusal: ToolCallResult }
+  | { readonly operation: OperationName; readonly args: unknown } {
+  const actions = tool.actions;
+  if (actions === undefined) {
+    return { operation: tool.operation, args };
+  }
+  const names = Object.keys(actions);
+  const record =
+    args === null || typeof args !== 'object' || Array.isArray(args)
+      ? {}
+      : (args as Record<string, unknown>);
+  const action = record['action'];
+  const valid = names.map((name) => `"${name}"`).join(' or ');
+  if (typeof action !== 'string' || !Object.hasOwn(actions, action)) {
+    return {
+      refusal: refusalResult({
+        code: 'malformed_call',
+        rule: 'call.arguments_declared',
+        message:
+          `${tool.name} needs an action: ${valid}. ` +
+          (typeof action === 'string' ? `"${action}" is not one of them.` : 'None was given.'),
+        details: { tool: tool.name, actions: names },
+      }),
+    };
+  }
+  const misplaced = tool.arguments.filter(
+    (argument) =>
+      argument.forActions !== undefined &&
+      !argument.forActions.includes(action) &&
+      Object.hasOwn(record, argument.name),
+  );
+  if (misplaced.length > 0) {
+    const listed = misplaced
+      .map(
+        (argument) =>
+          `"${argument.name}" (only with action ${(argument.forActions ?? []).map((a) => `"${a}"`).join(' or ')})`,
+      )
+      .join(', ');
+    return {
+      refusal: refusalResult({
+        code: 'malformed_call',
+        rule: 'call.arguments_declared',
+        message:
+          `${tool.name} with action "${action}" does not take ${listed}. Remove ` +
+          `${misplaced.length === 1 ? 'it' : 'them'}, or use the other action. An argument for ` +
+          `another action is refused rather than ignored, because a call that silently dropped ` +
+          `it would report success for a request that did not happen.`,
+        details: { tool: tool.name, action, misplaced: misplaced.map((argument) => argument.name) },
+      }),
+    };
+  }
+  const rest = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'action'));
+  return { operation: actions[action] as OperationName, args: rest };
+}
+
 function refusalResult(refusal: {
   readonly code: string;
   readonly rule: string;
@@ -428,7 +506,7 @@ export async function handleRequest(
       id: request.id,
       error: {
         code: 'tool_not_found',
-        message: `There is no tool named "${name}". Call ${METHODS.listTools} for the twelve this surface offers.`,
+        message: `There is no tool named "${name}". Call ${METHODS.listTools} for the tools this surface offers.`,
       },
     };
   }
@@ -441,16 +519,21 @@ export async function handleRequest(
     return { id: request.id, result: undeclaredArgumentRefusal(tool, undeclared) };
   }
 
-  const outcome = await toolStdioAdapter.invoke(options.service, tool.operation, {
+  const resolved = resolveAction(tool, params['arguments']);
+  if ('refusal' in resolved) {
+    return { id: request.id, result: resolved.refusal };
+  }
+
+  const outcome = await toolStdioAdapter.invoke(options.service, resolved.operation, {
     name,
-    arguments: params['arguments'],
+    arguments: resolved.args,
   });
 
   if (outcome.outcome === 'accepted') {
     // A grant has to carry the key it issued or the lease is unreachable;
     // everything else is stripped. The exception is named rather than
     // implicit, so widening it is a visible change.
-    const value = tool.operation === 'claim' ? outcome.value : withoutSecrets(outcome.value);
+    const value = resolved.operation === 'claim' ? outcome.value : withoutSecrets(outcome.value);
     const structured = { outcome: 'accepted' as const, value };
     const result: ToolCallResult = {
       // The whole outcome is serialised, `outcome` and `value` together,

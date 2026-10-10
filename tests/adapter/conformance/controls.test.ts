@@ -396,6 +396,84 @@ test('CONTROL — a WRITE route may not buy its way out with waivers', async () 
   assert.match(finding.detail, /may not waive/u);
 });
 
+/**
+ * The tool route with its real feedback waiver replaced by `waiver`, and the
+ * command line optionally stripped of an operation, over the real drivers.
+ */
+function driversWithFeedbackWaiver(
+  waiver: Adapter['waivers'][number],
+  cliOperations?: Adapter['operations'],
+): ConformanceDrivers {
+  const tool = CONFORMANCE_DRIVERS['tool-stdio'];
+  const cli = CONFORMANCE_DRIVERS.cli;
+  return {
+    'tool-stdio': { ...tool, adapter: { ...tool.adapter, waivers: [waiver] } },
+    cli:
+      cliOperations === undefined
+        ? cli
+        : { ...cli, adapter: { ...cli.adapter, operations: cliOperations } },
+  };
+}
+
+const FEEDBACK_WAIVER_REASON = 'the tool was retired and the command line still records feedback';
+
+test('CONTROL — a write waiver is allowed ONLY when another route really offers the operation', async () => {
+  // The relaxation of "a write route may not waive" that retired
+  // `browser_feedback`. Three ways it could be hollow, each shown to fail.
+  const covered = await runConformance({
+    ...baseline,
+    drivers: driversWithFeedbackWaiver({
+      operation: 'feedback',
+      reason: FEEDBACK_WAIVER_REASON,
+      coveredBy: 'cli',
+    }),
+  });
+  assert.deepEqual(covered.findings, [], 'a waiver covered by a route that offers it was refused');
+
+  // No cover named: the original rule still bites.
+  const uncovered = await runConformance({
+    ...baseline,
+    drivers: driversWithFeedbackWaiver({ operation: 'feedback', reason: FEEDBACK_WAIVER_REASON }),
+  });
+  assert.ok(
+    uncovered.findings.some(
+      (entry) => entry.kind === 'waiver-not-permitted' && entry.operation === 'feedback',
+    ),
+    'a write waiver with no cover was accepted',
+  );
+
+  // The route naming itself as its own cover is no cover.
+  const self = await runConformance({
+    ...baseline,
+    drivers: driversWithFeedbackWaiver({
+      operation: 'feedback',
+      reason: FEEDBACK_WAIVER_REASON,
+      coveredBy: 'tool-stdio',
+    }),
+  });
+  assert.ok(
+    self.findings.some(
+      (entry) => entry.kind === 'waiver-not-permitted' && entry.adapter === 'tool-stdio',
+    ),
+    'a route covered itself',
+  );
+
+  // The named cover does not offer it: no cover either.
+  const notOffered = await runConformance({
+    ...baseline,
+    drivers: driversWithFeedbackWaiver(
+      { operation: 'feedback', reason: FEEDBACK_WAIVER_REASON, coveredBy: 'cli' },
+      CONFORMANCE_DRIVERS.cli.adapter.operations.filter((operation) => operation !== 'feedback'),
+    ),
+  });
+  assert.ok(
+    notOffered.findings.some(
+      (entry) => entry.kind === 'waiver-not-permitted' && entry.adapter === 'tool-stdio',
+    ),
+    'a waiver was accepted although the named cover does not offer the operation',
+  );
+});
+
 test('CONTROL — an accepted value missing a field its case names is caught', async () => {
   // The response-conformance assertion, shown able to fail. §3.11 promised
   // `sourceWidth`, `sourceHeight` and `tier` and the shipped response carried

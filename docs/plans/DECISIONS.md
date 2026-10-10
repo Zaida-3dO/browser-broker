@@ -2139,6 +2139,11 @@ caller can observe — it is the moment the browser comes back — so it is `bro
 rather than a `done: true` argument on the first. A single tool with a flag would hide the exact
 transition somebody reading the ledger is looking for.
 
+*Amended when the tool surface was folded:* the agent-facing tool is now one, `browser_sign_in` with
+`action: "request" | "done"`, but the **operations stay two** — the tool layer maps the action to
+`sign_in` or `sign_in_done` and strips it — so the ledger and every rule keyed on the operation name
+still see the transition. The reasoning above is about the operation, and it still holds.
+
 **What this costs, stated rather than implied away.** §3.1 opens with *"surface area is a standing
 tax"*, and this is a 20% increase in the tool list — two descriptions in every connected session's
 context on every turn, forever, whether or not anybody signs in. That is a real and permanent cost
