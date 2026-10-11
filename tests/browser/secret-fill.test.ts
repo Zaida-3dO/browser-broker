@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import type { BrowserSession, SecretScope, SecretUse, TabHandle } from '../../src/browser/driver.ts';
+import type {
+  BrowserSession,
+  SecretScope,
+  SecretUse,
+  TabHandle,
+} from '../../src/browser/driver.ts';
 import { RealBrowserDriver } from '../../src/browser/real.ts';
 import { decodePng } from '../../src/capture/image.ts';
 import { BrokerError } from '../../src/errors.ts';
@@ -140,7 +145,10 @@ before(async () => {
 
   const profileRoot = temporaryProfileRoot();
   const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-secret-'));
-  const driver = new RealBrowserDriver({ executablePath: browserExecutablePath(), outputDirectory });
+  const driver = new RealBrowserDriver({
+    executablePath: browserExecutablePath(),
+    outputDirectory,
+  });
   const session = await driver.coldStart({
     browser: 'private',
     profileDirectory: path.join(profileRoot, 'private'),
@@ -213,7 +221,10 @@ async function inPage(tab: TabHandle, expression: string): Promise<unknown> {
 
 function assertAbsent(text: string, value: string, where: string): void {
   for (const spelling of spellingsOf(value)) {
-    assert.ok(!text.includes(spelling), `${where} contains the secret (as ${JSON.stringify(spelling)}):\n${text}`);
+    assert.ok(
+      !text.includes(spelling),
+      `${where} contains the secret (as ${JSON.stringify(spelling)}):\n${text}`,
+    );
   }
 }
 
@@ -228,41 +239,60 @@ function refusal(rule: string, value = GOOD): (error: unknown) => boolean {
 
 /* ─────────────── the right field, on the right origin ─────────────── */
 
-test('a secret is typed into a password field on its origin, and no output carries it', { skip }, async () => {
-  const { a } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
-  const { scope, uses } = scopeFor([a.origin]);
+test(
+  'a secret is typed into a password field on its origin, and no output carries it',
+  { skip },
+  async () => {
+    const { a } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
+    const { scope, uses } = scopeFor([a.origin]);
 
-  const result = await the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, scope);
+    const result = await the().session.act(
+      tab,
+      { action: 'fill', ref, value: '{{secret:good}}' },
+      scope,
+    );
 
-  // It really was typed: read out of the page, not out of the call.
-  assert.equal(await inPage(tab, "document.getElementById('pw').value"), GOOD);
-  assert.deepEqual(uses, [{ name: 'good', origin: a.origin, field: 'password', outcome: 'allow' }]);
+    // It really was typed: read out of the page, not out of the call.
+    assert.equal(await inPage(tab, "document.getElementById('pw').value"), GOOD);
+    assert.deepEqual(uses, [
+      { name: 'good', origin: a.origin, field: 'password', outcome: 'allow' },
+    ]);
 
-  // The snapshot `act` hands back: the page copied the value into visible
-  // text, and the snapshot shows that text redacted.
-  const after = fs.readFileSync(result.path, 'utf8');
-  assertAbsent(after, GOOD, "act's snapshot");
-  assert.ok(after.includes(REDACTION_MARK), `the copy was not redacted:\n${after}`);
+    // The snapshot `act` hands back: the page copied the value into visible
+    // text, and the snapshot shows that text redacted.
+    const after = fs.readFileSync(result.path, 'utf8');
+    assertAbsent(after, GOOD, "act's snapshot");
+    assert.ok(after.includes(REDACTION_MARK), `the copy was not redacted:\n${after}`);
 
-  // Every later read, scoped as the service scopes a secret-bearing tab.
-  const later = scopeFor([a.origin], ['good']).scope;
-  const reads = await the().session.read(tab, ['snapshot', 'console', 'network', 'cookies'], {
-    secrets: later,
-  });
-  for (const written of reads) {
-    assertAbsent(fs.readFileSync(written.path, 'utf8'), GOOD, `the ${written.artifact} read`);
-  }
-  const consoleText = fs.readFileSync(reads.find((r) => r.artifact === 'console')?.path ?? '', 'utf8');
-  assert.match(consoleText, /typed \[secret redacted\]/u);
+    // Every later read, scoped as the service scopes a secret-bearing tab.
+    const later = scopeFor([a.origin], ['good']).scope;
+    const reads = await the().session.read(tab, ['snapshot', 'console', 'network', 'cookies'], {
+      secrets: later,
+    });
+    for (const written of reads) {
+      assertAbsent(fs.readFileSync(written.path, 'utf8'), GOOD, `the ${written.artifact} read`);
+    }
+    const consoleText = fs.readFileSync(
+      reads.find((r) => r.artifact === 'console')?.path ?? '',
+      'utf8',
+    );
+    assert.match(consoleText, /typed \[secret redacted\]/u);
 
-  // **The control.** The same reads with no scope DO carry the value — so the
-  // page really leaks it, and the scrubbing is what kept it out above.
-  const [rawConsole] = await the().session.read(tab, ['console']);
-  assert.ok(fs.readFileSync(rawConsole?.path ?? '', 'utf8').includes(GOOD), 'the fixture did not leak');
-  assert.ok((await rawSnapshot(tab)).includes(GOOD), 'the unscrubbed snapshot did not show the field');
-});
+    // **The control.** The same reads with no scope DO carry the value — so the
+    // page really leaks it, and the scrubbing is what kept it out above.
+    const [rawConsole] = await the().session.read(tab, ['console']);
+    assert.ok(
+      fs.readFileSync(rawConsole?.path ?? '', 'utf8').includes(GOOD),
+      'the fixture did not leak',
+    );
+    assert.ok(
+      (await rawSnapshot(tab)).includes(GOOD),
+      'the unscrubbed snapshot did not show the field',
+    );
+  },
+);
 
 test('typing keystroke by keystroke goes through the same binding', { skip }, async () => {
   const { a } = the();
@@ -270,180 +300,231 @@ test('typing keystroke by keystroke goes through the same binding', { skip }, as
   const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
   const { scope, uses } = scopeFor([a.origin]);
 
-  const result = await the().session.act(tab, { action: 'type', ref, value: '{{secret:good}}' }, scope);
+  const result = await the().session.act(
+    tab,
+    { action: 'type', ref, value: '{{secret:good}}' },
+    scope,
+  );
   assert.equal(await inPage(tab, "document.getElementById('pw').value"), GOOD);
   assert.equal(uses[0]?.outcome, 'allow');
   assertAbsent(fs.readFileSync(result.path, 'utf8'), GOOD, "type's snapshot");
 });
 
-test('a value submitted in an address is scrubbed from the network log and from navigate', { skip }, async () => {
-  const { a } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
-  await the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, scopeFor([a.origin]).scope);
-
-  // Submit the GET form: the password is now in the address and the title.
-  const later = scopeFor([a.origin], ['good']).scope;
-  // No reference: the key goes to the focused field, which the fill left focused.
-  await the().session.act(tab, { action: 'press', value: 'Enter' }, later);
-  await the().session.navigate(tab, `${a.origin}/landing?pw=${GOOD}`, undefined, later).then((arrived) => {
-    assertAbsent(arrived.url, GOOD, "navigate's address");
-    assertAbsent(arrived.title, GOOD, "navigate's title");
-    assert.ok(arrived.title.includes(REDACTION_MARK));
-  });
-
-  const [network] = await the().session.read(tab, ['network'], { secrets: later });
-  assertAbsent(fs.readFileSync(network?.path ?? '', 'utf8'), GOOD, 'the network log');
-
-  // The control: unscrubbed, the log does carry it.
-  const [raw] = await the().session.read(tab, ['network']);
-  assert.ok(fs.readFileSync(raw?.path ?? '', 'utf8').includes(GOOD), 'the form did not submit the value');
-});
-
-test('a capture of a secret-bearing tab masks the password field and the copied text', { skip }, async () => {
-  const { a } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
-  await the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, scopeFor([a.origin]).scope);
-
-  const centre = async (id: string): Promise<{ x: number; y: number }> =>
-    (await inPage(
+test(
+  'a value submitted in an address is scrubbed from the network log and from navigate',
+  { skip },
+  async () => {
+    const { a } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
+    await the().session.act(
       tab,
-      `(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();
+      { action: 'fill', ref, value: '{{secret:good}}' },
+      scopeFor([a.origin]).scope,
+    );
+
+    // Submit the GET form: the password is now in the address and the title.
+    const later = scopeFor([a.origin], ['good']).scope;
+    // No reference: the key goes to the focused field, which the fill left focused.
+    await the().session.act(tab, { action: 'press', value: 'Enter' }, later);
+    await the()
+      .session.navigate(tab, `${a.origin}/landing?pw=${GOOD}`, undefined, later)
+      .then((arrived) => {
+        assertAbsent(arrived.url, GOOD, "navigate's address");
+        assertAbsent(arrived.title, GOOD, "navigate's title");
+        assert.ok(arrived.title.includes(REDACTION_MARK));
+      });
+
+    const [network] = await the().session.read(tab, ['network'], { secrets: later });
+    assertAbsent(fs.readFileSync(network?.path ?? '', 'utf8'), GOOD, 'the network log');
+
+    // The control: unscrubbed, the log does carry it.
+    const [raw] = await the().session.read(tab, ['network']);
+    assert.ok(
+      fs.readFileSync(raw?.path ?? '', 'utf8').includes(GOOD),
+      'the form did not submit the value',
+    );
+  },
+);
+
+test(
+  'a capture of a secret-bearing tab masks the password field and the copied text',
+  { skip },
+  async () => {
+    const { a } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
+    await the().session.act(
+      tab,
+      { action: 'fill', ref, value: '{{secret:good}}' },
+      scopeFor([a.origin]).scope,
+    );
+
+    const centre = async (id: string): Promise<{ x: number; y: number }> =>
+      (await inPage(
+        tab,
+        `(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
-    )) as { x: number; y: number };
-  const magentaAt = (image: Uint8Array, point: { x: number; y: number }): boolean => {
-    const decoded = decodePng(image);
-    const at = (Math.round(point.y) * decoded.width + Math.round(point.x)) * 4;
-    const [r, g, b] = [decoded.pixels[at] ?? 0, decoded.pixels[at + 1] ?? 0, decoded.pixels[at + 2] ?? 0];
-    return r > 200 && g < 60 && b > 200;
-  };
-  const field = await centre('pw');
-  const copy = await centre('echo');
+      )) as { x: number; y: number };
+    const magentaAt = (image: Uint8Array, point: { x: number; y: number }): boolean => {
+      const decoded = decodePng(image);
+      const at = (Math.round(point.y) * decoded.width + Math.round(point.x)) * 4;
+      const [r, g, b] = [
+        decoded.pixels[at] ?? 0,
+        decoded.pixels[at + 1] ?? 0,
+        decoded.pixels[at + 2] ?? 0,
+      ];
+      return r > 200 && g < 60 && b > 200;
+    };
+    const field = await centre('pw');
+    const copy = await centre('echo');
 
-  const masked = await the().session.capture(tab, {
-    fullPage: false,
-    secrets: scopeFor([a.origin], ['good']).scope,
-  });
-  assert.ok(magentaAt(masked.image, field), 'the password field was not masked');
-  assert.ok(magentaAt(masked.image, copy), 'the copied text was not masked');
+    const masked = await the().session.capture(tab, {
+      fullPage: false,
+      secrets: scopeFor([a.origin], ['good']).scope,
+    });
+    assert.ok(magentaAt(masked.image, field), 'the password field was not masked');
+    assert.ok(magentaAt(masked.image, copy), 'the copied text was not masked');
 
-  // The control: unscoped, neither is painted over.
-  const plain = await the().session.capture(tab, { fullPage: false });
-  assert.ok(!magentaAt(plain.image, field) && !magentaAt(plain.image, copy), 'the control was masked');
-});
+    // The control: unscoped, neither is painted over.
+    const plain = await the().session.capture(tab, { fullPage: false });
+    assert.ok(
+      !magentaAt(plain.image, field) && !magentaAt(plain.image, copy),
+      'the control was masked',
+    );
+  },
+);
 
 /* ─────────────── refused: wrong place, and nothing typed ─────────────── */
 
-test('a cross-origin iframe is refused, even when the secret is bound to the frame', { skip }, async () => {
-  const { a, b } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const ref = referenceFor(await rawSnapshot(tab), 'textbox "Other password"');
+test(
+  'a cross-origin iframe is refused, even when the secret is bound to the frame',
+  { skip },
+  async () => {
+    const { a, b } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const ref = referenceFor(await rawSnapshot(tab), 'textbox "Other password"');
 
-  // Bound to the top page's origin only: the frame is elsewhere.
-  const onlyTop = scopeFor([a.origin]);
-  await assert.rejects(
-    the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, onlyTop.scope),
-    refusal('act.secret_origin_bound'),
-  );
-  // Bound to the frame's origin only: the page around it is elsewhere.
-  const onlyFrame = scopeFor([b.origin]);
-  await assert.rejects(
-    the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, onlyFrame.scope),
-    refusal('act.secret_origin_bound'),
-  );
-  assert.deepEqual(
-    [...onlyTop.uses, ...onlyFrame.uses].map((use) => [use.outcome, use.rule, use.origin]),
-    [
-      ['deny', 'act.secret_origin_bound', b.origin],
-      ['deny', 'act.secret_origin_bound', b.origin],
-    ],
-  );
-  // Nothing was typed: the unscrubbed snapshot shows field values in clear,
-  // and it does not show this one.
-  assert.ok(!(await rawSnapshot(tab)).includes(GOOD), 'the value reached the frame');
-});
+    // Bound to the top page's origin only: the frame is elsewhere.
+    const onlyTop = scopeFor([a.origin]);
+    await assert.rejects(
+      the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, onlyTop.scope),
+      refusal('act.secret_origin_bound'),
+    );
+    // Bound to the frame's origin only: the page around it is elsewhere.
+    const onlyFrame = scopeFor([b.origin]);
+    await assert.rejects(
+      the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, onlyFrame.scope),
+      refusal('act.secret_origin_bound'),
+    );
+    assert.deepEqual(
+      [...onlyTop.uses, ...onlyFrame.uses].map((use) => [use.outcome, use.rule, use.origin]),
+      [
+        ['deny', 'act.secret_origin_bound', b.origin],
+        ['deny', 'act.secret_origin_bound', b.origin],
+      ],
+    );
+    // Nothing was typed: the unscrubbed snapshot shows field values in clear,
+    // and it does not show this one.
+    assert.ok(!(await rawSnapshot(tab)).includes(GOOD), 'the value reached the frame');
+  },
+);
 
 test('a page at another origin is refused', { skip }, async () => {
   const { a, b } = the();
   const tab = await openAt(`${b.origin}/login`);
   const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
   await assert.rejects(
-    the().session.act(tab, { action: 'fill', ref, value: '{{secret:good}}' }, scopeFor([a.origin]).scope),
+    the().session.act(
+      tab,
+      { action: 'fill', ref, value: '{{secret:good}}' },
+      scopeFor([a.origin]).scope,
+    ),
     refusal('act.secret_origin_bound'),
   );
   assert.equal(await inPage(tab, "document.getElementById('pw').value"), '');
 });
 
-test('a field of an undeclared kind is refused; declared kinds are accepted', { skip }, async () => {
-  const { a } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const snapshot = await rawSnapshot(tab);
-  const comment = referenceFor(snapshot, 'textbox "Comment"');
-  const email = referenceFor(snapshot, 'textbox "Email"');
-  const password = referenceFor(snapshot, 'textbox "Password"');
-  const code = referenceFor(snapshot, 'textbox "Code"');
-  const { scope, uses } = scopeFor([a.origin]);
+test(
+  'a field of an undeclared kind is refused; declared kinds are accepted',
+  { skip },
+  async () => {
+    const { a } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const snapshot = await rawSnapshot(tab);
+    const comment = referenceFor(snapshot, 'textbox "Comment"');
+    const email = referenceFor(snapshot, 'textbox "Email"');
+    const password = referenceFor(snapshot, 'textbox "Password"');
+    const code = referenceFor(snapshot, 'textbox "Code"');
+    const { scope, uses } = scopeFor([a.origin]);
 
-  // A password into a plain text field.
-  await assert.rejects(
-    the().session.act(tab, { action: 'fill', ref: comment, value: '{{secret:good}}' }, scope),
-    refusal('act.secret_field_bound'),
-  );
-  assert.equal(await inPage(tab, "document.getElementById('note').value"), '');
-
-  // A username into a password field: declared for usernames only.
-  await assert.rejects(
-    the().session.act(tab, { action: 'fill', ref: password, value: '{{secret:user}}' }, scope),
-    refusal('act.secret_field_bound', FAKE_VALUES.user),
-  );
-  assert.equal(await inPage(tab, "document.getElementById('pw').value"), '');
-
-  // And the declared kinds go where they belong.
-  await the().session.act(
-    tab,
-    { action: 'fill_form', fields: [
-      { ref: email, value: '{{secret:user}}' },
-      { ref: code, value: '{{secret:otp}}' },
-    ] },
-    scope,
-  );
-  assert.equal(await inPage(tab, "document.getElementById('user').value"), FAKE_VALUES.user);
-  assert.equal(await inPage(tab, "document.getElementById('code').value"), FAKE_VALUES.otp);
-  assert.deepEqual(
-    uses.map((use) => [use.name, use.outcome, use.field]),
-    [
-      ['good', 'deny', undefined],
-      ['user', 'deny', undefined],
-      ['user', 'allow', 'username'],
-      ['otp', 'allow', 'otp'],
-    ],
-  );
-});
-
-test('a resolver that fails or stalls types nothing and says nothing of the value', { skip }, async () => {
-  const { a } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
-  const { scope, uses } = scopeFor([a.origin], [], 1_500);
-
-  for (const name of ['fail', 'slow', 'junk']) {
+    // A password into a plain text field.
     await assert.rejects(
-      the().session.act(tab, { action: 'fill', ref, value: `{{secret:${name}}}` }, scope),
-      refusal('act.secret_resolved'),
-      name,
+      the().session.act(tab, { action: 'fill', ref: comment, value: '{{secret:good}}' }, scope),
+      refusal('act.secret_field_bound'),
     );
-  }
-  assert.equal(await inPage(tab, "document.getElementById('pw').value"), '');
-  assert.deepEqual(
-    uses.map((use) => [use.name, use.outcome, use.rule]),
-    [
-      ['fail', 'deny', 'act.secret_resolved'],
-      ['slow', 'deny', 'act.secret_resolved'],
-      ['junk', 'deny', 'act.secret_resolved'],
-    ],
-  );
-});
+    assert.equal(await inPage(tab, "document.getElementById('note').value"), '');
+
+    // A username into a password field: declared for usernames only.
+    await assert.rejects(
+      the().session.act(tab, { action: 'fill', ref: password, value: '{{secret:user}}' }, scope),
+      refusal('act.secret_field_bound', FAKE_VALUES.user),
+    );
+    assert.equal(await inPage(tab, "document.getElementById('pw').value"), '');
+
+    // And the declared kinds go where they belong.
+    await the().session.act(
+      tab,
+      {
+        action: 'fill_form',
+        fields: [
+          { ref: email, value: '{{secret:user}}' },
+          { ref: code, value: '{{secret:otp}}' },
+        ],
+      },
+      scope,
+    );
+    assert.equal(await inPage(tab, "document.getElementById('user').value"), FAKE_VALUES.user);
+    assert.equal(await inPage(tab, "document.getElementById('code').value"), FAKE_VALUES.otp);
+    assert.deepEqual(
+      uses.map((use) => [use.name, use.outcome, use.field]),
+      [
+        ['good', 'deny', undefined],
+        ['user', 'deny', undefined],
+        ['user', 'allow', 'username'],
+        ['otp', 'allow', 'otp'],
+      ],
+    );
+  },
+);
+
+test(
+  'a resolver that fails or stalls types nothing and says nothing of the value',
+  { skip },
+  async () => {
+    const { a } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
+    const { scope, uses } = scopeFor([a.origin], [], 1_500);
+
+    for (const name of ['fail', 'slow', 'junk']) {
+      await assert.rejects(
+        the().session.act(tab, { action: 'fill', ref, value: `{{secret:${name}}}` }, scope),
+        refusal('act.secret_resolved'),
+        name,
+      );
+    }
+    assert.equal(await inPage(tab, "document.getElementById('pw').value"), '');
+    assert.deepEqual(
+      uses.map((use) => [use.name, use.outcome, use.rule]),
+      [
+        ['fail', 'deny', 'act.secret_resolved'],
+        ['slow', 'deny', 'act.secret_resolved'],
+        ['junk', 'deny', 'act.secret_resolved'],
+      ],
+    );
+  },
+);
 
 test('a sentinel the driver cannot resolve is refused, never typed as text', { skip }, async () => {
   const { a } = the();
@@ -456,22 +537,26 @@ test('a sentinel the driver cannot resolve is refused, never typed as text', { s
   assert.equal(await inPage(tab, "document.getElementById('note').value"), '');
 });
 
-test('a value that needs escaping is scrubbed in every spelling the snapshot uses', { skip }, async () => {
-  const { a } = the();
-  const tab = await openAt(`${a.origin}/login`);
-  const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
-  const result = await the().session.act(
-    tab,
-    { action: 'fill', ref, value: '{{secret:special}}' },
-    scopeFor([a.origin]).scope,
-  );
-  assert.equal(await inPage(tab, "document.getElementById('pw').value"), FAKE_VALUES.special);
-  assertAbsent(fs.readFileSync(result.path, 'utf8'), FAKE_VALUES.special, "act's snapshot");
+test(
+  'a value that needs escaping is scrubbed in every spelling the snapshot uses',
+  { skip },
+  async () => {
+    const { a } = the();
+    const tab = await openAt(`${a.origin}/login`);
+    const ref = referenceFor(await rawSnapshot(tab), 'textbox "Password"');
+    const result = await the().session.act(
+      tab,
+      { action: 'fill', ref, value: '{{secret:special}}' },
+      scopeFor([a.origin]).scope,
+    );
+    assert.equal(await inPage(tab, "document.getElementById('pw').value"), FAKE_VALUES.special);
+    assertAbsent(fs.readFileSync(result.path, 'utf8'), FAKE_VALUES.special, "act's snapshot");
 
-  // The control: the unscrubbed snapshot carries it in some spelling.
-  const raw = await rawSnapshot(tab);
-  assert.ok(
-    spellingsOf(FAKE_VALUES.special).some((spelling) => raw.includes(spelling)),
-    `the unscrubbed snapshot did not carry the value in any known spelling:\n${raw}`,
-  );
-});
+    // The control: the unscrubbed snapshot carries it in some spelling.
+    const raw = await rawSnapshot(tab);
+    assert.ok(
+      spellingsOf(FAKE_VALUES.special).some((spelling) => raw.includes(spelling)),
+      `the unscrubbed snapshot did not carry the value in any known spelling:\n${raw}`,
+    );
+  },
+);

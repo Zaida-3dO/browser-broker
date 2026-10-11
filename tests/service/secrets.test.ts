@@ -33,7 +33,7 @@ function countingResolver(): { resolver: SecretResolver; asked: string[] } {
     asked.push(name);
     const answer: ResolvedSecret = {
       value: VALUE,
-      origins: ['https://app.example.com'],
+      origins: ['https://example.com'],
       fields: ['password'],
     };
     return Promise.resolve(answer);
@@ -98,7 +98,7 @@ function recordingSession(options: { typeSecrets?: boolean } = {}): Recorded {
           await secrets.resolve(name);
           secrets.record({
             name,
-            origin: 'https://app.example.com',
+            origin: 'https://example.com',
             field: 'password',
             outcome: 'allow',
           });
@@ -221,7 +221,7 @@ test('a sentinel anywhere it is not resolved is refused, and the driver is never
       fixture.broker.navigate({
         key: lease.key,
         tabId: lease.tabId,
-        url: 'https://app.example.com/?q={{secret:login}}',
+        url: 'https://example.com/?q={{secret:login}}',
         session: () => driver.session,
         secretResolver: resolver,
       }),
@@ -251,7 +251,7 @@ test('a sentinel in a storage seed refuses the claim, and no lease is granted', 
         claimInput({
           storageSeed: [
             {
-              origin: 'https://app.example.com',
+              origin: 'https://example.com',
               area: 'local',
               key: 'token',
               value: '{{secret:login}}',
@@ -308,7 +308,7 @@ test('a sentinel reaches the driver unresolved, and the ledger holds the name on
     assert.equal(audits[0]?.outcome, 'allow');
     assert.deepEqual(JSON.parse(audits[0]?.detail ?? '{}'), {
       name: 'login/main',
-      origin: 'https://app.example.com',
+      origin: 'https://example.com',
       field: 'password',
     });
     assert.ok(!ledgerText(fixture).includes(VALUE), 'the ledger holds the value');
@@ -331,7 +331,7 @@ test('a refused use is recorded as a denial carrying the rule', async () => {
       act: async (tab: TabHandle, request: ActionRequest, secrets?: SecretScope) => {
         secrets?.record({
           name: 'login',
-          origin: 'https://elsewhere.example.com',
+          origin: 'https://example.org',
           field: undefined,
           outcome: 'deny',
           rule: 'act.secret_origin_bound',
@@ -355,13 +355,7 @@ test('a refused use is recorded as a denial carrying the rule', async () => {
     );
     assert.deepEqual(
       denials.map((row) => [row.outcome, row.guard, JSON.parse(row.detail) as unknown]),
-      [
-        [
-          'deny',
-          'act.secret_origin_bound',
-          { name: 'login', origin: 'https://elsewhere.example.com' },
-        ],
-      ],
+      [['deny', 'act.secret_origin_bound', { name: 'login', origin: 'https://example.org' }]],
     );
   });
 });
@@ -381,7 +375,10 @@ test('once a tab has received a secret, evaluate on it is refused and never reac
       expression: '1 + 1',
       session: () => driver.session,
     });
-    assert.deepEqual(driver.calls.filter((c) => c === 'evaluate'), ['evaluate']);
+    assert.deepEqual(
+      driver.calls.filter((c) => c === 'evaluate'),
+      ['evaluate'],
+    );
 
     await fixture.broker.act({
       key: lease.key,
@@ -434,8 +431,16 @@ test('a tab that has received a secret hands every later read, capture, navigate
     });
 
     await fixture.broker.read({ ...base, secretResolver: resolver });
-    await fixture.broker.navigate({ ...base, url: 'https://app.example.com/', secretResolver: resolver });
-    await fixture.broker.capture({ ...base, secretResolver: resolver, artifacts: fixture.artifacts });
+    await fixture.broker.navigate({
+      ...base,
+      url: 'https://example.com/',
+      secretResolver: resolver,
+    });
+    await fixture.broker.capture({
+      ...base,
+      secretResolver: resolver,
+      artifacts: fixture.artifacts,
+    });
     await fixture.broker.act({
       ...base,
       request: { action: 'click', ref: 'e2' },

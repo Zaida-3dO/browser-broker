@@ -69,7 +69,7 @@ switch (name) {
     process.stdout.write(`${FAKE_VALUES.good}${'x'.repeat(100 * 1024)}`);
     break;
   case 'pathy':
-    answer({ value: FAKE_VALUES.good, origins: ['https://app.example.com/login'] });
+    answer({ value: FAKE_VALUES.good, origins: ['https://example.com/login'] });
     break;
   default:
     process.stderr.write(`no such secret\n`);

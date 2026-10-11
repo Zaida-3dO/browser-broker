@@ -13,7 +13,7 @@ import { BrokerError } from '../errors.ts';
  * `resolve NAME`, and reads **one JSON object** from its standard output:
  *
  * ```json
- * { "value": "…", "origins": ["https://app.example.com"], "fields": ["password"] }
+ * { "value": "…", "origins": ["https://example.com"], "fields": ["password"] }
  * ```
  *
  * - `value` — the secret, a non-empty string.
@@ -129,9 +129,9 @@ export function normaliseOrigin(candidate: unknown): string | undefined {
     parsed.hash !== '' ||
     parsed.username !== '' ||
     parsed.password !== '' ||
-    // `URL` reports `/` for both "https://h" and "https://h/", and also for
-    // "https://h/?" and "https://h/#"; anything after the authority but a
-    // single slash is something other than an origin.
+    // `URL` reports a pathname of `/` for an address with no path, with a
+    // trailing slash, and with an empty query or fragment after that slash;
+    // anything after the authority but a single slash is not an origin.
     /^[a-z]+:\/\/[^/]*\/./iu.test(candidate)
   ) {
     return undefined;

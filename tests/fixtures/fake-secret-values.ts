@@ -8,4 +8,3 @@ export const FAKE_VALUES = {
   otp: '402913',
   special: `fa"ke p\\w'd&%+=7731`,
 };
-

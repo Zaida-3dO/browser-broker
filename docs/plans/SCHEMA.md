@@ -2082,6 +2082,124 @@ anything this verb does with it.
 **If any of them turns up in use, the number that justified leaving it out is written down and can be
 argued with**, which is the point of recording it rather than simply omitting the verbs.
 
+### 3.8a Secrets — typed by name, never seen
+
+**A caller can put a credential into a sign-in form without ever holding it.** It sends
+`{{secret:NAME}}` as the whole `value` of a `type` or `fill`, or of a `fill_form` field, and the
+service asks a command the operator configured for the value, types it, and keeps it out of
+everything that comes back. `NAME` is 1–128 characters of letters, digits and `. _ / -`.
+
+#### The resolver contract
+
+`BROKER_SECRET_RESOLVER` names a command — a program and its arguments, split on spaces, with double
+quotes grouping a word that contains one; there is no other syntax and **no shell**. To resolve
+`NAME`, the service spawns it with two more arguments, `resolve NAME`, and reads **one JSON object**
+from standard output:
+
+```json
+{ "value": "…", "origins": ["https://example.com"], "fields": ["password"] }
+```
+
+| Field | Meaning |
+|---|---|
+| `value` | The secret. A non-empty string |
+| `origins` | Every origin it may be typed on, each **exactly** `scheme://host[:port]` — a path, query, fragment or credentials in an entry is refused rather than trimmed. At least one |
+| `fields` | Optional. Which kinds of field it may go into: `password`, `username`, `otp`. **Absent means `["password"]`** |
+
+A non-zero exit, five seconds without an answer, more than 64 KiB of output, or output that is not that
+object is a refusal (`act.secret_resolved`) that **names the secret and nothing else**. Standard error
+is discarded and never read, and malformed standard output is never quoted, because either may hold
+the value. With the variable unset, every sentinel is refused (`act.secret_resolver_configured`) and
+nothing is typed.
+
+**There is no cache.** Every resolution spawns the command, and nothing is held between operations. A
+value lives in the process that needed it for the length of the operation that needed it.
+
+#### Where a sentinel may appear, and where it is resolved
+
+**Only as a whole value of `type`, `fill` or a `fill_form` field.** A sentinel embedded in other text,
+a malformed one, or one anywhere else — a key press, an option to select, a dialog's prompt text, an
+element reference, an upload name, a navigation address, an evaluated expression, a storage seed — is
+refused (`act.secret_placement`, `navigate.secret_placement`, `evaluate.secret_placement`,
+`claim.secret_placement`). Those refusals are decided **before the lease is renewed or a tab is
+reached**, like every other conventional refusal.
+
+**It is resolved at the sink**: inside the after-commit browser work (§2.4b), after the ledger row for
+the `act` has been written, immediately before the field is typed into. So the ledger, the result, a
+refusal and every log only ever see the sentinel. The `act` row records the names (`detail.secrets`),
+never a value.
+
+#### The binding, checked at the sink
+
+The value is typed only if **all** of these hold, and each failure is a refusal that leaves the field
+untouched:
+
+- **Origin** (`act.secret_origin_bound`). The address of **every frame from the element's own up to
+  the top-level page**, as the browser reports it, has an origin in `origins`. A field in a
+  cross-origin frame is refused even when the secret is bound to the frame's origin, because the page
+  around it is somewhere else; a frame with no origin of its own (`about:blank`, `data:`, `srcdoc`) is
+  refused because what it inherits is not visible from its address.
+- **Field kind** (`act.secret_field_bound`). The element is an `<input>` of a declared kind:
+  - `password` — `type=password`, nothing else;
+  - `otp` — `autocomplete` includes `one-time-code`;
+  - `username` — not a password field, and `autocomplete` includes `username` or `email`, or
+    `type=email`, or `type=text` (or no type) **and** a `name` or `id` containing `user`, `login`,
+    `email`, `account` or `identifier`.
+
+  A `<textarea>`, a content-editable region and any other element match nothing.
+- **The same element.** The element is held as a handle from the check to the typing, so a frame that
+  navigates in between invalidates it and the typing fails rather than landing somewhere else. A
+  failure while typing is `act.secret_typed`, and the automation library's own message is withheld,
+  because its call log can quote the arguments of the call that failed.
+
+These refusals happen after the commit, so — like a stale reference — they arrive as `accepted` with
+`pageDriven: false` and the rule in `notDrivenReason` (§2.4b). Every attempt, allowed or refused,
+appends a `secret_filled` event carrying the name, the origin and the field kind, with the rule as its
+guard when refused. **Never the value.**
+
+#### For the rest of the lease
+
+A tab that has been asked to receive a secret is recorded in `tab_secrets` (names only, one row per
+tab per name), written **when the `act` is decided** — before the typing, so a half-typed failure
+still marks the tab. A tab belongs to one lease, so a new lease starts clean. On such a tab, for the
+rest of the lease:
+
+- **`browser_evaluate` is refused** (`evaluate.secret_tab`) before the expression reaches the page. An
+  expression can read any field, and its result is the one output whose shape the caller chooses, so
+  no scrubbing of it could be complete.
+- **Every snapshot** — `browser_read`'s and the one each `act` returns — has every received value and
+  the live value of **every password field in every frame** removed, **before** `find` narrows it, so a
+  filter cannot be used to ask whether a value is present.
+- **The console, network and cookie artefacts**, the address and title `browser_navigate` reports, the
+  address a capture records, and the text of any failure have every received value removed.
+- **`browser_capture` masks** every password field in every frame, and every element whose text
+  contains a received value in a frame at an origin that value is bound to, using the automation
+  library's own `mask` before the pixels exist.
+
+Removal is by exact match on every spelling the outputs use: as typed, JSON- and YAML-escaped, and
+percent- or form-encoded. Because the service is spawned per caller, a later process does not hold the
+value; it **re-resolves** the names `tab_secrets` lists. If that fails — the resolver is gone, or
+refuses — the operation fails rather than writing anything unscrubbed.
+
+#### What this does not protect against
+
+Stated plainly, because a guard believed to be wider than it is does more harm than one known to be
+narrow:
+
+- **A page can do anything with a value it was given.** Its scripts can send the password anywhere
+  over the network, store it, or display it. The broker keeps the value from reaching **the caller**
+  through the broker's outputs; it does not and cannot police the page. The binding is what limits
+  which pages get a value at all.
+- **A transformed value is not recognised.** A page that reverses, encodes or splits the password
+  before showing or logging it produces text no exact match describes. Pixels are not searched for
+  text either, so a value shown in a field that is not a password field, or drawn transformed, can
+  appear in a capture.
+- **The bound origin is trusted.** The field-kind check reads attributes in the page, and a page at a
+  bound origin can lie about them. The check is a guard against a caller's mistake or a misdirected
+  instruction, not against a hostile page the secret was bound to.
+- **A short value scrubs broadly.** Removal is by exact match, so a very short secret is removed
+  wherever its characters appear in an output.
+
 ### 3.9 `browser_read`
 
 Takes the key, a tab, and which artefacts it wants. **Returns a path per artefact, its size, and
@@ -3195,6 +3313,7 @@ the process that started it — and those say so by naming the browser rather th
 | `BROKER_PROFILE_ROOT` | Likewise | Where the two browser profiles live. Each browser launches against this plus its own name, **explicitly and mandatorily** — never a default profile location, and never nothing (§1.2) |
 | `BROKER_SESSION_ID` | Absent | The identity a command acts as. Exported by whatever launches a session, never typed by hand |
 | `BROKER_KEY` | Absent | The lease key. Never printed by any command (§5.6) |
+| `BROKER_SECRET_RESOLVER` | **Unset — secrets are off** | The command that resolves `{{secret:NAME}}` (§3.8a). Spawned without a shell with `resolve NAME` appended; prints one JSON object. Unset, every sentinel is refused |
 | Tab budget | **15** | Total tabs across **both** browsers, and — since a lease is a tab (§2.3) — **the same number as the maximum count of live leases**. No per-browser cap: the scarce thing is page processes and one costs the same in either browser. The keeper tab in each browser is not counted (§3.15). **Provisional** — reasoned from roughly 50–150 MB per idle page process plus two browser processes, so fifteen is one to two gigabytes. **This is the one value also written to the store** (§1.10) |
 | Lease lifetime | **10 minutes** | How long an active lease lives without a call |
 | Queue-place lifetime | **10 minutes** | How long a place in the queue lives without a call. **Deliberately equal to the row above** — §2.5 sets out why, including why the argument for making them differ pointed the other way |
@@ -3337,6 +3456,13 @@ build.
 | `act.upload_path_contained` | Each name resolves **inside the upload root, after every component is resolved** | path not contained. On the **realpath**, so a link at any depth pointing out of the root is refused — an `lstat` of the final component is blind to a link three directories up |
 | `act.upload_file_readable` | Each name is **one ordinary readable file** | no readable file, naming the entry. A directory, a device, a socket and a link pointing at nothing are each refused, and none of them surfaces as a raw errno |
 | `act.upload_bytes_bounded` | An upload is **within the per-file and total size limits** | too large, with the number and the cap. Checked from the open descriptor **before** the bytes are read, and again after — the bytes are held in the process that arbitrates every lease, so an unbounded upload is a machine-wide outage rather than a slow call |
+| `act.secret_placement` · `navigate.secret_placement` · `evaluate.secret_placement` · `claim.secret_placement` | A secret sentinel appears **only as the whole value of a `type`, `fill` or `fill_form` field** (§3.8a) | sentinel misplaced, saying where sentinels are resolved. Refused **before a lease is renewed or a tab reached** |
+| `act.secret_resolver_configured` | A sentinel is resolvable only where **an operator has configured `BROKER_SECRET_RESOLVER`** (§3.8a) | secrets unavailable, naming the variable. Refused before anything is written; on a tab that already holds a secret, a later operation that cannot re-resolve it for scrubbing fails rather than writing unscrubbed |
+| `act.secret_resolved` | The resolver **answers with the contract's JSON, exits zero, within five seconds** (§3.8a) | the secret could not be resolved, naming the secret and the reason — **never the resolver's output**, which may hold the value. At the sink, so `pageDriven: false` |
+| `act.secret_origin_bound` | **Every frame** from the target element up to the top-level page is at an origin the secret is bound to | wrong origin, naming the permitted origins. At the sink; nothing typed |
+| `act.secret_field_bound` | The target is **a field of a kind the secret is declared for** — password, username or one-time code (§3.8a) | wrong field. At the sink; nothing typed |
+| `act.secret_typed` | Typing a secret **completes** | typing failed, naming the error class; the automation library's message is withheld because it can quote the value |
+| `evaluate.secret_tab` | **No expression runs on a tab that has received a secret in this lease** (§3.8a) | evaluate refused for the rest of the lease, pointing at the scrubbed alternatives. Recorded as a denial; the expression never reaches the page |
 | `act.upload_target_not_input` | An upload's reference **is a file input, or a label for one** | wrong target, saying to look for the label. The automation library's own message for this names its internals, and a caller reading it learns nothing it can act on |
 | `read.artifact_known` | A read names **which artefacts it wants**, from the known set (§3.9) | unknown artefact, listing the artefacts |
 | `read.find_shape` | A snapshot `find` is **a non-empty string within its length bound**, and one wrapped in `/slashes/` **compiles as a regular expression** | malformed find, showing both spellings. A pattern that does not compile is refused with the engine's own message and the way out — dropping the slashes searches for the text itself — rather than being let out as an internal error |

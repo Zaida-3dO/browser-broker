@@ -20,7 +20,7 @@
  * caller controls.
  */
 
-/** What replaces a secret in any text the service hands back. */
+/** What a secret is swapped for in any text the service hands back. */
 export const REDACTION_MARK = '[secret redacted]';
 
 /** Every spelling of one value this service's outputs might contain. */

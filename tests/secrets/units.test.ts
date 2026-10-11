@@ -54,12 +54,13 @@ test('a command line splits on spaces, with double quotes grouping a word', () =
 });
 
 test('an origin must be exactly an origin', () => {
-  assert.equal(normaliseOrigin('https://app.example.com'), 'https://app.example.com');
-  assert.equal(normaliseOrigin('https://app.example.com/'), 'https://app.example.com');
+  assert.equal(normaliseOrigin('https://example.com'), 'https://example.com');
+  assert.equal(normaliseOrigin('https://example.com/'), 'https://example.com');
   assert.equal(normaliseOrigin('http://127.0.0.1:8080'), 'http://127.0.0.1:8080');
-  assert.equal(normaliseOrigin('https://app.example.com/login'), undefined);
-  assert.equal(normaliseOrigin('https://app.example.com?x=1'), undefined);
-  assert.equal(normaliseOrigin('https://user:pw@app.example.com'), undefined);
+  assert.equal(normaliseOrigin('https://example.com/login'), undefined);
+  assert.equal(normaliseOrigin('https://example.com?x=1'), undefined);
+  // external-ref-ok-next-line: an address carrying credentials is the input this line refuses
+  assert.equal(normaliseOrigin('https://user:pw@example.com'), undefined);
   assert.equal(normaliseOrigin('file:///etc'), undefined);
   assert.equal(normaliseOrigin('not a url'), undefined);
   assert.equal(normaliseOrigin(7), undefined);
@@ -68,23 +69,27 @@ test('an origin must be exactly an origin', () => {
 test('resolver output is read strictly, and a refusal never quotes it', () => {
   const ok = parseResolverOutput(
     'n',
-    JSON.stringify({ value: 'v-1', origins: ['https://app.example.com'] }),
+    JSON.stringify({ value: 'v-1', origins: ['https://example.com'] }),
   );
-  assert.deepEqual(ok, { value: 'v-1', origins: ['https://app.example.com'], fields: ['password'] });
+  assert.deepEqual(ok, {
+    value: 'v-1',
+    origins: ['https://example.com'],
+    fields: ['password'],
+  });
 
   const cases: [string, string][] = [
     ['not json SECRETISH', 'JSON object'],
     [JSON.stringify(['SECRETISH']), 'JSON object'],
-    [JSON.stringify({ value: '', origins: ['https://a.example.com'] }), '"value"'],
+    [JSON.stringify({ value: '', origins: ['https://example.com'] }), '"value"'],
     [JSON.stringify({ value: 'SECRETISH' }), '"origins"'],
     [JSON.stringify({ value: 'SECRETISH', origins: [] }), '"origins"'],
-    [JSON.stringify({ value: 'SECRETISH', origins: ['https://a.example.com/p'] }), 'exact origin'],
+    [JSON.stringify({ value: 'SECRETISH', origins: ['https://example.com/p'] }), 'exact origin'],
     [
-      JSON.stringify({ value: 'SECRETISH', origins: ['https://a.example.com'], fields: ['card'] }),
+      JSON.stringify({ value: 'SECRETISH', origins: ['https://example.com'], fields: ['card'] }),
       '"fields"',
     ],
     [
-      JSON.stringify({ value: 'SECRETISH', origins: ['https://a.example.com'], fields: [] }),
+      JSON.stringify({ value: 'SECRETISH', origins: ['https://example.com'], fields: [] }),
       '"fields"',
     ],
   ];
@@ -96,7 +101,10 @@ test('resolver output is read strictly, and a refusal never quotes it', () => {
         assert.equal(error.rule, 'act.secret_resolved');
         assert.match(error.message, /"my\/secret"/u);
         assert.ok(error.message.includes(mentions), `${error.message} should mention ${mentions}`);
-        assert.ok(!error.message.includes('SECRETISH'), `the refusal quoted the output: ${error.message}`);
+        assert.ok(
+          !error.message.includes('SECRETISH'),
+          `the refusal quoted the output: ${error.message}`,
+        );
         return true;
       },
     );
@@ -104,15 +112,15 @@ test('resolver output is read strictly, and a refusal never quotes it', () => {
 });
 
 test('the command resolver spawns the configured program and reads its answer', async () => {
-  const resolve = commandSecretResolver(fakeResolverCommand(['https://app.example.com']));
+  const resolve = commandSecretResolver(fakeResolverCommand(['https://example.com']));
   const secret = await resolve('user');
   assert.equal(secret.value, FAKE_VALUES.user);
-  assert.deepEqual(secret.origins, ['https://app.example.com']);
+  assert.deepEqual(secret.origins, ['https://example.com']);
   assert.deepEqual(secret.fields, ['username']);
 });
 
 test('every way a resolver can fail is a refusal naming the secret and never the value', async () => {
-  const resolve = commandSecretResolver(fakeResolverCommand(['https://app.example.com']), {
+  const resolve = commandSecretResolver(fakeResolverCommand(['https://example.com']), {
     timeoutMs: 1_500,
   });
   const expectations: [string, RegExp][] = [
@@ -151,7 +159,9 @@ test('a resolver program that does not exist is refused, not crashed on', async 
 
 // ── The field heuristic ───────────────────────────────────────────────────
 
-const input = (over: Partial<Parameters<typeof fieldKindsOf>[0]>): Parameters<typeof fieldKindsOf>[0] => ({
+const input = (
+  over: Partial<Parameters<typeof fieldKindsOf>[0]>,
+): Parameters<typeof fieldKindsOf>[0] => ({
   tag: 'input',
   type: '',
   autocomplete: '',

@@ -297,6 +297,44 @@ const CASES = [
    * these answers as it does to every other.
    */
   {
+    // A secret sentinel in a verb that never resolves one (§3.8a): refused,
+    // never typed as literal text.
+    what: 'a secret sentinel in a key press',
+    rule: 'act.secret_placement',
+    argv: ['act', '--key', 'not-a-real-key', '--action', 'press', '--value', '{{secret:login}}'],
+    tool: {
+      name: 'browser_act',
+      arguments: { lease_key: 'not-a-real-key', action: 'press', value: '{{secret:login}}' },
+    },
+  },
+  {
+    // No `BROKER_SECRET_RESOLVER` is set for this check's runs, which is what a
+    // default installation has — so a well-formed sentinel reaches the refusal
+    // that names the variable.
+    what: 'a secret sentinel where no resolver is configured',
+    rule: 'act.secret_resolver_configured',
+    argv: [
+      'act',
+      '--key',
+      'not-a-real-key',
+      '--action',
+      'fill',
+      '--ref',
+      'e1',
+      '--value',
+      '{{secret:login}}',
+    ],
+    tool: {
+      name: 'browser_act',
+      arguments: {
+        lease_key: 'not-a-real-key',
+        action: 'fill',
+        target: 'e1',
+        value: '{{secret:login}}',
+      },
+    },
+  },
+  {
     what: 'upload with no paths',
     rule: 'act.upload_paths_required',
     argv: ['act', '--key', 'not-a-real-key', '--action', 'upload', '--ref', 'e1'],

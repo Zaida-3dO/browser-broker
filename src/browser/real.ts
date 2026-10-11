@@ -137,7 +137,7 @@ function readPngDimensions(image: Uint8Array): { width: number; height: number }
 /**
  * Resolve every secret a tab has already received (§3.8a), for scrubbing.
  *
- * Empty when there is no scope. A name that no longer resolves rejects, and
+ * Empty when there is no scope. A name that does not resolve now rejects, and
  * that rejection is the operation's failure: an output that cannot be
  * scrubbed is not written, rather than written unscrubbed.
  */
@@ -181,7 +181,7 @@ async function withScrubbedErrors<T>(
  *
  * Read through the automation library's locators, which run in its own
  * isolated world, so a page's scripts cannot hide a field from this by
- * replacing the DOM methods it would otherwise call. A frame that detaches
+ * redefining the DOM methods it would otherwise call. A frame that detaches
  * while being read is skipped: its fields are gone with it.
  */
 async function passwordFieldValues(page: Page): Promise<string[]> {
