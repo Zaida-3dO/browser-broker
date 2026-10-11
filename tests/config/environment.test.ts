@@ -118,6 +118,9 @@ test('every variable this build declares is the set below, and no other', () => 
     'BROKER_PROFILE_ROOT',
     'BROKER_QUEUE_SECONDS',
     'BROKER_REGULAR_BROWSERS',
+    // No default either: unset means secret sentinels are refused (§3.8a).
+    // Its parsing is tested in `tests/secrets/units.test.ts`.
+    'BROKER_SECRET_RESOLVER',
     'BROKER_TAB_BUDGET',
     // The one variable with no default: unset means the upload verb is off
     // rather than that some fallback applies. Its own tests are in

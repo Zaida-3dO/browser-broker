@@ -120,8 +120,10 @@ test('the command resolver spawns the configured program and reads its answer', 
 });
 
 test('every way a resolver can fail is a refusal naming the secret and never the value', async () => {
+  // Long enough that only `slow` reaches it, even on a loaded machine where a
+  // spawned process takes seconds to answer; `slow` never answers at all.
   const resolve = commandSecretResolver(fakeResolverCommand(['https://example.com']), {
-    timeoutMs: 1_500,
+    timeoutMs: 8_000,
   });
   const expectations: [string, RegExp][] = [
     // Exits non-zero, having printed the value to standard error.
@@ -131,7 +133,7 @@ test('every way a resolver can fail is a refusal naming the secret and never the
     // Prints the value followed by far more than a secret can be.
     ['huge', /more output/u],
     // Never answers.
-    ['slow', /did not answer within 1500 ms/u],
+    ['slow', /did not answer within 8000 ms/u],
     // Binds to something that is not an origin.
     ['pathy', /exact origin/u],
     // Not a name it knows.
