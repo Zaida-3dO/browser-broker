@@ -237,6 +237,12 @@ function secretMaskLocators(
 }
 
 /**
+ * How long a handle to an element already known to resolve may take to come
+ * back, when a secret is about to be typed into it. See `#typeSecret`.
+ */
+const SECRET_HANDLE_MS = 5_000;
+
+/**
  * The blank address the keeper tab sits on.
  *
  * A page that loads nothing from anywhere, holds nothing, and cannot navigate
@@ -1814,7 +1820,10 @@ class RealBrowserSession implements BrowserSession {
     typed: string[],
   ): Promise<void> {
     const locator = await this.#locate(page, ref);
-    const handle = await locator.elementHandle({ timeout: REFERENCE_RESOLUTION_MS });
+    // `#locate` has already established the reference resolves, so this is
+    // not the question `REFERENCE_RESOLUTION_MS` bounds; it is given the
+    // ordinary few seconds a loaded machine can need to hand back a handle.
+    const handle = await locator.elementHandle({ timeout: SECRET_HANDLE_MS });
 
     let origin: string | undefined;
     const deny = (rule: string, message: string): BrokerError => {
