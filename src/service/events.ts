@@ -73,7 +73,8 @@ export type EventKind =
   | 'sweep'
   | 'storage_seeded'
   | 'browser_signin_began'
-  | 'browser_signin_ended';
+  | 'browser_signin_ended'
+  | 'secret_filled';
 
 /** The kinds as data, for the test that reconciles them with the store. */
 export const EVENT_KINDS: readonly EventKind[] = [
@@ -102,6 +103,7 @@ export const EVENT_KINDS: readonly EventKind[] = [
   'storage_seeded',
   'browser_signin_began',
   'browser_signin_ended',
+  'secret_filled',
 ];
 
 /**

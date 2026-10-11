@@ -78,6 +78,8 @@
  *   §7.3 exists to replace.
  */
 
+import type { ResolvedSecret, SecretFieldKind } from '../secrets/resolver.ts';
+
 /**
  * One browser, by the name it was configured under.
  *
@@ -732,6 +734,12 @@ export interface ReadOptions {
    * the one whose size is the reason to filter (§3.9).
    */
   readonly snapshotFind?: SnapshotFilter;
+  /**
+   * Present when this tab has received a secret in this lease (§3.8a): every
+   * artefact written is scrubbed of the secret's values, and the snapshot of
+   * every password field's value.
+   */
+  readonly secrets?: SecretScope;
 }
 
 /**
@@ -821,6 +829,12 @@ export interface CaptureRequest {
   readonly selector?: string;
   /** Areas painted over **before** the shutter, never after. */
   readonly mask?: readonly CaptureMask[];
+  /**
+   * Present when this tab has received a secret in this lease (§3.8a): every
+   * password field, and any element whose text contains a secret's value, is
+   * masked, and the reported address is scrubbed.
+   */
+  readonly secrets?: SecretScope;
 }
 
 /**
@@ -965,6 +979,45 @@ export type StorageSeedArea = StorageSeedEntry['area'];
  *   a seam that spells them the same way invites the reader to treat a
  *   deliberate safety rule as an implementation accident.
  */
+/**
+ * What a secret's use recorded, for the ledger (§3.8a). **Never the value.**
+ *
+ * `deny` carries the rule that refused; `origin` and `field` are present
+ * whenever they had been established when the decision was made.
+ */
+export interface SecretUse {
+  readonly name: string;
+  readonly origin: string | undefined;
+  readonly field: SecretFieldKind | undefined;
+  readonly outcome: 'allow' | 'deny';
+  readonly rule?: string;
+}
+
+/**
+ * How a driver reaches secrets for one operation on one tab (§3.8a).
+ *
+ * ── Why the values are re-resolved rather than remembered ───────────────
+ *
+ * The service is spawned per caller and exits with it, so a command-line
+ * `read` after a command-line `fill` is a different process from the one that
+ * typed the secret. The store records **which names** a tab received — never
+ * a value — and an operation that has to scrub resolves those names again.
+ * A value is therefore held only for the length of the operation that needed
+ * it, in the process performing it.
+ *
+ * Supplied by the service only when it matters: for an `act` carrying a
+ * sentinel, and for every operation on a tab that has already received one.
+ * A driver given no scope behaves exactly as it does without this feature.
+ */
+export interface SecretScope {
+  /** Resolve one name. Rejects with a refusal that names the secret and never the value. */
+  readonly resolve: (name: string) => Promise<ResolvedSecret>;
+  /** Names this tab received earlier in this lease. Their values are scrubbed from everything. */
+  readonly received: readonly string[];
+  /** Told the outcome of every attempt to type a secret, for the ledger. */
+  readonly record: (use: SecretUse) => void;
+}
+
 export type TabCloseOutcome = 'closed' | 'not_found' | 'refused';
 
 export interface TabOperations {
@@ -1009,7 +1062,12 @@ export interface TabOperations {
    * experiment in how long a page was given to settle, because neither call
    * waited any longer than the page took.
    */
-  readonly navigate: (tab: TabHandle, url: string, waitMs?: number) => Promise<NavigationResult>;
+  readonly navigate: (
+    tab: TabHandle,
+    url: string,
+    waitMs?: number,
+    secrets?: SecretScope,
+  ) => Promise<NavigationResult>;
 
   /**
    * Write storage entries into their origins **before this tab's first
@@ -1052,7 +1110,11 @@ export interface TabOperations {
    * change**, because the caller's next element reference has to come from
    * the page as it is now (`SCHEMA.md` §3.8).
    */
-  readonly act: (tab: TabHandle, request: ActionRequest) => Promise<ArtifactResult>;
+  readonly act: (
+    tab: TabHandle,
+    request: ActionRequest,
+    secrets?: SecretScope,
+  ) => Promise<ArtifactResult>;
 
   /**
    * Write the requested artefacts to disk and report where each went.

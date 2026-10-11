@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { StartupRefusal } from '../errors.ts';
+import { parseCommandLine } from '../secrets/resolver.ts';
 import { resolveRealPath } from '../store/network-path.ts';
 
 /**
@@ -27,7 +28,8 @@ import { resolveRealPath } from '../store/network-path.ts';
  * directory and the platform) and a number's default (a literal) cannot be
  * confused for one another at the point either is read.
  */
-type Kind = 'path' | 'optional-path' | 'positive-integer' | 'name-list' | 'enum';
+type Kind =
+  'path' | 'optional-path' | 'optional-command' | 'positive-integer' | 'name-list' | 'enum';
 
 interface PathDeclaration {
   readonly key: string;
@@ -59,6 +61,18 @@ interface PathDeclaration {
 interface OptionalPathDeclaration {
   readonly key: string;
   readonly kind: Extract<Kind, 'optional-path'>;
+}
+
+/**
+ * A command line that may be absent, split into words without a shell.
+ *
+ * **Unset means the capability is off**, exactly as an optional path does.
+ * There is one of these — `BROKER_SECRET_RESOLVER` — and the reasoning is in
+ * its declaration below.
+ */
+interface OptionalCommandDeclaration {
+  readonly key: string;
+  readonly kind: Extract<Kind, 'optional-command'>;
 }
 
 /**
@@ -136,6 +150,7 @@ interface EnumDeclaration {
 type Declaration =
   | PathDeclaration
   | OptionalPathDeclaration
+  | OptionalCommandDeclaration
   | IntegerDeclaration
   | NameListDeclaration
   | EnumDeclaration;
@@ -205,6 +220,23 @@ const DECLARATIONS = [
      */
     key: 'BROKER_UPLOAD_ROOT',
     kind: 'optional-path',
+  },
+  {
+    /**
+     * The command that turns a secret's name into its value (§3.8a) — and,
+     * like the upload root, **off unless an operator says otherwise**.
+     *
+     * Spawned directly, never through a shell, with `resolve NAME` appended;
+     * it prints one JSON object naming the value and the origins it may be
+     * typed on. The words are split on whitespace, with double quotes
+     * grouping a word that contains spaces; there is no other syntax.
+     *
+     * A default would be meaningless — there is no resolver to default to —
+     * and unset is what makes a `{{secret:…}}` refuse with a sentence naming
+     * this variable, which is the one moment anyone reads that it exists.
+     */
+    key: 'BROKER_SECRET_RESOLVER',
+    kind: 'optional-command',
   },
   {
     /**
@@ -400,6 +432,11 @@ export interface Environment {
    */
   readonly uploadRoot: string | undefined;
   /**
+   * The secret resolver's command, as words, or **undefined when no operator
+   * has configured one** — in which case every secret sentinel refuses.
+   */
+  readonly secretResolver?: readonly string[] | undefined;
+  /**
    * The total tab budget across both browsers (§2.3, §6.2).
    *
    * **This process's belief**, which is not yet known to agree with the
@@ -521,6 +558,24 @@ function readOptionalPath(
     );
   }
   return path.resolve(raw);
+}
+
+/** Read a command line into words, or `undefined` when unset (see {@link OptionalCommandDeclaration}). */
+function readOptionalCommand(
+  declaration: OptionalCommandDeclaration,
+  raw: string | undefined,
+): readonly string[] | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const words = parseCommandLine(raw);
+  if (words === undefined || raw.includes(' ')) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set but is not a readable command: it is empty, contains a null byte, or has an unclosed double quote. Expected a program and its arguments separated by spaces; unset it to leave the capability it enables switched off.`,
+    );
+  }
+  return words;
 }
 
 /**
@@ -799,6 +854,8 @@ function readDeclaration(
       return readPath(declaration, raw, declaration.fallback(home, platform));
     case 'optional-path':
       return readOptionalPath(declaration, raw);
+    case 'optional-command':
+      return readOptionalCommand(declaration, raw);
     case 'positive-integer':
       return readPositiveInteger(declaration, raw);
     case 'name-list':
@@ -951,6 +1008,17 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     return value;
   };
 
+  const getOptionalCommand = (key: string): readonly string[] | undefined => {
+    const value = resolved.get(key);
+    if (value === undefined) {
+      return undefined;
+    }
+    if (!Array.isArray(value)) {
+      throw new Error(`${key} was declared as an optional command but not resolved as one`);
+    }
+    return value as readonly string[];
+  };
+
   const getList = (key: string): readonly string[] => {
     const value = resolved.get(key);
     if (!Array.isArray(value)) {
@@ -1056,6 +1124,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     artifactsRoot: get('BROKER_ARTIFACTS_ROOT'),
     profileRoot: get('BROKER_PROFILE_ROOT'),
     uploadRoot,
+    secretResolver: getOptionalCommand('BROKER_SECRET_RESOLVER'),
     tabBudget: getNumber('BROKER_TAB_BUDGET'),
     leaseSeconds: getNumber('BROKER_LEASE_SECONDS'),
     queueSeconds: getNumber('BROKER_QUEUE_SECONDS'),

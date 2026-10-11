@@ -5,6 +5,7 @@ import { runArbitration, type CloseOrphanedTab } from './arbitration.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
 import type { EventAdapter } from './events.ts';
 import { createPendingSeeds } from './pending-seeds.ts';
+import { commandSecretResolver } from '../secrets/resolver.ts';
 import type { ArbitrationSettings, ClaimInput, ClaimResult } from './operations/claim.ts';
 import type { ReleaseInput, ReleaseResult } from './operations/give-back.ts';
 import type {
@@ -244,8 +245,22 @@ export function createBroker(options: BrokerOptions): Broker {
    */
   const pendingSeeds = createPendingSeeds();
 
+  /**
+   * How a secret's name becomes its value (§3.8a), built once from the
+   * environment snapshot — or absent, and secrets are off.
+   *
+   * Handed to every tab verb, not only `act`: a read, a capture or a
+   * navigation of a tab that has received a secret needs the values back to
+   * scrub them out of what it returns.
+   */
+  const secretResolver =
+    options.environment.secretResolver === undefined
+      ? undefined
+      : commandSecretResolver(options.environment.secretResolver);
+
   const withBrowser = <T>(input: T): T => ({
     ...input,
+    ...(secretResolver === undefined ? {} : { secretResolver }),
     ...(options.session === undefined ? {} : { session: options.session }),
     // Handed to every tab verb rather than only to the one that opens the
     // page, because **which verb opens the page is not knowable here**: a
