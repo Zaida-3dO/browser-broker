@@ -1800,7 +1800,8 @@ class RealBrowserSession implements BrowserSession {
    * Type one secret into one element, if — and only if — the element is a
    * place that secret was declared for (§3.8a).
    *
-   * In order: resolve the element, resolve the secret, check **every** frame
+   * In order: resolve the element, resolve the secret, take a handle to the
+   * element, check **every** frame
    * from the element's up to the top-level page is at an origin the secret
    * names, check the element is a field of a kind it names, and only then
    * type. Each refusal is recorded through the scope before it is thrown, so
@@ -1819,7 +1820,24 @@ class RealBrowserSession implements BrowserSession {
     secrets: SecretScope,
     typed: string[],
   ): Promise<void> {
+    // The element first, so a stale reference is reported as one before a
+    // resolver is ever spawned for it.
     const locator = await this.#locate(page, ref);
+
+    // The secret next, **before** a handle is taken. Measured: holding a
+    // handle to a snapshot reference across a slow resolution left that
+    // reference unresolvable for the next call, so the handle is taken only
+    // once the value is in hand and held only for the checks and the typing.
+    let secret: ResolvedSecret;
+    try {
+      secret = await secrets.resolve(name);
+    } catch (error) {
+      const rule = error instanceof BrokerError ? error.rule : 'act.secret_resolved';
+      secrets.record({ name, origin: undefined, field: undefined, outcome: 'deny', rule });
+      throw error;
+    }
+    typed.push(secret.value);
+
     // `#locate` has already established the reference resolves, so this is
     // not the question `REFERENCE_RESOLUTION_MS` bounds; it is given the
     // ordinary few seconds a loaded machine can need to hand back a handle.
@@ -1832,16 +1850,6 @@ class RealBrowserSession implements BrowserSession {
     };
 
     try {
-      let secret: ResolvedSecret;
-      try {
-        secret = await secrets.resolve(name);
-      } catch (error) {
-        const rule = error instanceof BrokerError ? error.rule : 'act.secret_resolved';
-        secrets.record({ name, origin: undefined, field: undefined, outcome: 'deny', rule });
-        throw error;
-      }
-      typed.push(secret.value);
-
       // The address of every frame from the element's own up to the page,
       // as the browser reports it — not as the page's scripts describe
       // themselves, which they are free to lie about.
