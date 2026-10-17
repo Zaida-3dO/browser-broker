@@ -1,5 +1,6 @@
 import type { StorageSeedEntry } from '../browser/driver.ts';
 import { BrokerError } from '../errors.ts';
+import { containsSentinel } from '../secrets/sentinel.ts';
 
 /**
  * `storage_seed` on `browser_claim` (row #65, `SCHEMA.md` §3.2) — the
@@ -186,6 +187,17 @@ export function validateStorageSeed(seed: unknown): readonly StorageSeedEntry[] 
       'claim.seed_bounded',
       `A storage seed carries at most ${String(MAX_SEED_ENTRIES)} entries and this one carries ${String(seed.length)}. The bound is what keeps this a way to seed a token rather than a way to move a payload.`,
       { entries: seed.length, maximum: MAX_SEED_ENTRIES },
+    );
+  }
+
+  // A secret sentinel is never resolved in a seed (§3.8a): a seed is written
+  // into storage before any page exists, so there is no origin or field to
+  // bind a secret to, and writing the sentinel's text would seed a value the
+  // caller did not mean.
+  if (containsSentinel(seed)) {
+    throw new StorageSeedRefusal(
+      'claim.secret_placement',
+      'A secret sentinel ({{secret:NAME}}) was found in a storage seed. Secrets are only resolved as the whole value of a type or fill action, or of a fill_form field, where the page and field they go into can be checked — a seed has neither, so the claim is refused.',
     );
   }
 

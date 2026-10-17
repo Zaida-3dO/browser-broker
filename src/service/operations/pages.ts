@@ -43,6 +43,16 @@ import { insertComparison } from '../comparison-store.ts';
 import { runComparison, type ComparisonResult } from '../comparison.ts';
 import { DEFAULT_DIFF_SETTINGS, type DiffSettings } from '../../diff/settings.ts';
 import { readUploadFiles } from '../../uploads/resolve.ts';
+import type { SecretResolver } from '../../secrets/resolver.ts';
+import {
+  receivedSecretNames,
+  recordSecretsRequested,
+  refuseEvaluateOnSecretTab,
+  refuseSentinelIn,
+  refuseUnresolvable,
+  requestedSecretNames,
+  secretScopeFor,
+} from '../secrets.ts';
 
 /**
  * The six tab-addressed operations, joined to the arbitration transaction.
@@ -155,6 +165,18 @@ export interface TabOperationInput {
    * in the store, and what that costs.
    */
   readonly pendingSeeds?: PendingSeeds;
+  /**
+   * How a secret's name becomes its value (§3.8a), or **undefined when no
+   * operator has configured a resolver** — in which case an action carrying a
+   * sentinel refuses before anything is written.
+   *
+   * Handed in from the environment snapshot, like {@link ActInput.uploadRoot},
+   * so the refusal is provable without a process environment. Every
+   * tab-addressed operation carries it because every one of them may be
+   * reading from a tab that has received a secret, and scrubbing needs the
+   * values back.
+   */
+  readonly secretResolver?: SecretResolver | undefined;
 }
 
 /**
@@ -677,6 +699,7 @@ export function decideNavigate(
   input: NavigateInput,
 ): ArbitrationOutcome<NavigateResult> {
   const url = validateNavigationTarget(input.url);
+  refuseSentinelIn(url, 'navigate.secret_placement', 'a navigation address');
   const { lease, tab, expiresAt } = admit(scope, input, 'navigate');
   // Bounded by **this lease's own promised lifetime**, read off the row
   // `admit` just renewed rather than from a settings snapshot. That is the
@@ -705,6 +728,19 @@ export function decideNavigate(
   // below. Undefined until the browser has answered — and permanently so on a
   // build with no browser, which is what the getters' fallbacks are for.
   let arrived: NavigationResult | undefined;
+  const secrets = secretScopeFor(
+    input.secretResolver,
+    receivedSecretNames(scope.db, tab.tabId),
+    [],
+    {
+      db: scope.db,
+      adapter: scope.adapter,
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      sessionId: lease.sessionId,
+      browserId: tab.browserId,
+    },
+  );
 
   const work = afterCommitWork(
     scope,
@@ -715,7 +751,7 @@ export function decideNavigate(
       // `page.url()` read after the load settles, plus the title and status,
       // and this assignment is the whole of the redirect fix: the value was
       // always available here and was being thrown away.
-      arrived = await session.navigate(page, url, waitMs);
+      arrived = await session.navigate(page, url, waitMs, secrets);
     },
     lease.claimId,
   );
@@ -908,8 +944,22 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
     );
   }
 
+  // ── Secrets (§3.8a), refused before admission like every other shape ──
+  //
+  // A sentinel anywhere it is not resolved, or any sentinel at all on an
+  // installation with no resolver, is refused here: no lease renewed, no
+  // event appended, no tab reached.
+  const secretNames = requestedSecretNames(validated);
+  refuseUnresolvable(secretNames, input.secretResolver);
+
   const request = resolveActionFiles(validated, input.uploadRoot);
   const { lease, tab, expiresAt } = admit(scope, input, 'act');
+
+  // Read before this call's own names are recorded, so `received` means
+  // "before this call" — the driver resolves those for scrubbing and this
+  // call's own as it types them.
+  const receivedBefore = receivedSecretNames(scope.db, tab.tabId);
+  recordSecretsRequested(scope.db, tab.tabId, secretNames);
 
   append(scope.db, {
     kind: 'act',
@@ -936,14 +986,27 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
             bytes: request.files.reduce((total, file) => total + file.bytes.byteLength, 0),
             names: request.files.map((file) => file.name),
           }
-        : { action: request.action },
+        : {
+            action: request.action,
+            // **Names, never values** — and a sentinel is all this row could
+            // ever have seen, because nothing is resolved until after commit.
+            ...(secretNames.length === 0 ? {} : { secrets: secretNames }),
+          },
   });
 
+  const secrets = secretScopeFor(input.secretResolver, receivedBefore, secretNames, {
+    db: scope.db,
+    adapter: scope.adapter,
+    claimId: lease.claimId,
+    tabId: tab.tabId,
+    sessionId: lease.sessionId,
+    browserId: tab.browserId,
+  });
   const work = afterCommitWork(
     scope,
     input,
     tab,
-    (session, page) => session.act(page, request),
+    (session, page) => session.act(page, request, secrets),
     lease.claimId,
   );
   return {
@@ -1072,6 +1135,19 @@ export function decideRead(
   // reason: the paths do not exist until the work has run, so a value read
   // eagerly here would always be empty.
   let collected: readonly CollectedArtifact[] | undefined;
+  const secrets = secretScopeFor(
+    input.secretResolver,
+    receivedSecretNames(scope.db, tab.tabId),
+    [],
+    {
+      db: scope.db,
+      adapter: scope.adapter,
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      sessionId: lease.sessionId,
+      browserId: tab.browserId,
+    },
+  );
 
   const work = afterCommitWork(
     scope,
@@ -1084,7 +1160,7 @@ export function decideRead(
       // call site with the compiler silent (excess-property checks do not
       // apply to conditional spreads). Here the value either reaches the seam
       // or does not typecheck.
-      const results = await session.read(page, artifacts, { snapshotFind });
+      const results = await session.read(page, artifacts, { snapshotFind, secrets });
       // **The return value is what carries the paths.** The driver knows them;
       // a handler that ignores this leaves the caller unable to open anything
       // it just collected.
@@ -1186,7 +1262,31 @@ export function decideEvaluate(
   input: EvaluateInput,
 ): ArbitrationOutcome<EvaluateResult> {
   const expression = validateExpression(input.expression);
+  refuseSentinelIn(expression, 'evaluate.secret_placement', 'an expression');
   const { lease, tab, expiresAt } = admit(scope, input, 'evaluate');
+
+  // ── Refused outright on a tab that has received a secret (§3.8a) ──────
+  //
+  // An expression can read any field, and its result is the one output whose
+  // shape the caller chooses — so no scrubbing of it can be complete. The
+  // refusal is recorded, and thrown before the `evaluate` row or any browser
+  // work: the expression never reaches the page.
+  try {
+    refuseEvaluateOnSecretTab(scope.db, tab.tabId);
+  } catch (refusal) {
+    scope.recordRefusal({
+      kind: 'evaluate',
+      outcome: 'deny',
+      guard: 'evaluate.secret_tab',
+      adapter: scope.adapter,
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      sessionId: lease.sessionId,
+      browserId: tab.browserId,
+      detail: { expressionBytes: Buffer.byteLength(expression, 'utf8') },
+    });
+    throw refusal;
+  }
 
   const expressionBytes = Buffer.byteLength(expression, 'utf8');
   append(scope.db, {
@@ -1609,6 +1709,19 @@ export function decideCapture(
     ...(typeof input.reason === 'string' ? { reason: input.reason } : {}),
   };
   const { lease, tab, expiresAt } = admit(scope, input, 'capture');
+  const secrets = secretScopeFor(
+    input.secretResolver,
+    receivedSecretNames(scope.db, tab.tabId),
+    [],
+    {
+      db: scope.db,
+      adapter: scope.adapter,
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      sessionId: lease.sessionId,
+      browserId: tab.browserId,
+    },
+  );
 
   append(scope.db, {
     kind: 'capture',
@@ -1690,6 +1803,7 @@ export function decideCapture(
           // it was accepted, and receives the unescalated picture.
           ...(request.tier === undefined ? {} : { tier: request.tier }),
           ...(request.reason === undefined ? {} : { reason: request.reason }),
+          ...(secrets === undefined ? {} : { secrets }),
         },
         takenBefore,
       );

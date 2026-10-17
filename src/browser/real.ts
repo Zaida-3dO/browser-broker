@@ -19,12 +19,17 @@ import {
   type BrowserContext,
   type ConsoleMessage,
   type Dialog,
+  type Frame,
   type Page,
   type Request,
 } from 'playwright-core';
 
 import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
 import { BrokerError, StartupRefusal } from '../errors.ts';
+import { boundFieldKind, originOfAddress, type ElementFacts } from '../secrets/binding.ts';
+import type { ResolvedSecret } from '../secrets/resolver.ts';
+import { scrubberFor } from '../secrets/scrub.ts';
+import { looksLikeSentinel, sentinelName } from '../secrets/sentinel.ts';
 import { readDiscoveryRecord, verifyDiscoveryRecord } from './discovery.ts';
 import { profileCompatibility } from './profile-marker.ts';
 import type {
@@ -44,6 +49,7 @@ import type {
   RawCapture,
   ReadArtifact,
   ReadOptions,
+  SecretScope,
   SnapshotFilter,
   StorageSeedEntry,
   TabCloseOutcome,
@@ -127,6 +133,114 @@ function readPngDimensions(image: Uint8Array): { width: number; height: number }
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
+
+/**
+ * Resolve every secret a tab has already received (§3.8a), for scrubbing.
+ *
+ * Empty when there is no scope. A name that does not resolve now rejects, and
+ * that rejection is the operation's failure: an output that cannot be
+ * scrubbed is not written, rather than written unscrubbed.
+ */
+async function resolveReceived(secrets: SecretScope | undefined): Promise<ResolvedSecret[]> {
+  if (secrets === undefined) return [];
+  const resolved: ResolvedSecret[] = [];
+  for (const name of new Set(secrets.received)) {
+    resolved.push(await secrets.resolve(name));
+  }
+  return resolved;
+}
+
+/**
+ * Run some page work, and if it throws, rethrow with every known secret value
+ * removed from the message (§3.8a).
+ *
+ * A failure's message reaches the caller as `notDrivenReason`, and the
+ * automation library's messages quote the page: an element's attributes, the
+ * address it was at, the arguments of the call that failed. A
+ * {@link BrokerError} keeps its rule; anything else is reported under
+ * `page.failed` with its own name and its scrubbed message. The original is
+ * deliberately not attached as a cause, since a cause is a second copy of the
+ * unscrubbed text.
+ */
+async function withScrubbedErrors<T>(
+  scrub: (text: string) => string,
+  work: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const scrubbed = scrub(message);
+    if (scrubbed === message) throw error;
+    throw new BrokerError(error instanceof BrokerError ? error.rule : 'page.failed', scrubbed);
+  }
+}
+
+/**
+ * The live value of every password field in every frame of a page.
+ *
+ * Read through the automation library's locators, which run in its own
+ * isolated world, so a page's scripts cannot hide a field from this by
+ * redefining the DOM methods it would otherwise call. A frame that detaches
+ * while being read is skipped: its fields are gone with it.
+ */
+async function passwordFieldValues(page: Page): Promise<string[]> {
+  const values: string[] = [];
+  for (const frame of page.frames()) {
+    let fields: Awaited<ReturnType<ReturnType<Page['locator']>['all']>>;
+    try {
+      fields = await frame.locator('input[type=password]').all();
+    } catch {
+      continue;
+    }
+    for (const field of fields) {
+      try {
+        const value = await field.inputValue({ timeout: REFERENCE_RESOLUTION_MS });
+        if (value !== '') values.push(value);
+      } catch {
+        // Detached between listing and reading; nothing left to show.
+      }
+    }
+  }
+  return values;
+}
+
+/**
+ * What to paint over in a capture of a tab that has received a secret.
+ *
+ * Every password field in every frame, and — in frames at an origin a secret
+ * is bound to — every element whose text contains that secret's value. The
+ * value is handed only to the automation library's text matcher, which runs in
+ * its own isolated world, and only in frames the secret may be typed into
+ * anyway; a frame at any other origin is never given it to search for.
+ *
+ * **What this does not cover**: a value a page has transformed before
+ * displaying it, and a value shown as an input's contents in a field that is
+ * not a password field. Pixels cannot be searched for an exact string, and
+ * both of those are a page's own choice about the secret it was given.
+ */
+function secretMaskLocators(
+  page: Page,
+  received: readonly ResolvedSecret[],
+): ReturnType<Page['locator']>[] {
+  const masks: ReturnType<Page['locator']>[] = [];
+  for (const frame of page.frames()) {
+    masks.push(frame.locator('input[type=password]'));
+    const origin = originOfAddress(frame.url());
+    for (const secret of received) {
+      if (origin !== undefined && secret.origins.includes(origin)) {
+        masks.push(frame.getByText(secret.value));
+      }
+    }
+  }
+  return masks;
+}
+
+/**
+ * How long a handle to an element already known to resolve may take to come
+ * back, when a secret is about to be typed into it. See `#typeSecret`.
+ */
+const SECRET_HANDLE_MS = 5_000;
 
 /**
  * The blank address the keeper tab sits on.
@@ -1217,8 +1331,17 @@ class RealBrowserSession implements BrowserSession {
    * The address after redirects rather than the one asked for, because those
    * differ constantly and the caller needs the one it got.
    */
-  async navigate(tab: TabHandle, url: string, waitMs?: number): Promise<NavigationResult> {
+  async navigate(
+    tab: TabHandle,
+    url: string,
+    waitMs?: number,
+    secrets?: SecretScope,
+  ): Promise<NavigationResult> {
     const page = await this.#page(tab);
+    // Scrubbed on a tab that has received a secret (§3.8a): a form that
+    // submits by GET puts its fields in the address, and a page can put
+    // anything in its own title.
+    const scrub = scrubberFor((await resolveReceived(secrets)).map((secret) => secret.value));
     // Passed as the navigation's own timeout rather than as a pause taken
     // afterwards, so a page that arrives early returns early and the argument
     // only ever costs what the page costs.
@@ -1227,10 +1350,12 @@ class RealBrowserSession implements BrowserSession {
     // than passed as `{ timeout: undefined }`, because an explicit undefined
     // and an omitted key are the same to this library only by convention, and
     // relying on that convention would make the default this service's to own.
-    const response = await page.goto(url, ...(waitMs === undefined ? [] : [{ timeout: waitMs }]));
+    const response = await withScrubbedErrors(scrub, () =>
+      page.goto(url, ...(waitMs === undefined ? [] : [{ timeout: waitMs }])),
+    );
     return {
-      url: page.url(),
-      title: await page.title(),
+      url: scrub(page.url()),
+      title: scrub(await page.title()),
       // Null when the navigation produced no response to have a status from —
       // which is the ordinary case for an address the browser satisfies
       // without a request.
@@ -1372,9 +1497,53 @@ class RealBrowserSession implements BrowserSession {
    * resolve** (§3.8), because whether an element is on the page is not a fact
    * any validator upstream can know.
    */
-  async act(tab: TabHandle, request: ActionRequest): Promise<ArtifactResult> {
+  async act(
+    tab: TabHandle,
+    request: ActionRequest,
+    secrets?: SecretScope,
+  ): Promise<ArtifactResult> {
     const page = await this.#page(tab);
 
+    // ── Secrets (§3.8a) ─────────────────────────────────────────────────
+    //
+    // `prior` are the values this tab already received in this lease, and
+    // `typed` collects the ones this call types. Both are scrubbed from the
+    // snapshot this call returns and from any error it throws. With no scope
+    // both stay empty, nothing is resolved, and the verb behaves exactly as it
+    // does without this feature.
+    const prior = await resolveReceived(secrets);
+    const typed: string[] = [];
+    const scrubNow = (): ((text: string) => string) =>
+      scrubberFor([...prior.map((secret) => secret.value), ...typed]);
+
+    await withScrubbedErrors(
+      (text) => scrubNow()(text),
+      () => this.#perform(tab, page, request, secrets, typed),
+    );
+
+    // A fresh snapshot **after** the change, for the reason at the top of this
+    // method. It is taken for every verb including the ones that address no
+    // element: a resize reflows the page and an emulate can change what it
+    // renders outright, so the references a caller holds are exactly as stale
+    // after those two as after a click. §3.8 says so of `emulate` explicitly.
+    return withScrubbedErrors(scrubNow(), () =>
+      this.#writeSnapshot(
+        tab,
+        page,
+        undefined,
+        secrets === undefined ? undefined : [...prior.map((secret) => secret.value), ...typed],
+      ),
+    );
+  }
+
+  /** The verb itself, without the snapshot that follows it. See {@link act}. */
+  async #perform(
+    tab: TabHandle,
+    page: Page,
+    request: ActionRequest,
+    secrets: SecretScope | undefined,
+    typed: string[],
+  ): Promise<void> {
     switch (request.action) {
       case 'click':
         await (await this.#locate(page, request.ref)).click();
@@ -1396,12 +1565,12 @@ class RealBrowserSession implements BrowserSession {
         // a field that reacts to each key — a combo box filtering as it goes,
         // a validator running per character — sees the keys it would see from
         // a person.
-        await (await this.#locate(page, request.ref)).pressSequentially(request.value);
+        await this.#putText(page, request.ref, request.value, 'type', secrets, typed);
         break;
 
       case 'fill':
         // Sets the value in one step. The ordinary way to put text in a field.
-        await (await this.#locate(page, request.ref)).fill(request.value);
+        await this.#putText(page, request.ref, request.value, 'fill', secrets, typed);
         break;
 
       case 'select':
@@ -1495,7 +1664,7 @@ class RealBrowserSession implements BrowserSession {
         // and filling them in parallel would race against the page's own
         // reaction to the previous field.
         for (const field of request.fields) {
-          await (await this.#locate(page, field.ref)).fill(field.value);
+          await this.#putText(page, field.ref, field.value, 'fill', secrets, typed);
         }
         break;
       }
@@ -1582,13 +1751,171 @@ class RealBrowserSession implements BrowserSession {
         break;
       }
     }
+  }
 
-    // A fresh snapshot **after** the change, for the reason at the top of this
-    // method. It is taken for every verb including the ones that address no
-    // element: a resize reflows the page and an emulate can change what it
-    // renders outright, so the references a caller holds are exactly as stale
-    // after those two as after a click. §3.8 says so of `emulate` explicitly.
-    return this.#writeSnapshot(tab, page);
+  /**
+   * Put text into a field: the caller's own text, or a secret named by a
+   * sentinel (§3.8a).
+   *
+   * Ordinary text takes exactly the path it always took. A sentinel is never
+   * typed literally: without a scope it is refused, and with one it goes
+   * through {@link #typeSecret}, which is where the binding rules are.
+   */
+  async #putText(
+    page: Page,
+    ref: string,
+    value: string,
+    mode: 'type' | 'fill',
+    secrets: SecretScope | undefined,
+    typed: string[],
+  ): Promise<void> {
+    if (!looksLikeSentinel(value)) {
+      const locator = await this.#locate(page, ref);
+      if (mode === 'type') {
+        // Keystroke by keystroke, which is what distinguishes it from `fill`:
+        // a field that reacts to each key — a combo box filtering as it goes,
+        // a validator running per character — sees the keys it would see from
+        // a person.
+        await locator.pressSequentially(value);
+      } else {
+        await locator.fill(value);
+      }
+      return;
+    }
+
+    const name = sentinelName(value);
+    // Refused here as well as in the service: a driver handed a sentinel it
+    // cannot resolve must not type the sentinel's text into the page and
+    // report success.
+    if (name === undefined || secrets === undefined) {
+      throw new BrokerError(
+        'act.secret_resolver_configured',
+        'A secret sentinel reached the browser with no way to resolve it, so nothing was typed.',
+      );
+    }
+    await this.#typeSecret(page, ref, name, mode, secrets, typed);
+  }
+
+  /**
+   * Type one secret into one element, if — and only if — the element is a
+   * place that secret was declared for (§3.8a).
+   *
+   * In order: resolve the element, resolve the secret, take a handle to the
+   * element, check **every** frame
+   * from the element's up to the top-level page is at an origin the secret
+   * names, check the element is a field of a kind it names, and only then
+   * type. Each refusal is recorded through the scope before it is thrown, so
+   * the ledger shows a refused attempt as well as a completed one.
+   *
+   * The element is held as a handle across the checks and the typing, so the
+   * element checked is the element typed into: a frame that navigates in
+   * between invalidates the handle and the typing fails rather than landing
+   * in whatever the frame became.
+   */
+  async #typeSecret(
+    page: Page,
+    ref: string,
+    name: string,
+    mode: 'type' | 'fill',
+    secrets: SecretScope,
+    typed: string[],
+  ): Promise<void> {
+    // The element first, so a stale reference is reported as one before a
+    // resolver is ever spawned for it.
+    const locator = await this.#locate(page, ref);
+
+    // The secret next, **before** a handle is taken. Measured: holding a
+    // handle to a snapshot reference across a slow resolution left that
+    // reference unresolvable for the next call, so the handle is taken only
+    // once the value is in hand and held only for the checks and the typing.
+    let secret: ResolvedSecret;
+    try {
+      secret = await secrets.resolve(name);
+    } catch (error) {
+      const rule = error instanceof BrokerError ? error.rule : 'act.secret_resolved';
+      secrets.record({ name, origin: undefined, field: undefined, outcome: 'deny', rule });
+      throw error;
+    }
+    typed.push(secret.value);
+
+    // `#locate` has already established the reference resolves, so this is
+    // not the question `REFERENCE_RESOLUTION_MS` bounds; it is given the
+    // ordinary few seconds a loaded machine can need to hand back a handle.
+    const handle = await locator.elementHandle({ timeout: SECRET_HANDLE_MS });
+
+    let origin: string | undefined;
+    const deny = (rule: string, message: string): BrokerError => {
+      secrets.record({ name, origin, field: undefined, outcome: 'deny', rule });
+      return new BrokerError(rule, message);
+    };
+
+    try {
+      // The address of every frame from the element's own up to the page,
+      // as the browser reports it — not as the page's scripts describe
+      // themselves, which they are free to lie about.
+      const chain: (string | undefined)[] = [];
+      for (
+        let current: Frame | null = await handle.ownerFrame();
+        current !== null;
+        current = current.parentFrame()
+      ) {
+        chain.push(originOfAddress(current.url()));
+      }
+      origin = chain[0];
+      const outside = chain.find(
+        (candidate) => candidate === undefined || !secret.origins.includes(candidate),
+      );
+      if (chain.length === 0 || chain.includes(undefined) || outside !== undefined) {
+        throw deny(
+          'act.secret_origin_bound',
+          `The secret "${name}" may only be typed on ${secret.origins.join(', ')}. The element "${ref}" is in a page or frame at ${outside ?? 'an address with no origin'}, so nothing was typed.`,
+        );
+      }
+
+      // Attributes as written, read in the page — the same convention every
+      // other in-page function here uses for names the compiler has no DOM
+      // types for.
+      const facts: ElementFacts = await handle.evaluate((node) => {
+        const element = node as unknown as {
+          tagName: string;
+          getAttribute: (attribute: string) => string | null;
+        };
+        return {
+          tag: element.tagName.toLowerCase(),
+          type: element.getAttribute('type') ?? '',
+          autocomplete: element.getAttribute('autocomplete') ?? '',
+          name: element.getAttribute('name') ?? '',
+          id: element.getAttribute('id') ?? '',
+        };
+      });
+      const kind = boundFieldKind(facts, secret.fields);
+      if (kind === undefined) {
+        throw deny(
+          'act.secret_field_bound',
+          `The secret "${name}" may only be typed into a ${secret.fields.join(' or ')} field, and the element "${ref}" is not one, so nothing was typed.`,
+        );
+      }
+
+      try {
+        if (mode === 'type') {
+          await handle.type(secret.value);
+        } else {
+          await handle.fill(secret.value);
+        }
+      } catch (error) {
+        // The library's own message is withheld: its call log can quote the
+        // arguments of the call that failed, and the argument is the value.
+        const kindOfFailure = error instanceof Error ? error.name : 'Error';
+        secrets.record({ name, origin, field: kind, outcome: 'deny', rule: 'act.secret_typed' });
+        throw new BrokerError(
+          'act.secret_typed',
+          `Typing the secret "${name}" into "${ref}" failed (${kindOfFailure}). The automation library's message is withheld because it can quote the value.`,
+        );
+      }
+      secrets.record({ name, origin, field: kind, outcome: 'allow' });
+    } finally {
+      // DEBUG await handle.dispose().catch(() => undefined);
+    }
   }
 
   /**
@@ -1765,8 +2092,21 @@ class RealBrowserSession implements BrowserSession {
    * that needed it — the caller cannot act on references the file does not
    * contain, whoever narrowed it away.
    */
-  async #writeSnapshot(tab: TabHandle, page: Page, find?: SnapshotFilter): Promise<ArtifactResult> {
-    const snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
+  async #writeSnapshot(
+    tab: TabHandle,
+    page: Page,
+    find?: SnapshotFilter,
+    secretValues?: readonly string[],
+  ): Promise<ArtifactResult> {
+    let snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
+    // On a tab that has received a secret (§3.8a): every value it received,
+    // and the live value of every password field in every frame, are removed
+    // **before** `find` narrows anything — so a filter cannot be used to ask
+    // whether a value is present.
+    if (secretValues !== undefined) {
+      const fields = await passwordFieldValues(page);
+      snapshot = scrubberFor([...secretValues, ...fields])(snapshot);
+    }
     // The whole tree is taken from the page and then narrowed, which is the
     // only order available: `ariaSnapshot` returns a rendered string and has
     // no query of its own. Worth stating because the cost is not what a
@@ -1819,6 +2159,24 @@ class RealBrowserSession implements BrowserSession {
     options?: ReadOptions,
   ): Promise<readonly ArtifactResult[]> {
     const page = await this.#page(tab);
+    const secrets = options?.secrets;
+    const values =
+      secrets === undefined
+        ? undefined
+        : (await resolveReceived(secrets)).map((secret) => secret.value);
+    const scrub = scrubberFor(values ?? []);
+    return withScrubbedErrors(scrub, () => this.#readEach(tab, page, artifacts, options, values));
+  }
+
+  /** {@link read}'s loop, with `values` scrubbed out of everything written. */
+  async #readEach(
+    tab: TabHandle,
+    page: Page,
+    artifacts: readonly ReadArtifact[],
+    options: ReadOptions | undefined,
+    values: readonly string[] | undefined,
+  ): Promise<readonly ArtifactResult[]> {
+    const scrub = scrubberFor(values ?? []);
     const results: ArtifactResult[] = [];
 
     for (const artifact of artifacts) {
@@ -1827,18 +2185,23 @@ class RealBrowserSession implements BrowserSession {
           // The only artefact `find` touches, and the switch is where that
           // is enforced rather than promised: the console and network cases
           // below do not see it at all.
-          results.push(await this.#writeSnapshot(tab, page, options?.snapshotFind));
+          results.push(await this.#writeSnapshot(tab, page, options?.snapshotFind, values));
           break;
 
         case 'console':
           results.push(
-            this.#write(tab, 'console', page.url(), this.#recording(tab).console.join('\n')),
+            this.#write(tab, 'console', page.url(), scrub(this.#recording(tab).console.join('\n'))),
           );
           break;
 
         case 'network':
           results.push(
-            this.#write(tab, 'network', page.url(), renderNetworkLog(this.#recording(tab).network)),
+            this.#write(
+              tab,
+              'network',
+              page.url(),
+              scrub(renderNetworkLog(this.#recording(tab).network)),
+            ),
           );
           break;
 
@@ -1847,7 +2210,9 @@ class RealBrowserSession implements BrowserSession {
           // jar here — see this method's note on why that is the whole
           // mechanism rather than a preference.
           const summaries = await this.cookies(tab);
-          results.push(this.#write(tab, 'cookies', page.url(), JSON.stringify(summaries, null, 2)));
+          results.push(
+            this.#write(tab, 'cookies', page.url(), scrub(JSON.stringify(summaries, null, 2))),
+          );
           break;
         }
       }
@@ -2057,6 +2422,24 @@ class RealBrowserSession implements BrowserSession {
    */
   async capture(tab: TabHandle, request: CaptureRequest): Promise<RawCapture> {
     const page = await this.#page(tab);
+    // On a tab that has received a secret (§3.8a), the picture is taken with
+    // every password field masked, and every element whose text contains a
+    // received value masked too — by the automation library's own `mask`,
+    // which paints them before the pixels are produced.
+    const received = await resolveReceived(request.secrets);
+    const scrub = scrubberFor(received.map((secret) => secret.value));
+    const secretMasks = request.secrets === undefined ? [] : secretMaskLocators(page, received);
+    return withScrubbedErrors(scrub, () => this.#captureMasked(page, request, secretMasks, scrub));
+  }
+
+  /** {@link capture}, given the secret masks and the scrubber it settled on. */
+  async #captureMasked(
+    page: Page,
+    request: CaptureRequest,
+    secretMasks: ReturnType<Page['locator']>[],
+    scrub: (text: string) => string,
+  ): Promise<RawCapture> {
+    const libraryMask = secretMasks.length === 0 ? {} : { mask: secretMasks };
 
     // Painted **before** the shutter, never after: a mask applied afterwards
     // is a mask that was, for one moment, not applied. The request names
@@ -2104,8 +2487,8 @@ class RealBrowserSession implements BrowserSession {
       // would quietly ignore it.
       const image =
         request.selector === undefined
-          ? await page.screenshot({ type: 'png', fullPage: request.fullPage })
-          : await page.locator(request.selector).screenshot({ type: 'png' });
+          ? await page.screenshot({ type: 'png', fullPage: request.fullPage, ...libraryMask })
+          : await page.locator(request.selector).screenshot({ type: 'png', ...libraryMask });
 
       // Read from the page rather than from whatever a caller last asked to
       // resize to: those disagree whenever a resize did not take, and the
@@ -2134,7 +2517,7 @@ class RealBrowserSession implements BrowserSession {
         width: produced?.width ?? measured.scrollWidth,
         height: produced?.height ?? measured.scrollHeight,
         viewportWidth: measured.viewportWidth,
-        url: page.url(),
+        url: scrub(page.url()),
       };
     } finally {
       // Removed whether or not the shutter succeeded, so a failed capture does

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { ArtifactStore } from '../artifacts/store.ts';
 import { captureFileName } from '../artifacts/names.ts';
-import type { CaptureMask, TabHandle, TabOperations } from '../browser/driver.ts';
+import type { CaptureMask, SecretScope, TabHandle, TabOperations } from '../browser/driver.ts';
 import { BrokerError } from '../errors.ts';
 import { captureWarning } from './accounting.ts';
 import { decodePng, downscale, encodePng } from './image.ts';
@@ -85,6 +85,8 @@ export interface CaptureRequestOptions {
   readonly label?: string;
   /** Painted over **before** the shutter, never filtered afterwards. */
   readonly mask?: readonly CaptureMask[];
+  /** Present on a tab that has received a secret (§3.8a); handed to the driver unchanged. */
+  readonly secrets?: SecretScope;
 }
 
 /**
@@ -276,6 +278,7 @@ export async function takeCapture(
     // pixels exist beats filtering afterwards: a region that was never
     // captured cannot be reported as changed (§3.11).
     mask: options.mask,
+    secrets: options.secrets,
   });
 
   const decoded = decodePng(raw.image);

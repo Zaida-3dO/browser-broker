@@ -219,6 +219,13 @@ its cookie jar, so they are isolated from other browsers and not from each other
 browser is a process before it holds a single tab**, which the tab budget does not count —
 `.env.example` gives the arithmetic beside the variables.
 
+**Credentials can be typed without the caller ever seeing them.** With `BROKER_SECRET_RESOLVER` set
+to a command that answers `resolve NAME` with `{"value": …, "origins": […]}`, a caller sends
+`{{secret:NAME}}` as a `type`/`fill` value; the service types it only into a matching field on a bound
+origin, records the name and never the value, and scrubs it from that tab's snapshots, logs and
+captures for the rest of the lease. Unset, secrets are off. What it does and does not protect against
+is in [`SCHEMA.md` §3.8a](docs/plans/SCHEMA.md#38a-secrets--typed-by-name-never-seen).
+
 A variable that is set but cannot be read as its type **refuses the spawn and names the variable**,
 rather than quietly falling back to the default — a configuration nobody chose is worse than a
 refusal nobody missed. For a list, the refusal names the offending **entry**: a duplicate within one

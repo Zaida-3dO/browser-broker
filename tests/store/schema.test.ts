@@ -112,6 +112,7 @@ test('every table this design has is created, and nothing else', async () => {
       'events',
       'feedback',
       'tab_budget',
+      'tab_secrets',
       'tabs',
     ]);
   });

@@ -506,7 +506,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         name: 'value',
         type: 'string',
         required: false,
-        description: 'What to type, select, or answer a dialog with.',
+        description:
+          'What to type, select, or answer a dialog with. For a password or other credential on a ' +
+          'type or fill, send {{secret:NAME}} as the whole value instead of the secret itself: ' +
+          'the service resolves it, types it only into a matching field on an origin it is ' +
+          'bound to, and scrubs it from everything this tab returns. Refused if no resolver ' +
+          'is configured.',
       },
       // **The door for the four verbs a flat string cannot describe.**
       //

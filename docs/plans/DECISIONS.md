@@ -2434,6 +2434,53 @@ suite requires.
 
 ---
 
+## 13m. Secrets are resolved by the service at the sink, never handed to the caller (2026-10-11)
+
+**The need:** an agent driving a sign-in form had to be given the password in order to type it, which
+puts the credential in its context, its transcript and every log of its arguments. §3.8a lets it name
+the secret instead.
+
+### Why the service, and why at the sink
+
+A rewrite of the caller's arguments before they reach the service — the obvious alternative — cannot
+see the page, so it cannot bind a secret to the origin it is typed on without racing the page; it
+cannot scrub anything the service returns, and the snapshot after a fill is the largest leak there is
+(an accessibility snapshot shows a password field's value in clear); and it holds for one client and
+not the others. Resolving inside the after-commit work, immediately before the field is typed into,
+means every rule is checked against the page as it is at that moment, and nothing upstream — the
+ledger, the result, a refusal — can ever have held the value, because it did not exist yet.
+
+### Why a command, and why no cache
+
+The service has no business knowing where secrets are kept. A command answering a two-word request
+with JSON is the narrowest contract that lets an operator put any store behind it, and spawning it
+without a shell means the configured words are the whole of what runs. Nothing is cached because the
+service is spawned per caller anyway, and a value that is not held cannot be read out of the process
+holding it; the cost is one short-lived process per secret per operation on a secret-bearing tab.
+
+### Why the store holds names and the values are re-resolved
+
+A command-line read is a different process from the command-line fill before it. Scrubbing needs the
+values, and the only safe place to keep them is nowhere — so the store records which **names** a tab
+received, and an operation that must scrub resolves them again. If it cannot, it fails rather than
+writing unscrubbed: an output that cannot be cleaned is not produced.
+
+### Why evaluate is refused rather than scrubbed
+
+Every other output has a shape the service chose, so exact-match removal over its spellings is a real
+guarantee for it. An expression's result has whatever shape the caller asks for — `btoa(field.value)`
+defeats any scrub — so the only honest rule for it is no. The cost is that a tab which received a
+secret cannot be evaluated for the rest of its lease; a fresh lease starts clean.
+
+### Rejected
+
+- **Embedding a sentinel in other text** (`prefix{{secret:x}}`). The binding is about what goes into
+  a field, and a value that is part secret and part caller text has no single answer to that.
+- **Typing a misplaced sentinel literally.** A caller who wrote one into a key press meant a secret to
+  go there; typing the sentinel's text would report success for something that did not happen.
+- **Marking a tab only once a secret was typed successfully.** A typing that fails half way has still
+  put characters in the page, so the tab is marked when the fill is decided.
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because
