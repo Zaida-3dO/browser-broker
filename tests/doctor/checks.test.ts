@@ -5,6 +5,10 @@ import { describe, it } from 'node:test';
 
 import {
   checkAbandonedSignIn,
+  checkAttachedBinary,
+  checkAttachedConnectivity,
+  checkAttachedExtensionId,
+  checkAttachedToken,
   checkAutomation,
   checkCaptureSurface,
   checkDiscoveryRecord,
@@ -746,5 +750,124 @@ describe('checkStrandedTabs', () => {
     assert.equal(result.status, 'failed');
     assert.equal(exitCodeFor([result]), 10);
     assert.match(result.detail, /22 tab/u);
+  });
+});
+
+// ── The attached group: configuration answers, never connection answers ────
+//
+// The shared property of everything below, asserted wherever it applies:
+// these checks **open nothing and reach nobody**. Their whole input is
+// environment values, one optional path, and one exists-flag — so a passing
+// attached report is a statement about configuration, and the person's
+// browser is nowhere in the data flow. The refusal-shaped half of the rule
+// is also pinned: an attached failure exits 18, and an extension that may
+// or may not be connected exits nothing, because the doctor cannot know and
+// says so rather than guessing.
+
+describe('the attached browser’s configuration', () => {
+  const OFF: readonly string[] = [];
+  const ON: readonly string[] = ['desk'];
+
+  it('says the extension id is not needed when no attached browser is configured', () => {
+    const check = checkAttachedExtensionId(OFF, undefined);
+    assert.equal(check.status, 'ok');
+    assert.equal(check.group, 'attached');
+    assert.match(check.detail, /capability is off/u);
+  });
+
+  it('passes when the capability is on and an extension id is set, without echoing the id', () => {
+    const check = checkAttachedExtensionId(ON, 'abcdefghijklmnopabcdefghijklmnop');
+    assert.equal(check.status, 'ok');
+    // The report is a thing people paste into messages; an extension id
+    // identifies what is installed on a real machine.
+    assert.ok(
+      !check.detail.includes('abcdefghijklmnop'),
+      'the configured id must not be echoed into the report line',
+    );
+  });
+
+  it('fails a configured attached browser with no extension to route to, and names the variable', () => {
+    const check = checkAttachedExtensionId(ON, undefined);
+    assert.equal(check.status, 'failed');
+    assert.match(check.remedy ?? '', /BROKER_ATTACHED_EXTENSION_ID/u);
+    assert.match(check.detail, /desk/u, 'the browser named in the failure is the configured one');
+    assert.equal(exitCodeFor([check]), DOCTOR_EXIT.attached);
+    assert.equal(DOCTOR_EXIT.attached, 18);
+  });
+
+  it('reports a set connect token as set, and never its value', () => {
+    const check = checkAttachedToken(ON, 'a-token-value');
+    assert.equal(check.status, 'ok');
+    assert.ok(
+      !check.detail.includes('a-token-value'),
+      'the token is a credential, not a report field',
+    );
+    assert.equal(check.remedy, undefined, 'ok carries no remedy, and a token in use needs none');
+  });
+
+  it('reports an unset token as a choice, not a fault', () => {
+    const check = checkAttachedToken(ON, undefined);
+    assert.equal(check.status, 'ok');
+    assert.match(check.detail, /configuration choice/u);
+    assert.equal(exitCodeFor([check]), DOCTOR_EXIT.ok, 'no token is not a failure');
+  });
+
+  it('reports the token row as answering off when the capability is off', () => {
+    const check = checkAttachedToken(OFF, undefined);
+    assert.equal(check.status, 'ok');
+    assert.match(check.detail, /capability is off/u);
+  });
+
+  it('calls a missing binary path unknown and names the variable it wants', () => {
+    const check = checkAttachedBinary('desk', undefined, undefined);
+    assert.equal(check.status, 'unknown');
+    assert.match(check.detail, /BROKER_BROWSER_DESK_PATH/u);
+    assert.equal(check.remedy, undefined, 'an unevaluated row does not get to prescribe');
+  });
+
+  it('passes a configured binary that exists, without echoing the path', () => {
+    const pathValue = localDrivePath('C', 'attach', 'browser-exe');
+    const check = checkAttachedBinary('desk', pathValue, true);
+    assert.equal(check.status, 'ok');
+    assert.ok(
+      !check.detail.includes(pathValue),
+      'a path on a real machine stays out of the report',
+    );
+  });
+
+  it('fails a configured binary that is not a file, and the failure exits 18', () => {
+    const check = checkAttachedBinary('desk', localDrivePath('C', 'attach', 'gone-exe'), false);
+    assert.equal(check.status, 'failed');
+    assert.match(check.remedy ?? '', /BROKER_BROWSER_DESK_PATH/u);
+    assert.equal(exitCodeFor([check]), 18);
+  });
+
+  it('treats an unchecked path as unasked rather than as absent', () => {
+    // The `boolean | undefined` convention this file's other checks share:
+    // nobody looked is not looked-and-missed, and only the second may fail.
+    const check = checkAttachedBinary(
+      'desk',
+      localDrivePath('C', 'attach', 'unexamined-exe'),
+      undefined,
+    );
+    assert.equal(check.status, 'unknown');
+    assert.equal(exitCodeFor([check]), DOCTOR_EXIT.ok);
+  });
+
+  it('declines the connectivity question on its own row, always unknown, with the reason', () => {
+    const check = checkAttachedConnectivity('desk');
+    assert.equal(check.status, 'unknown');
+    assert.equal(check.group, 'attached');
+    assert.match(check.detail, /protocol version/u);
+    assert.match(
+      check.detail,
+      /attached\.not_connected/u,
+      'the row says where the real answer lives',
+    );
+    assert.equal(check.remedy, undefined, 'a declined question carries no prescription');
+    assert.equal(exitCodeFor([check]), DOCTOR_EXIT.ok);
+    // The same check, twice: it answers the same way every time, because
+    // nothing it could learn without connecting can vary.
+    assert.deepEqual(checkAttachedConnectivity('desk'), check);
   });
 });

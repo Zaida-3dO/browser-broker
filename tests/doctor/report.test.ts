@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import Database from 'better-sqlite3';
 
-import { DOCTOR_EXIT } from '../../src/doctor/checks.ts';
+import { DOCTOR_EXIT, exitCodeFor } from '../../src/doctor/checks.ts';
 import {
   browserIsRunning,
   discoveryProbesFromStore,
@@ -452,6 +455,116 @@ describe('the discovery probe reaching runDoctor from a production route', () =>
         DOCTOR_EXIT.browsers,
         'an unverified discovery record failed the command',
       );
+      await Promise.resolve();
+    });
+  });
+
+  // ── The attached group (§13m) ────────────────────────────────────────────
+
+  it('answers the attached rows as off, and invents no rows for an unconfigured attached browser', async () => {
+    await withSteppedStore(async (store) => {
+      const temp = makeTempStore();
+      try {
+        const report = runDoctor(temp.environment, store.db);
+        const attached = report.checks.filter((check) => check.group === 'attached');
+        const ids = attached.map((check) => check.id);
+        assert.deepEqual(
+          [...ids].sort(),
+          ['attached.extension_id', 'attached.token'],
+          'the two configuration rows answer "off"; no per-browser row exists for a browser nobody configured',
+        );
+        for (const check of attached) {
+          assert.equal(check.status, 'ok', 'off is an answer, not an unevaluated gap');
+        }
+        assert.equal(
+          exitCodeFor(report.checks),
+          exitCodeFor(report.checks.filter((check) => check.group !== 'attached')),
+          'rows that answer off cannot move the exit code',
+        );
+      } finally {
+        temp.remove();
+      }
+      await Promise.resolve();
+    });
+  });
+
+  it('shows all four attached rows for a configured attach, and none of them moves the exit code', async () => {
+    // A real file stands in for the configured binary so the existence probe
+    // (the one file-system reach this group has) answers genuinely rather
+    // than by stub.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-attach-exe-'));
+    const executable = path.join(dir, 'the-browser-the-operator-opens');
+    fs.writeFileSync(executable, '');
+    await withSteppedStore(async (store) => {
+      const off = makeTempStore();
+      const on = makeTempStore({
+        attachedBrowsers: ['desk'],
+        attachedExtensionId: 'abcdefghijklmnopabcdefghijklmnop',
+        attachedToken: 'a-configured-token',
+        browserPaths: new Map([['desk', executable]]),
+      });
+      try {
+        const offReport = runDoctor(off.environment, store.db);
+        const report = runDoctor(on.environment, store.db);
+        const byId = new Map(report.checks.map((check) => [check.id, check]));
+
+        assert.equal(byId.get('attached.extension_id')?.status, 'ok');
+        assert.equal(byId.get('attached.token')?.status, 'ok');
+        const binary = byId.get('attached.desk.binary');
+        assert.ok(binary, 'the configured attached browser must have its own binary row');
+        assert.equal(binary.status, 'ok');
+        assert.ok(
+          !binary.detail.includes(executable),
+          'the report line must not carry the path it checked',
+        );
+        assert.ok(
+          !byId.get('attached.token')?.detail.includes('a-configured-token'),
+          'the token value never reaches the report',
+        );
+        const reachable = byId.get('attached.desk.extension_reachable');
+        assert.ok(
+          reachable,
+          'a configured attach gets its connectivity row declined on its own line',
+        );
+        assert.equal(
+          reachable.status,
+          'unknown',
+          'the doctor opens no connection, so it cannot know',
+        );
+
+        assert.equal(
+          report.exitCode,
+          offReport.exitCode,
+          'a healthy attached configuration must not change the exit code against the same store with the capability off',
+        );
+      } finally {
+        on.remove();
+        off.remove();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      await Promise.resolve();
+    });
+  });
+
+  it('fails a half-configured attach and exits with the attached group’s code', async () => {
+    await withSteppedStore(async (store) => {
+      const temp = makeTempStore({ attachedBrowsers: ['desk'] });
+      try {
+        const report = runDoctor(temp.environment, store.db);
+        assert.equal(report.exitCode, DOCTOR_EXIT.attached);
+        assert.equal(DOCTOR_EXIT.attached, 18);
+        const failed = report.checks.filter(
+          (check) => check.status === 'failed' && check.group === 'attached',
+        );
+        assert.deepEqual(
+          failed.map((check) => check.id),
+          ['attached.extension_id'],
+          'the id row is the one that refuses; the binary and connectivity rows stay unevaluated',
+        );
+        assert.ok(failed[0]?.remedy, 'a failure owes its remedy on the report');
+      } finally {
+        temp.remove();
+      }
       await Promise.resolve();
     });
   });

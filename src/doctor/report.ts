@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import type { Database } from 'better-sqlite3';
 
 import { SIGNABLE_BROWSER } from '../service/operations/sign-in.ts';
@@ -10,6 +12,10 @@ import { readStoreVersion } from '../store/schema/step.ts';
 import { inspectProfileSession, type CookieStoreReader } from './session.ts';
 import {
   checkAbandonedSignIn,
+  checkAttachedBinary,
+  checkAttachedConnectivity,
+  checkAttachedExtensionId,
+  checkAttachedToken,
   checkAutomation,
   checkCaptureSurface,
   checkDiscoveryRecord,
@@ -236,6 +242,35 @@ export function runDoctor(
   );
 
   checks.push(checkTabBudget(storedBudget, probes.configuredTabBudget ?? null));
+
+  // ── The attached group: configuration read, connection never opened ──────
+  //
+  // All four checks answer from environment values and one `fs` stat — the
+  // relay is never contacted (§13m). The extension-id and token rows run even
+  // when the capability is off, because they *answer* "off" (that is the
+  // state of most installations and the answer is worth seeing); the
+  // connectivity row runs only when it is on, because asking whether a
+  // browser that cannot exist is reachable is the same non-question as a
+  // sign-in row for the private browser.
+  //
+  // The binary probe reaches the file system here rather than in the check,
+  // which keeps the check a pure function like every other one; the path is
+  // what `BROKER_BROWSER_<NAME>_PATH` configured for this name, if anything.
+  checks.push(
+    checkAttachedExtensionId(environment.attachedBrowsers, environment.attachedExtensionId),
+  );
+  checks.push(checkAttachedToken(environment.attachedBrowsers, environment.attachedToken));
+  for (const browser of environment.attachedBrowsers) {
+    const configuredPath = environment.browserPaths.get(browser);
+    checks.push(
+      checkAttachedBinary(
+        browser,
+        configuredPath,
+        configuredPath === undefined ? undefined : fs.existsSync(configuredPath),
+      ),
+    );
+    checks.push(checkAttachedConnectivity(browser));
+  }
 
   // Counted here rather than in the check, which takes a number so it stays
   // testable without a store. A store that is absent yields no count and the

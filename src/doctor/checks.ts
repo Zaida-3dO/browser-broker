@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { BrowserId } from '../browser/driver.ts';
+import { browserPathVariable } from '../config/environment.ts';
 import type { Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
 import { SIGN_IN_OWNER_UNKNOWN_REMEDY, type SignInOwnerState } from '../service/signin-recovery.ts';
@@ -139,6 +140,18 @@ export const DOCTOR_EXIT = {
    * grouping is total rather than because anything returns it.
    */
   session: 17,
+  /**
+   * The attached browser's configuration (`DECISIONS.md` §13m).
+   *
+   * A group of its own because the responses it calls for are none of the
+   * other groups': an attached fault is almost always a configuration that
+   * was half-written — the capability named a browser but not the extension
+   * it routes to. And every failure in this group is about configuration:
+   * these checks read environment values and the file system, never a
+   * connection, so no attached row can be a verdict about whether a person's
+   * extension happens to be up at the moment the command ran.
+   */
+  attached: 18,
 } as const;
 
 /** Which exit code a failing check contributes. */
@@ -1010,5 +1023,215 @@ export function checkSignInSession(browser: BrowserId, probe: SessionProbe): Gro
       probe.reason ??
       'No stored cookies were found in the profile, which is what a profile nobody has signed into looks like.',
     remedy: `Run \`broker login\` to sign in to the ${browser} browser by hand. It is the one step a person performs, and it happens once.`,
+  };
+}
+
+// ── The attached browser ────────────────────────────────────────────────────
+//
+// Every check in this group answers from **configuration and the file system
+// alone**, and the reason is the same one the module header gives for never
+// launching a browser, sharpened by what an attached browser is: it belongs
+// to a person. Opening a connection to ask "is your extension up?" is what a
+// **lease** does, when a caller has asked for his browser and accepted the
+// consequence of reaching it; a readiness probe that opened one would be
+// reaching into somebody's browsing on the strength of somebody else typing
+// `doctor`. So the facts that live only in the connection — whether the
+// extension is connected right now, which protocol version it speaks — are
+// reported as unknowable from here, with the reason, and the lease itself
+// gives the real answer (`attached.not_connected`) the moment one is asked
+// for. What *is* knowable is whether the installation is configured such
+// that a lease could ever succeed, and that is what these rows carry.
+
+/**
+ * That the attach route has an address: an extension id, whenever the
+ * capability is on (§13m).
+ *
+ * The relay routes an attach by extension id; without one, a configured
+ * attached browser can never be reached and every claim against it would
+ * refuse. `readEnvironment` already refuses to start a process in that
+ * state, so the failed branch is unreachable for a working installation —
+ * the check reports it anyway, because a report's job is to say what it
+ * finds, and this build's startup refusal is not a law a later build is
+ * obliged to keep.
+ *
+ * The configured id itself is **not echoed**: the report is a thing people
+ * paste into messages, and an extension id identifies what is installed on
+ * a real machine. The store-location check declines to echo paths for the
+ * same reason.
+ */
+export function checkAttachedExtensionId(
+  attachedBrowsers: readonly string[],
+  extensionId: string | undefined,
+): GroupedCheck {
+  const id = 'attached.extension_id';
+  const title = 'The attach route has a configured extension';
+
+  if (attachedBrowsers.length === 0) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'ok',
+      detail:
+        'No attached browser is configured, so no extension is needed to reach one. The capability is off.',
+    };
+  }
+  if (extensionId === undefined) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'failed',
+      detail: `The capability names ${attachedBrowsers.join(', ')} but no extension id is configured, so nothing can route an attach.`,
+      remedy:
+        'Set BROKER_ATTACHED_EXTENSION_ID to the id the browser shows for the attach extension, or empty BROKER_ATTACHED_BROWSERS to leave the capability off.',
+    };
+  }
+  return {
+    group: 'attached',
+    id,
+    title,
+    status: 'ok',
+    detail:
+      'An extension id is configured, so claims against the attached browser have an address to route to.',
+  };
+}
+
+/**
+ * Whether a connect token is set — **reported, never judged**.
+ *
+ * A token is the operator's choice: with one, the relay turns away an
+ * extension that cannot present it; without one, any extension presenting
+ * the configured id on the loopback port is admitted. Neither state is a
+ * fault this command can call one, so both report `ok` and say which was
+ * found. The value itself is never echoed, and never named beyond that —
+ * it is a credential the report has no business carrying.
+ */
+export function checkAttachedToken(
+  attachedBrowsers: readonly string[],
+  token: string | undefined,
+): GroupedCheck {
+  const id = 'attached.token';
+  const title = 'The attach connect token is in the state the operator chose';
+
+  if (attachedBrowsers.length === 0) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'ok',
+      detail: 'The attached capability is off, so there is no connect to protect with a token.',
+    };
+  }
+  if (token === undefined) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'ok',
+      detail:
+        'No connect token is set: the relay admits the extension by its id alone. That is a configuration choice — a token is what stops any other process on this machine that learns the port from completing the connect.',
+    };
+  }
+  return {
+    group: 'attached',
+    id,
+    title,
+    status: 'ok',
+    detail:
+      'A connect token is set and the relay checks it when the extension arrives. Its value is not reported here.',
+  };
+}
+
+/**
+ * The binary an attached browser names, **as a path on disk and nothing
+ * more** (§13m).
+ *
+ * For the two launched kinds this path is the executable the service starts;
+ * for the attached kind it is the executable **whose connect page the
+ * operator opens** — the lease itself needs no binary, because it drives the
+ * browser the extension reports rather than starting one. So an unset path
+ * is not a fault but a gap in the setup story: without it, `doctor` cannot
+ * say which executable the operator was meant to have running, and that is
+ * worth a row. A set path that is not a file is a configuration pointing at
+ * nothing.
+ *
+ * `exists` follows the same `boolean | undefined` convention as
+ * {@link checkKeeperTab}: `undefined` means nobody looked, and that is not a
+ * quiet `false`. The path itself is not echoed — it is a location on a real
+ * machine.
+ */
+export function checkAttachedBinary(
+  browser: string,
+  configuredPath: string | undefined,
+  exists: boolean | undefined,
+): GroupedCheck {
+  const id = `attached.${browser}.binary`;
+  const title = `The ${browser} attached browser’s configured binary is present`;
+
+  if (configuredPath === undefined) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'unknown',
+      detail: `No ${browserPathVariable(browser)} is set for it. A lease against an attached browser starts no executable — it drives the browser the extension reports — but the connect page that first brings that browser under the extension is opened from one, and this is the row that says where that executable is.`,
+    };
+  }
+  if (exists === undefined) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'unknown',
+      detail: 'A binary path is configured but nothing checked it for this report.',
+    };
+  }
+  if (!exists) {
+    return {
+      group: 'attached',
+      id,
+      title,
+      status: 'failed',
+      detail: 'The configured binary path does not name a file that exists.',
+      remedy: `Point ${browserPathVariable(browser)} at the executable the operator opens, or unset it if the attach extension is already installed and no connect page is needed.`,
+    };
+  }
+  return {
+    group: 'attached',
+    id,
+    title,
+    status: 'ok',
+    detail: 'The configured executable exists.',
+  };
+}
+
+/**
+ * Whether the person's extension is reachable — **a fact this command
+ * declines by construction**, and says so on its own row rather than
+ * leaving the group without one.
+ *
+ * An operator reading a doctor report wants to know whether their attach
+ * will work; a report with no attached-connectivity row cannot tell them
+ * whether that was checked and passed, checked and failed, or declined. So
+ * the row exists, reports `unknown` **always and for a stated reason**, and
+ * carries the two facts that live only inside a connection: whether the
+ * extension is through, and which protocol version it speaks. §13m puts the
+ * version question at lease time for the same reason — the answer is a
+ * property of a live extension, and a connection is the lease's act, not a
+ * readiness probe's.
+ *
+ * It has no remedy by design: `unknown` rows that carry one un-said their
+ * own uncertainty, per the reasoning on {@link checkSignInSession}.
+ */
+export function checkAttachedConnectivity(browser: string): GroupedCheck {
+  const id = `attached.${browser}.extension_reachable`;
+  return {
+    group: 'attached',
+    id,
+    title: `The ${browser} attached browser’s extension is reachable`,
+    status: 'unknown',
+    detail:
+      'Whether the extension is connected right now, and which protocol version it speaks, are properties of a live connection, and this command never opens one: reaching a person’s browser is what a lease does, with a caller behind it, not what a readiness probe does. A claim against an extension that is not connected refuses with `attached.not_connected` rather than queueing, and that refusal is the real answer to this question.',
   };
 }
