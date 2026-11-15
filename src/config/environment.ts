@@ -29,7 +29,13 @@ import { resolveRealPath } from '../store/network-path.ts';
  * confused for one another at the point either is read.
  */
 type Kind =
-  'path' | 'optional-path' | 'optional-command' | 'positive-integer' | 'name-list' | 'enum';
+  | 'path'
+  | 'optional-path'
+  | 'optional-command'
+  | 'positive-integer'
+  | 'name-list'
+  | 'enum'
+  | 'token';
 
 interface PathDeclaration {
   readonly key: string;
@@ -73,6 +79,33 @@ interface OptionalPathDeclaration {
 interface OptionalCommandDeclaration {
   readonly key: string;
   readonly kind: Extract<Kind, 'optional-command'>;
+}
+
+/**
+ * An opaque non-empty string with **no default** — a credential-shaped value
+ * an operator supplies, or the capability it guards is off.
+ *
+ * ── What "read as its type" means for a value with no shape ─────────────
+ *
+ * A token has no structure to check beyond non-emptiness, so §6.3's table
+ * applies to exactly two cases: blank (somebody wrote the variable and meant
+ * nothing by it, which is not a token) and a string containing a null byte
+ * (which cannot survive any transport it would be handed to). Anything else
+ * is used verbatim — including surrounding whitespace, because trimming a
+ * secret is a guess about what the operator typed, and a token that fails
+ * only at the far end is a worse sentence than one used exactly as written.
+ *
+ * **A value this file must never echo.** Every refusal message names the
+ * variable and never the value, and the accessors below keep the value out
+ * of the resolved-map's error sentences. `DECISIONS.md` §13m states the rule
+ * the consumers inherit: the token is passed through to the attach relay and
+ * written nowhere — not to the store, not to the ledger, not to a log line.
+ */
+interface OptionalTokenDeclaration {
+  readonly key: string;
+  readonly kind: Extract<Kind, 'token'>;
+  /** What the token guards, for the refusal's sentence. */
+  readonly unit: string;
 }
 
 /**
@@ -151,6 +184,7 @@ type Declaration =
   | PathDeclaration
   | OptionalPathDeclaration
   | OptionalCommandDeclaration
+  | OptionalTokenDeclaration
   | IntegerDeclaration
   | NameListDeclaration
   | EnumDeclaration;
@@ -350,6 +384,90 @@ const DECLARATIONS = [
     maximum: 3,
     browserKind: 'clean-room',
   },
+  {
+    /**
+     * The attached browsers — a person's own, reached read-only through the
+     * attach relay and never launched or closed by this service (§1.2,
+     * `DECISIONS.md` §13m).
+     *
+     * **The default is empty, and an empty list is the capability being
+     * off.** Both other lists default to one name, because a fresh install
+     * needs a browser to do anything at all. An attached browser is
+     * different in kind: it is somebody's actual machine, and no default can
+     * name it. Nothing listens for an attach until an operator writes the
+     * word — §6's rule that a fresh install runs with nothing set, applied to
+     * the one piece of configuration that could otherwise reach into a
+     * person's browsing.
+     *
+     * **Capped at one**, separately from the other two caps and for a
+     * different reason than either: an attached browser is the browser an
+     * operator is looking at, and one installation's relay answers for one
+     * browser. A second name would describe a second machine this build has
+     * no way to address separately — configuration guessing of exactly the
+     * kind §6.1 declines.
+     */
+    key: 'BROKER_ATTACHED_BROWSERS',
+    kind: 'name-list',
+    fallback: [],
+    maximum: 1,
+    browserKind: 'attached',
+  },
+  {
+    /**
+     * How many tabs may be held at once against one attached browser (§13m).
+     *
+     * **A cap in front of the budget, not a replacement for it.** Those tabs
+     * are pages in somebody's own browser and count against
+     * `BROKER_TAB_BUDGET` exactly as any other page does; this number answers
+     * the different question of how much of a person's visible browsing one
+     * caller may hold at a time. It is enforced by **refusing the claim
+     * before any row is written** rather than by queueing it: the queue's
+     * promotion math weighs the shared budget only, so a per-kind cap held
+     * through the queue would be breached the moment capacity freed
+     * (§13m records the reasoning).
+     */
+    key: 'BROKER_ATTACHED_TABS',
+    kind: 'positive-integer',
+    fallback: 3,
+    unit: 'a count of tabs',
+  },
+  {
+    /**
+     * The Chrome extension id the attach relay routes to — the id Chrome
+     * shows for the attach extension installed in the operator's browser
+     * (§13m).
+     *
+     * **Required whenever the attached list is not empty**, and its shape is
+     * checked once here rather than at lease time: the relay addresses the
+     * extension by this id, so an attached browser without one is a browser
+     * that can never be reached, and the startup refusal can still name the
+     * variable and be acted on. The shape — thirty-two characters from `a`
+     * to `p`, the alphabet Chrome assigns extension ids — mirrors the check
+     * the relay itself runs on connect; a configuration that would fail
+     * mid-lease must not start.
+     */
+    key: 'BROKER_ATTACHED_EXTENSION_ID',
+    kind: 'token',
+    unit: 'a Chrome extension id',
+  },
+  {
+    /**
+     * The shared secret the attach extension presents to the relay (§13m).
+     *
+     * **Carried, never echoed and never written**: it is handed to the relay
+     * at connect and kept out of the store, the ledger and every log line —
+     * the rule {@link OptionalTokenDeclaration} states and everything that
+     * reads this field inherits.
+     *
+     * Unset is legal: the relay's own contract takes the token as optional,
+     * and whether an attach is authenticated is that relay's deployment's
+     * choice, not this service's. The doctor reports the token as unset so
+     * the exposure stays visible even when it is deliberate (§13m).
+     */
+    key: 'BROKER_ATTACHED_TOKEN',
+    kind: 'token',
+    unit: 'the attach relay token',
+  },
 ] as const satisfies readonly Declaration[];
 
 /** Every variable this build declares. Row #9's walk test reads this. */
@@ -361,7 +479,7 @@ export const DECLARED_VARIABLES: readonly string[] = DECLARATIONS.map((d) => d.k
  * ── Why this family is not a row in the table above ──────────────────────
  *
  * Every declaration above names a key that exists before the environment is
- * read. These do not: the set of keys is a **function of the two browser-name
+ * read. These do not: the set of keys is a **function of the browser-name
  * lists**, which are themselves read from the environment. There is no fixed
  * list to put in `DECLARATIONS`, and inventing one would mean fixing the
  * browser names — the thing §1.2 deliberately leaves configurable.
@@ -467,6 +585,35 @@ export interface Environment {
   readonly regularBrowsers: readonly string[];
   /** The ephemeral, signed-in-to-nothing browsers, in configured order (§1.2). */
   readonly privateBrowsers: readonly string[];
+  /**
+   * The attached browsers, in configured order (§1.2, `DECISIONS.md` §13m).
+   * **May be empty — empty is the capability being off** — and never longer
+   * than one name. An attached browser is a person's own: this service never
+   * launches it, never closes it, and reaches it read-only through the
+   * attach relay.
+   */
+  readonly attachedBrowsers: readonly string[];
+  /**
+   * The most tabs that may be held at once against one attached browser
+   * (§13m). A cap in front of `tabBudget`, not a substitute for it: those
+   * pages count against the budget, and this answers how much of a person's
+   * browsing a single caller may hold.
+   */
+  readonly attachedTabs: number;
+  /**
+   * The Chrome extension id the attach relay routes to, or `undefined` when
+   * unset. Its shape has already been checked, and it is required whenever
+   * `attachedBrowsers` is non-empty — so `undefined` here means the whole
+   * capability is off, not that a lease will be missing it.
+   */
+  readonly attachedExtensionId: string | undefined;
+  /**
+   * The attach relay token, or `undefined` when unset. **Carried, never
+   * echoed**: it goes to the relay at connect and nowhere else — not the
+   * store, not the ledger, not a log line (§13m). Every consumer of this
+   * field keeps that rule; nothing may format it into a message.
+   */
+  readonly attachedToken: string | undefined;
   /**
    * The binary each browser was pointed at, by browser name.
    *
@@ -694,6 +841,17 @@ function readNameList(
 
   const trimmed = raw.trim();
   if (trimmed === '') {
+    if (declaration.fallback.length === 0) {
+      // **Blank *is* the default here**, and that is the whole difference.
+      // The refusal below rests on the list having something to fall back
+      // to: writing the variable and leaving it empty cannot mean the
+      // browser somebody clearly meant, so it refuses. A list whose default
+      // is empty — `BROKER_ATTACHED_BROWSERS` is the one that has one — has
+      // exactly one thing blank can mean: *none*, the capability off.
+      // Refusing `NAME=` there would make the variable's natural off switch
+      // an error, and the sentence below would not even parse.
+      return declaration.fallback;
+    }
     throw new StartupRefusal(
       'config.value_readable',
       `${declaration.key} is set but empty. Expected a comma-separated list of ${declaration.browserKind} browser names; unset it to use the default of ${declaration.fallback.join(', ')}.`,
@@ -837,10 +995,61 @@ function readBrowserPath(
 }
 
 /**
+ * The shape Chrome gives an extension id: thirty-two characters from the
+ * first six letters of the alphabet. Mirrors the check the attach relay runs
+ * on connect (`src/attach/` refuses `attached.bad_extension_id` with this
+ * same rule); duplicated rather than imported so a bad value refuses at
+ * startup, where the refusal can still name the variable, instead of at
+ * lease time when it can only fail a caller.
+ */
+const ATTACHED_EXTENSION_ID = /^[a-p]{32}$/;
+
+/**
+ * Read a token: an opaque string that is either there or not there.
+ *
+ * The rejections are the two §6.3 cases a value with no structure has:
+ *
+ * - **Blank.** Somebody wrote the variable and meant something by it, and
+ *   the empty string is the one thing a token cannot be. Unlike a name
+ *   list, there is no "none" for a token to mean: absence is said by not
+ *   setting the variable at all.
+ * - **A null byte.** The same rule the command reader applies — a value
+ *   carrying one cannot survive any transport it would be handed to.
+ *
+ * **Everything else is used exactly as written**, whitespace included:
+ * trimming is a guess about what the operator typed, and a token that fails
+ * only at the far end is a worse sentence than one used verbatim.
+ *
+ * No sentence from this function quotes the value. The variable is named;
+ * the value is not (`OptionalTokenDeclaration`).
+ */
+function readToken(
+  declaration: OptionalTokenDeclaration,
+  raw: string | undefined,
+): string | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (raw.trim() === '') {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set but empty. Expected ${declaration.unit}; leave it unset to leave the capability it guards off.`,
+    );
+  }
+  if (raw.includes('\0')) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set but is not a readable value: it contains a null byte. Expected ${declaration.unit}.`,
+    );
+  }
+  return raw;
+}
+
+/**
  * Resolve one declaration by its kind.
  *
  * A `switch` over the kind rather than a chain of ternaries, so that adding a
- * fifth kind is a compile error here rather than a value silently read as
+ * further kind is a compile error here rather than a value silently read as
  * whichever branch the chain ended in.
  */
 function readDeclaration(
@@ -862,6 +1071,8 @@ function readDeclaration(
       return readNameList(declaration, raw);
     case 'enum':
       return readEnum(declaration, raw);
+    case 'token':
+      return readToken(declaration, raw);
   }
 }
 
@@ -1027,22 +1238,80 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     return value as readonly string[];
   };
 
+  /**
+   * A declared token that may legitimately be absent — see
+   * {@link OptionalTokenDeclaration} for why the unset case is an answer.
+   */
+  const getOptionalToken = (key: string): string | undefined => {
+    const value = resolved.get(key);
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== 'string') {
+      throw new Error(`${key} was declared as a token but not resolved as one`);
+    }
+    return value;
+  };
+
   const regularBrowsers = getList('BROKER_REGULAR_BROWSERS');
   const privateBrowsers = getList('BROKER_PRIVATE_BROWSERS');
+  const attachedBrowsers = getList('BROKER_ATTACHED_BROWSERS');
 
-  // **A name in both lists is refused rather than resolved**, because the
-  // profile name is the lease-time key (§3.2): a name written in both kinds
-  // has no single answer to *which browser is this*, and picking one of the
-  // two would hand a caller the other kind roughly half the time it mattered.
-  // Checked here rather than in either list's own reader, because neither
-  // reader can see the other list.
-  for (const name of regularBrowsers) {
-    if (privateBrowsers.includes(name)) {
-      throw new StartupRefusal(
-        'config.value_readable',
-        `${JSON.stringify(name)} is named in both BROKER_REGULAR_BROWSERS and BROKER_PRIVATE_BROWSERS. A browser name is what a caller claims by, so a name in both kinds has no single answer: rename one of them.`,
-      );
+  // **A name in two lists is refused rather than resolved**, because the
+  // browser name is the lease-time key (§3.2): a name written in two kinds
+  // has no single answer to *which browser is this*, and picking one would
+  // hand a caller the other kind roughly half the time it mattered. Checked
+  // here rather than in any list's own reader, because no reader can see the
+  // others — and the attached list joins the pair this check used to run
+  // across, since a browser named in both the signed-in list and the attached
+  // list is the same impossible question with a worse second answer: one of
+  // the two is a person's own machine.
+  const LISTS: readonly [key: string, names: readonly string[]][] = [
+    ['BROKER_REGULAR_BROWSERS', regularBrowsers],
+    ['BROKER_PRIVATE_BROWSERS', privateBrowsers],
+    ['BROKER_ATTACHED_BROWSERS', attachedBrowsers],
+  ];
+  for (let first = 0; first < LISTS.length; first += 1) {
+    for (let second = first + 1; second < LISTS.length; second += 1) {
+      const [firstKey, firstNames] = LISTS[first] as [string, readonly string[]];
+      const [secondKey, secondNames] = LISTS[second] as [string, readonly string[]];
+      for (const name of firstNames) {
+        if (secondNames.includes(name)) {
+          throw new StartupRefusal(
+            'config.value_readable',
+            `${JSON.stringify(name)} is named in both ${firstKey} and ${secondKey}. A browser name is what a caller claims by, so a name in two kinds has no single answer: rename one of them.`,
+          );
+        }
+      }
     }
+  }
+
+  const attachedTabs = getNumber('BROKER_ATTACHED_TABS');
+  const attachedExtensionId = getOptionalToken('BROKER_ATTACHED_EXTENSION_ID');
+  const attachedToken = getOptionalToken('BROKER_ATTACHED_TOKEN');
+
+  // **The extension id is checked here, not at connect.** It has a shape,
+  // unlike the rest of what a token kind accepts, and an attached browser
+  // with a wrong one can never be reached: the relay routes by extension id,
+  // so the failure would otherwise surface as a queued-then-dead caller with
+  // no sentence naming the variable that was wrong. The value is never
+  // quoted — the same discipline the token itself is held to, kept uniform
+  // rather than argued per variable.
+  if (attachedExtensionId !== undefined && !ATTACHED_EXTENSION_ID.test(attachedExtensionId)) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      'BROKER_ATTACHED_EXTENSION_ID is set to a value that is not a Chrome extension id: expected thirty-two lower-case letters from a to p, the alphabet Chrome assigns extension ids. Copy the id Chrome shows for the attach extension, or unset the variable — but see the next sentence before unsetting it.',
+    );
+  }
+  if (attachedBrowsers.length > 0 && attachedExtensionId === undefined) {
+    // A half-enabled capability: the list says *listen for an attach*, and
+    // the id is what an attach is addressed to. Nothing can satisfy such a
+    // configuration, so it refuses rather than starting to fail later —
+    // `DECISIONS.md` §13m.
+    throw new StartupRefusal(
+      'config.value_readable',
+      `BROKER_ATTACHED_BROWSERS names ${attachedBrowsers.join(', ')} but BROKER_ATTACHED_EXTENSION_ID is unset. The relay routes an attach to an extension by its id, so an attached browser without one can never be reached. Set BROKER_ATTACHED_EXTENSION_ID to the id Chrome shows for the attach extension, or empty BROKER_ATTACHED_BROWSERS to leave the capability off.`,
+    );
   }
 
   // **The upload root may not overlap anything this service owns**, and this
@@ -1108,8 +1377,12 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
       }
     });
 
+  // Attached names join the walk: for an attached browser the configured
+  // binary is not one this service launches — it is the executable whose
+  // connect page the operator opens, and the same "a configured path that is
+  // quietly ignored" defect applies (§13m).
   const browserPaths = new Map<string, string>();
-  for (const browser of [...regularBrowsers, ...privateBrowsers]) {
+  for (const browser of [...regularBrowsers, ...privateBrowsers, ...attachedBrowsers]) {
     const key = browserPathVariable(browser);
     const raw = env[key];
     if (raw === undefined) {
@@ -1131,6 +1404,10 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     launchReadinessTimeoutSeconds: getNumber('BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS'),
     regularBrowsers,
     privateBrowsers,
+    attachedBrowsers,
+    attachedTabs,
+    attachedExtensionId,
+    attachedToken,
     browserPaths,
   };
 }

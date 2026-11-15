@@ -335,6 +335,10 @@ test('the configured value is checked, not only the resolved one', () => {
     launchReadinessTimeoutSeconds: 30,
     regularBrowsers: ['regular'],
     privateBrowsers: ['private'],
+    attachedBrowsers: [],
+    attachedTabs: 3,
+    attachedExtensionId: undefined,
+    attachedToken: undefined,
     // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
     // pointed at a binary of its own, and an empty map is exactly what a
     // default installation has.
@@ -368,6 +372,10 @@ test('a location that was never configured is still checked on its own account',
     launchReadinessTimeoutSeconds: 30,
     regularBrowsers: ['regular'],
     privateBrowsers: ['private'],
+    attachedBrowsers: [],
+    attachedTabs: 3,
+    attachedExtensionId: undefined,
+    attachedToken: undefined,
     // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
     // pointed at a binary of its own, and an empty map is exactly what a
     // default installation has.

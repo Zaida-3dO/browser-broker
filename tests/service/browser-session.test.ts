@@ -90,6 +90,10 @@ function environmentFor(store: StoreHandle): Parameters<typeof browserSessionPro
       launchReadinessTimeoutSeconds: 30,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
+      attachedBrowsers: [],
+      attachedTabs: 3,
+      attachedExtensionId: undefined,
+      attachedToken: undefined,
       // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
       // pointed at a binary of its own, and an empty map is exactly what a
       // default installation has.

@@ -41,6 +41,18 @@ export interface TempStoreOptions {
   readonly regularBrowsers?: readonly string[];
   readonly privateBrowsers?: readonly string[];
   /**
+   * The configured attached browsers (`DECISIONS.md` §13m). **Empty by
+   * default, which is the capability off** — what a fresh installation's
+   * configuration is, and the state most tests must not be perturbed from.
+   * The token and extension id stay `undefined` unless a test names them;
+   * a test that configures an attached browser without an id is testing the
+   * refusal, not the lease.
+   */
+  readonly attachedBrowsers?: readonly string[];
+  readonly attachedTabs?: number;
+  readonly attachedExtensionId?: string;
+  readonly attachedToken?: string;
+  /**
    * Browsers pointed at a binary of their own
    * (`BROKER_BROWSER_<NAME>_PATH`). Overridden rather than reached for
    * through the environment, so one test's configured binary cannot leak
@@ -119,6 +131,12 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       launchReadinessTimeoutSeconds: options.launchReadinessTimeoutSeconds ?? 30,
       regularBrowsers: options.regularBrowsers ?? ['regular'],
       privateBrowsers: options.privateBrowsers ?? ['private'],
+      // The attached trio defaults to off, exactly as a fresh installation
+      // reads: no name, no id, no token.
+      attachedBrowsers: options.attachedBrowsers ?? [],
+      attachedTabs: options.attachedTabs ?? 3,
+      attachedExtensionId: options.attachedExtensionId,
+      attachedToken: options.attachedToken,
       // Empty unless a test asks otherwise, which is what a default
       // installation has: no browser pointed at a binary of its own, so every
       // one of them takes the bundled build.

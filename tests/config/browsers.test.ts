@@ -6,7 +6,8 @@ import { readEnvironment } from '../../src/config/environment.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 
 /**
- * The four browser variables, and the refusals that are the specification.
+ * The browser variables — the two lists, the attached trio, and the
+ * refusals that are the specification.
  *
  * ── What this suite is for ──────────────────────────────────────────────
  *
@@ -15,7 +16,10 @@ import { StartupRefusal } from '../../src/errors.ts';
  * on-demand escape hatch §6 rejected. **So the cap and the refusals
  * are the load-bearing part, not the happy path** — a build that read the
  * lists correctly and enforced nothing would have reversed §6 by accident,
- * which is the specific outcome §6 names.
+ * which is the specific outcome §6 names. §13m adds the attached kind with
+ * its own cap of one and two tokens; the same doctrine applies there with
+ * more force, because a browser somebody did not mean to expose is the worst
+ * misconfiguration this configuration file can produce.
  *
  * ── Why every refusal assertion names the offending entry ───────────────
  *
@@ -166,4 +170,143 @@ test('a path separator in a name is refused, so a name cannot escape the profile
   // configured root plus the browser's name, so a name carrying a separator
   // would place a profile outside the root.
   refusalFrom({ BROKER_PRIVATE_BROWSERS: '../elsewhere' });
+});
+
+// ── The attached trio (§13m) ─────────────────────────────────────────────
+//
+// A placeholder extension id of the right shape, used by every passing case
+// below: the first sixteen letters of the alphabet Chrome assigns extension
+// ids (`a` through `p`), written out twice. The shape is what the check is
+// about, and this is not a real extension.
+const GOOD_EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
+
+test('with nothing set there is no attached browser at all, and the cap is at its default', () => {
+  // **Empty is the capability off**, and this is the configuration every
+  // existing installation is in: nothing listens for an attach, and no
+  // browser on this machine is reachable this way.
+  const environment = read({});
+  assert.deepEqual([...environment.attachedBrowsers], []);
+  assert.equal(environment.attachedTabs, 3);
+  assert.equal(environment.attachedExtensionId, undefined);
+  assert.equal(environment.attachedToken, undefined);
+});
+
+test('one attached browser with an extension id is read', () => {
+  const environment = read({
+    BROKER_ATTACHED_BROWSERS: 'desktop',
+    BROKER_ATTACHED_EXTENSION_ID: GOOD_EXTENSION_ID,
+  });
+  assert.deepEqual([...environment.attachedBrowsers], ['desktop']);
+  assert.equal(environment.attachedExtensionId, GOOD_EXTENSION_ID);
+});
+
+test('a second attached browser is refused, and the cap is stated', () => {
+  // One installation's relay answers for one browser; a second name would
+  // describe a second machine this build cannot address separately.
+  const refusal = refusalFrom({
+    BROKER_ATTACHED_BROWSERS: 'desktop,laptop',
+    BROKER_ATTACHED_EXTENSION_ID: GOOD_EXTENSION_ID,
+  });
+  assert.match(refusal.message, /BROKER_ATTACHED_BROWSERS/);
+  assert.match(refusal.message, /the most it may name is 1/);
+});
+
+test('exactly one attached browser is accepted, so the cap is one rather than zero', () => {
+  // The passing-side boundary. Without it, the refusal above cannot tell an
+  // off-by-one from the decision.
+  const environment = read({
+    BROKER_ATTACHED_BROWSERS: 'desktop',
+    BROKER_ATTACHED_EXTENSION_ID: GOOD_EXTENSION_ID,
+  });
+  assert.equal(environment.attachedBrowsers.length, 1);
+});
+
+test('an attached name also written in a regular list is refused, naming both keys', () => {
+  const refusal = refusalFrom({
+    BROKER_REGULAR_BROWSERS: 'desktop',
+    BROKER_ATTACHED_BROWSERS: 'desktop',
+    BROKER_ATTACHED_EXTENSION_ID: GOOD_EXTENSION_ID,
+  });
+  assert.match(refusal.message, /desktop/);
+  assert.match(refusal.message, /BROKER_REGULAR_BROWSERS/);
+  assert.match(refusal.message, /BROKER_ATTACHED_BROWSERS/);
+});
+
+test('an attached name also written in a private list is refused, naming both keys', () => {
+  const refusal = refusalFrom({
+    BROKER_PRIVATE_BROWSERS: 'desktop',
+    BROKER_ATTACHED_BROWSERS: 'desktop',
+    BROKER_ATTACHED_EXTENSION_ID: GOOD_EXTENSION_ID,
+  });
+  assert.match(refusal.message, /desktop/);
+  assert.match(refusal.message, /BROKER_PRIVATE_BROWSERS/);
+  assert.match(refusal.message, /BROKER_ATTACHED_BROWSERS/);
+});
+
+test('a set-but-empty attached list is the capability off, not a refusal', () => {
+  // The asymmetry against the set-but-empty regular list is deliberate.
+  // That refusal rests on the list having something to fall back to; a list
+  // whose default is EMPTY has exactly one thing blank can mean — *none*.
+  const environment = read({ BROKER_ATTACHED_BROWSERS: '   ' });
+  assert.deepEqual([...environment.attachedBrowsers], []);
+});
+
+test('the attached tab cap can be set, like every other declared number', () => {
+  const environment = read({ BROKER_ATTACHED_TABS: '1' });
+  assert.equal(environment.attachedTabs, 1);
+});
+
+test('a zero or unreadable attached tab cap refuses, naming the variable', () => {
+  for (const bad of ['0', 'lots']) {
+    const refusal = refusalFrom({ BROKER_ATTACHED_TABS: bad });
+    assert.match(refusal.message, /BROKER_ATTACHED_TABS/);
+  }
+});
+
+test('an attached browser with no extension id refuses, naming both variables', () => {
+  // The list says *listen for an attach*; the id is what an attach is
+  // addressed to. Nothing can satisfy the configuration, so it refuses here
+  // rather than failing a caller mid-lease.
+  const refusal = refusalFrom({ BROKER_ATTACHED_BROWSERS: 'desktop' });
+  assert.match(refusal.message, /BROKER_ATTACHED_BROWSERS/);
+  assert.match(refusal.message, /BROKER_ATTACHED_EXTENSION_ID/);
+  assert.match(refusal.message, /desktop/);
+});
+
+test('an extension id of the wrong shape refuses even when nothing is attached', () => {
+  // §6.3's rule is about the value being unreadable, not about the
+  // capability being live — and the shape is worth getting right while it
+  // is still free to fix.
+  for (const bad of ['short', 'a'.repeat(31), 'a'.repeat(33), 'q'.repeat(32), 'A'.repeat(32)]) {
+    const refusal = refusalFrom({ BROKER_ATTACHED_EXTENSION_ID: bad });
+    assert.match(refusal.message, /BROKER_ATTACHED_EXTENSION_ID/);
+  }
+});
+
+test('a bad extension id refuses without quoting the value', () => {
+  // The no-echo discipline the token is held to, kept uniform across the
+  // attach variables rather than argued per one.
+  const refusal = refusalFrom({ BROKER_ATTACHED_EXTENSION_ID: 'definitely-not-an-extension-id' });
+  assert.doesNotMatch(refusal.message, /definitely/);
+});
+
+test('a blank attached token refuses rather than being read as no token', () => {
+  // Unset says the relay accepts unauthenticated attaches. A set-but-blank
+  // value says something somebody wrote and then deleted, and the two
+  // should not be confused.
+  const refusal = refusalFrom({ BROKER_ATTACHED_TOKEN: '  ' });
+  assert.match(refusal.message, /BROKER_ATTACHED_TOKEN/);
+});
+
+test('the attached token is kept exactly as written, whitespace included', () => {
+  // Trimming a secret is a guess about what the operator typed. The value
+  // goes to the relay verbatim, or nowhere at all.
+  const environment = read({ BROKER_ATTACHED_TOKEN: ' token-with-spaces ' });
+  assert.equal(environment.attachedToken, ' token-with-spaces ');
+});
+
+test('a token carrying a null byte refuses, without echoing the token', () => {
+  const refusal = refusalFrom({ BROKER_ATTACHED_TOKEN: 's\u0000cret-value' });
+  assert.match(refusal.message, /BROKER_ATTACHED_TOKEN/);
+  assert.doesNotMatch(refusal.message, /cret-value/);
 });

@@ -66,6 +66,10 @@ describe('the doctor report', () => {
       const temp = makeTempStore({
         regularBrowsers: ['regular', 'work', 'personal'],
         privateBrowsers: ['private', 'scratch'],
+        attachedBrowsers: [],
+        attachedTabs: 3,
+        attachedExtensionId: undefined,
+        attachedToken: undefined,
       });
       try {
         const report = runDoctor(temp.environment, store.db);
@@ -106,6 +110,10 @@ describe('the doctor report', () => {
       const trio = makeTempStore({
         regularBrowsers: ['regular', 'work'],
         privateBrowsers: ['private'],
+        attachedBrowsers: [],
+        attachedTabs: 3,
+        attachedExtensionId: undefined,
+        attachedToken: undefined,
       });
       try {
         const withPair = runDoctor(pair.environment, store.db, { configuredTabBudget: 15 });
