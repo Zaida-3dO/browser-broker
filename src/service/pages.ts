@@ -11,6 +11,7 @@ import {
 } from '../browser/driver.ts';
 import { BrokerError } from '../errors.ts';
 import { isAbsoluteInEitherNamespace } from '../artifacts/store.ts';
+import type { ReadWindow } from './snapshot-window.ts';
 
 /**
  * The page verbs: what a caller may ask of a tab it owns, and every way that
@@ -857,6 +858,107 @@ export function resolveSnapshotFilter(find: unknown): SnapshotFilter | undefined
  */
 export function artifactIsLiveQuery(artifact: ReadArtifact): boolean {
   return ARTIFACT_COLLECTION[artifact] === 'live';
+}
+
+/* ─────────────────── read window: inline / offset / limit (#23 extension) ─────────────────── */
+
+/**
+ * The default window a read returns when a caller asks for the text but
+ * names no length: 4,000 characters.
+ *
+ * The number is the one the attached-browser measurement chose, and it earns
+ * its place: a 300-link page yields a snapshot of roughly 43 KB, so a
+ * default this size is about a tenth of a big page — enough to carry the
+ * part a caller is actually looking for, small enough that a model can hold
+ * several windows of one page without the page holding it hostage.
+ */
+export const DEFAULT_READ_WINDOW_CHARS = 4_000;
+
+/**
+ * The largest window one call may ask for: 16,000 characters.
+ *
+ * A bound rather than none, and it is the same bound that makes the read
+ * surface return paths in the first place — an unbounded inline read is a
+ * full artefact entering a conversation, which is the cost §3.9 exists to
+ * stop. Four default pages is the line between *"read me this part"* and
+ * *"read me the whole file but through the tool call"*, and the file is
+ * right there for the second caller, without a cap to route around.
+ */
+export const MAX_READ_WINDOW_CHARS = 16_000;
+
+
+/**
+ * Read a caller's `inline`, `offset` and `limit` into a window, or refuse.
+ *
+ * ── Why `offset`/`limit` without `inline` is refused, not ignored ────────
+ *
+ * This repository's named failure is the inert argument: a surface that
+ * takes a value, drops it, and tells the caller nothing. A caller that
+ * wrote `offset: 4000` meant to page; silently returning a path instead is
+ * the caller's intent thrown away with a green result beside it. The
+ * refusal costs one call and says exactly which argument to add, which is
+ * cheaper than the confusion it prevents.
+ *
+ * ── Why the default limit is applied here, in the guard ──────────────────
+ *
+ * The caller's request, once decided, should be one complete fact — a
+ * window with a real length — rather than a window with a hole the applying
+ * half has to know how to fill. A second file inventing the same default
+ * later is the drift this prevents.
+ */
+export function resolveReadWindow(
+  inline: unknown,
+  offset: unknown,
+  limit: unknown,
+): ReadWindow | undefined {
+  if (inline === undefined || inline === null || inline === false) {
+    if (offset !== undefined || limit !== undefined) {
+      throw new PageRefusal(
+        'read.window_shape',
+        '`offset` and `limit` describe the window of text to return, and a read that is not inline returns no text to window — only a path. Pass inline: true to get the text, or drop them to get the path as before.',
+        { offset, limit },
+      );
+    }
+    return undefined;
+  }
+
+  if (inline !== true) {
+    throw new PageRefusal(
+      'read.window_shape',
+      'inline is a yes or no: pass true to get the artefact text back, and omit it (or pass false) to get the path as before.',
+      { inline },
+    );
+  }
+
+  if (offset !== undefined && offset !== null) {
+    if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) {
+      throw new PageRefusal(
+        'read.window_shape',
+        'offset is the character to start at: a whole number of characters from 0.',
+        { offset, minimum: 0 },
+      );
+    }
+  }
+
+  if (limit !== undefined && limit !== null) {
+    if (
+      typeof limit !== 'number' ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_READ_WINDOW_CHARS
+    ) {
+      throw new PageRefusal(
+        'read.window_shape',
+        `limit is the most characters to return: a whole number from 1 to ${String(MAX_READ_WINDOW_CHARS)}, and ${String(DEFAULT_READ_WINDOW_CHARS)} if you leave it out.`,
+        { limit, minimum: 1, maximum: MAX_READ_WINDOW_CHARS, defaultValue: DEFAULT_READ_WINDOW_CHARS },
+      );
+    }
+  }
+
+  return {
+    offset: offset === undefined || offset === null ? 0 : offset,
+    limit: limit === undefined || limit === null ? DEFAULT_READ_WINDOW_CHARS : limit,
+  };
 }
 
 /**
