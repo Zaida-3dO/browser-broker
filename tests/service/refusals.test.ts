@@ -85,9 +85,9 @@ test('every code names a rule, a summary and a retry answer', () => {
   // a code fails here even though the loop below would happily skip it.
   assert.equal(REFUSAL_CODES.length, 15, 'a refusal code was added or removed without a test');
   assert.deepEqual([...REFUSAL_CODES].sort(), [
-    // Added with the attached kind (`DECISIONS.md` §13m), as a pair: the
+    // Added with the attached kind (`DECISIONS.md` §13n), as a pair: the
     // seed guard at the claim, and the per-browser tab cap the shared
-    // budget cannot express. The pair shows the §13m boundary — reads only,
+    // budget cannot express. The pair shows the §13n boundary — reads only,
     // and never more of a person's tabs at once than the cap allows.
     'attached_full',
     'attached_no_seed',

@@ -97,7 +97,7 @@ interface OptionalCommandDeclaration {
  *
  * **A value this file must never echo.** Every refusal message names the
  * variable and never the value, and the accessors below keep the value out
- * of the resolved-map's error sentences. `DECISIONS.md` §13m states the rule
+ * of the resolved-map's error sentences. `DECISIONS.md` §13n states the rule
  * the consumers inherit: the token is passed through to the attach relay and
  * written nowhere — not to the store, not to the ledger, not to a log line.
  */
@@ -388,7 +388,7 @@ const DECLARATIONS = [
     /**
      * The attached browsers — a person's own, reached read-only through the
      * attach relay and never launched or closed by this service (§1.2,
-     * `DECISIONS.md` §13m).
+     * `DECISIONS.md` §13n).
      *
      * **The default is empty, and an empty list is the capability being
      * off.** Both other lists default to one name, because a fresh install
@@ -414,7 +414,7 @@ const DECLARATIONS = [
   },
   {
     /**
-     * How many tabs may be held at once against one attached browser (§13m).
+     * How many tabs may be held at once against one attached browser (§13n).
      *
      * **A cap in front of the budget, with the budget still standing.**
      * Those tabs are pages in somebody's own browser and count against
@@ -424,7 +424,7 @@ const DECLARATIONS = [
      * before any row is written** rather than by queueing it: the queue's
      * promotion math weighs the shared budget only, so a per-kind cap held
      * through the queue would be breached the moment capacity freed
-     * (§13m records the reasoning).
+     * (§13n records the reasoning).
      */
     key: 'BROKER_ATTACHED_TABS',
     kind: 'positive-integer',
@@ -435,7 +435,7 @@ const DECLARATIONS = [
     /**
      * The Chrome extension id the attach relay routes to — the id Chrome
      * shows for the attach extension installed in the operator's browser
-     * (§13m).
+     * (§13n).
      *
      * **Required whenever the attached list is not empty**, and its shape is
      * checked once here rather than at lease time: the relay addresses the
@@ -452,7 +452,7 @@ const DECLARATIONS = [
   },
   {
     /**
-     * The shared secret the attach extension presents to the relay (§13m).
+     * The shared secret the attach extension presents to the relay (§13n).
      *
      * **Carried, never echoed and never written**: it is handed to the relay
      * at connect and kept out of the store, the ledger and every log line —
@@ -462,7 +462,7 @@ const DECLARATIONS = [
      * Unset is legal: the relay's own contract takes the token as optional,
      * and whether an attach is authenticated is that relay's deployment's
      * choice, not this service's. The doctor reports the token as unset so
-     * the exposure stays visible even when it is deliberate (§13m).
+     * the exposure stays visible even when it is deliberate (§13n).
      */
     key: 'BROKER_ATTACHED_TOKEN',
     kind: 'token',
@@ -586,7 +586,7 @@ export interface Environment {
   /** The ephemeral, signed-in-to-nothing browsers, in configured order (§1.2). */
   readonly privateBrowsers: readonly string[];
   /**
-   * The attached browsers, in configured order (§1.2, `DECISIONS.md` §13m).
+   * The attached browsers, in configured order (§1.2, `DECISIONS.md` §13n).
    * **May be empty — empty is the capability being off** — and never longer
    * than one name. An attached browser is a person's own: this service never
    * launches it, never closes it, and reaches it read-only through the
@@ -595,7 +595,7 @@ export interface Environment {
   readonly attachedBrowsers: readonly string[];
   /**
    * The most tabs that may be held at once against one attached browser
-   * (§13m). A cap in front of `tabBudget`, not a substitute for it: those
+   * (§13n). A cap in front of `tabBudget`, not a substitute for it: those
    * pages count against the budget, and this answers how much of a person's
    * browsing a single caller may hold.
    */
@@ -610,7 +610,7 @@ export interface Environment {
   /**
    * The attach relay token, or `undefined` when unset. **Carried, never
    * echoed**: it goes to the relay at connect and nowhere else — not the
-   * store, not the ledger, not a log line (§13m). Every consumer of this
+   * store, not the ledger, not a log line (§13n). Every consumer of this
    * field keeps that rule; nothing may format it into a message.
    */
   readonly attachedToken: string | undefined;
@@ -1307,7 +1307,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     // A half-enabled capability: the list says *listen for an attach*, and
     // the id is what an attach is addressed to. Nothing can satisfy such a
     // configuration, so it refuses rather than starting to fail later —
-    // `DECISIONS.md` §13m.
+    // `DECISIONS.md` §13n.
     throw new StartupRefusal(
       'config.value_readable',
       `BROKER_ATTACHED_BROWSERS names ${attachedBrowsers.join(', ')} but BROKER_ATTACHED_EXTENSION_ID is unset. The relay routes an attach to an extension by its id, so an attached browser without one can never be reached. Set BROKER_ATTACHED_EXTENSION_ID to the id Chrome shows for the attach extension, or empty BROKER_ATTACHED_BROWSERS to leave the capability off.`,
@@ -1380,7 +1380,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
   // Attached names join the walk: for an attached browser the configured
   // binary is not one this service launches — it is the executable whose
   // connect page the operator opens, and the same "a configured path that is
-  // quietly ignored" defect applies (§13m).
+  // quietly ignored" defect applies (§13n).
   const browserPaths = new Map<string, string>();
   for (const browser of [...regularBrowsers, ...privateBrowsers, ...attachedBrowsers]) {
     const key = browserPathVariable(browser);

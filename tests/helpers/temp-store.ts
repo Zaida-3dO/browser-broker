@@ -41,7 +41,7 @@ export interface TempStoreOptions {
   readonly regularBrowsers?: readonly string[];
   readonly privateBrowsers?: readonly string[];
   /**
-   * The configured attached browsers (`DECISIONS.md` §13m). **Empty by
+   * The configured attached browsers (`DECISIONS.md` §13n). **Empty by
    * default, which is the capability off** — what a fresh installation's
    * configuration is, and the state most tests must not be perturbed from.
    * The token and extension id stay `undefined` unless a test names them;

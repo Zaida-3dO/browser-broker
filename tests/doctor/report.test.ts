@@ -459,7 +459,7 @@ describe('the discovery probe reaching runDoctor from a production route', () =>
     });
   });
 
-  // ── The attached group (§13m) ────────────────────────────────────────────
+  // ── The attached group (§13n) ────────────────────────────────────────────
 
   it('answers the attached rows as off, and invents no rows for an unconfigured attached browser', async () => {
     await withSteppedStore(async (store) => {

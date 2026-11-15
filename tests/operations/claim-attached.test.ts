@@ -4,7 +4,7 @@ import test from 'node:test';
 import { withBroker } from '../helpers/broker.ts';
 
 /**
- * Claims against the attached kind (`SCHEMA.md` §3.2, `DECISIONS.md` §13m).
+ * Claims against the attached kind (`SCHEMA.md` §3.2, `DECISIONS.md` §13n).
  *
  * ── The shape every test here shares ────────────────────────────────────
  *
@@ -21,7 +21,7 @@ import { withBroker } from '../helpers/broker.ts';
  * An unnamed claim must never land on the attached browser. Every other
  * wrong default in this table costs a caller the wrong page; this one puts
  * work inside a person's own window, in front of them, in their identity —
- * the outcome §13m exists to make unreachable. So it is asserted first, and
+ * the outcome §13n exists to make unreachable. So it is asserted first, and
  * asserted through the committed row rather than the response.
  */
 
@@ -102,7 +102,7 @@ test('the configured name of an attached browser claims it exactly', async () =>
 });
 
 test('an UNSTATED claim never lands on the attached browser', async () => {
-  // The named test of §13m's boundary. The attached name sits in the same
+  // The named test of §13n's boundary. The attached name sits in the same
   // store, is configured, and is grantable — and the default must walk past
   // it to the first signed-in browser every time.
   await withBroker(
@@ -284,7 +284,7 @@ test('the cap boundary: exactly at it is granted, one past is refused', async ()
 });
 
 test('tabs held against an attached browser still count against the shared budget', async () => {
-  // The cap is in FRONT of the budget, not a substitute for it (§13m): an
+  // The cap is in FRONT of the budget, not a substitute for it (§13n): an
   // attached page costs the same budget unit as any other page, and a
   // different browser still has to queue when the pool is full.
   await withBroker(

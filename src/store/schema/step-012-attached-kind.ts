@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3';
 import type { Step } from './steps.ts';
 
 /**
- * Step twelve: the `attached` browser kind (`DECISIONS.md` §13m).
+ * Step twelve: the `attached` browser kind (`DECISIONS.md` §13n).
  *
  * ── What this adds, and what it deliberately changes nothing else about ──
  *
@@ -95,7 +95,7 @@ export const STEP_TWELVE_SQL: readonly string[] = REBUILD;
 
 export const stepTwelve: Step = {
   version: 12,
-  summary: "The `attached` browser kind: a person's own browser, never launched or owned (§13m).",
+  summary: "The `attached` browser kind: a person's own browser, never launched or owned (§13n).",
   apply: (db: Database) => {
     for (const statement of STEP_TWELVE_SQL) {
       db.exec(statement);

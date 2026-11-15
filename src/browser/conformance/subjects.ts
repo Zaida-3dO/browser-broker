@@ -39,7 +39,7 @@ export interface SeamSubject {
    *
    * The kind this exists for is the attached browser's keeper: the kind
    * refuses `ensureKeeperTab` at the seam, by construction and on purpose
-   * (`DECISIONS.md` §13m). Asking a keeper property of it could only come out
+   * (`DECISIONS.md` §13n). Asking a keeper property of it could only come out
    * green by the session implementing a keeper — which is exactly the
    * fixture-side fiction this suite was built to stop. So the honest answer
    * is a skip, reported by name and with its reason, and the runner fails a

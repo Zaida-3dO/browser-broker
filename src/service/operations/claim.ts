@@ -145,7 +145,7 @@ export interface ClaimInput {
    * or `attached` resolves to the first of that kind; a configured name
    * resolves to that browser exactly. **An attached browser is reachable
    * only by an explicit word or name** — nothing about omitting or
-   * defaulting ever lands work on a person's own browser (§13m).
+   * defaulting ever lands work on a person's own browser (§13n).
    */
   readonly browser?: string;
   /** What this lease is for, in human words. What an operator reads when revoking. */
@@ -297,7 +297,7 @@ export interface ArbitrationSettings {
   readonly privateBrowsers: readonly string[];
   /**
    * The configured attached browsers, in configured order (§1.2,
-   * `DECISIONS.md` §13m). **May be empty — empty is the capability off** —
+   * `DECISIONS.md` §13n). **May be empty — empty is the capability off** —
    * and even when set it holds at most one name.
    *
    * Optional with an empty default, and not because a caller may leave it
@@ -308,7 +308,7 @@ export interface ArbitrationSettings {
   readonly attachedBrowsers?: readonly string[];
   /**
    * The most tabs that may be held at once against one attached browser
-   * (§13m). A cap in front of `tabBudget`, not a substitute for it — those
+   * (§13n). A cap in front of `tabBudget`, not a substitute for it — those
    * pages still count against the budget, and this answers the separate
    * question of how much of a person's visible browsing one caller may
    * hold. Optional for the same reason as the list above; the default is
@@ -342,7 +342,7 @@ export interface ArbitrationSettings {
  * ── Attached is reachable only by an explicit choice ────────────────────
  *
  * The word `attached` and the configured name are the only routes in
- * (`DECISIONS.md` §13m). The default does not consider it, and nothing else
+ * (`DECISIONS.md` §13n). The default does not consider it, and nothing else
  * in the resolution can reach it — because the one outcome this kind must
  * never have is work landing on a person's own browser by omission, and the
  * name-collision refusal at startup means it cannot hide behind another
@@ -609,7 +609,7 @@ export function decideClaim(
         ? 'private'
         : 'regular';
 
-  // **Storage seeding is refused on an attached browser** (§13m's
+  // **Storage seeding is refused on an attached browser** (§13n's
   // `claim.no_seed_on_attached`). A seed writes a credential into an origin
   // before the tab's first navigation — writing *into* the browser — and an
   // attached browser is a person's own, which this capability reads and does
@@ -759,7 +759,7 @@ export function decideClaim(
   }
 
   // **The per-browser cap on an attached browser, enforced by refusal**
-  // (§13m's `attached.tab_cap`, from `BROKER_ATTACHED_TABS`). The shared
+  // (§13n's `attached.tab_cap`, from `BROKER_ATTACHED_TABS`). The shared
   // budget says whether the pool is full; it cannot say whether *this*
   // browser is full, and for an attached browser that second question is the
   // one that protects a person: their own tabs, visible in their own window,

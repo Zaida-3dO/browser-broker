@@ -54,7 +54,7 @@ export function countActiveClaims(db: Database): number {
  *
  * The count above answers *is the pool full*; this answers *is this browser
  * full* — the question the attached kind asks and no other kind has
- * (`DECISIONS.md` §13m): its pages sit inside a person's own browsing, and
+ * (`DECISIONS.md` §13n): its pages sit inside a person's own browsing, and
  * how many of them may be out at once is a per-browser cap that the shared
  * budget does not see. Everything else is as above: live claims only, read
  * inside the arbitration transaction, against the same reconciled state.

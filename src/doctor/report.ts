@@ -246,7 +246,7 @@ export function runDoctor(
   // ── The attached group: configuration read, connection never opened ──────
   //
   // All four checks answer from environment values and one `fs` stat — the
-  // relay is never contacted (§13m). The extension-id and token rows run even
+  // relay is never contacted (§13n). The extension-id and token rows run even
   // when the capability is off, because they *answer* "off" (that is the
   // state of most installations and the answer is worth seeing); the
   // connectivity row runs only when it is on, because asking whether a

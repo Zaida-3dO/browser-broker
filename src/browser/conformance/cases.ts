@@ -67,7 +67,7 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
       // has its own three properties below; this one asks only about the
       // leased tab. A call that is not part of the question being asked would
       // silently make every property a keeper property — and the attached
-      // kind, which refuses keepers by construction (§13m), could then never
+      // kind, which refuses keepers by construction (§13n), could then never
       // be asked anything at all.
       const leased = await session.openTab();
       const listed = await session.listTabs();
@@ -137,7 +137,7 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
       // final page closes, and then the *second* close would be answering a
       // dead connection rather than a vanished page, which is a different
       // question. A keeper would hold the browser open too, but the attached
-      // kind has no keeper by construction (§13m) and this property has to be
+      // kind has no keeper by construction (§13n) and this property has to be
       // askable of it.
       //
       // A tab this session really has. Closing it must be reported as a

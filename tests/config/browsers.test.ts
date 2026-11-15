@@ -16,7 +16,7 @@ import { StartupRefusal } from '../../src/errors.ts';
  * on-demand escape hatch §6 rejected. **So the cap and the refusals
  * are the load-bearing part, not the happy path** — a build that read the
  * lists correctly and enforced nothing would have reversed §6 by accident,
- * which is the specific outcome §6 names. §13m adds the attached kind with
+ * which is the specific outcome §6 names. §13n adds the attached kind with
  * its own cap of one and two tokens; the same doctrine applies there with
  * more force, because a browser somebody did not mean to expose is the worst
  * misconfiguration this configuration file can produce.
@@ -172,7 +172,7 @@ test('a path separator in a name is refused, so a name cannot escape the profile
   refusalFrom({ BROKER_PRIVATE_BROWSERS: '../elsewhere' });
 });
 
-// ── The attached trio (§13m) ─────────────────────────────────────────────
+// ── The attached trio (§13n) ─────────────────────────────────────────────
 //
 // A placeholder extension id of the right shape, used by every passing case
 // below: the first sixteen letters of the alphabet Chrome assigns extension

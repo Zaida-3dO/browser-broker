@@ -141,7 +141,7 @@ export const DOCTOR_EXIT = {
    */
   session: 17,
   /**
-   * The attached browser's configuration (`DECISIONS.md` §13m).
+   * The attached browser's configuration (`DECISIONS.md` §13n).
    *
    * A group of its own because the responses it calls for are none of the
    * other groups': an attached fault is almost always a configuration that
@@ -1044,7 +1044,7 @@ export function checkSignInSession(browser: BrowserId, probe: SessionProbe): Gro
 
 /**
  * That the attach route has an address: an extension id, whenever the
- * capability is on (§13m).
+ * capability is on (§13n).
  *
  * The relay routes an attach by extension id; without one, a configured
  * attached browser can never be reached and every claim against it would
@@ -1145,7 +1145,7 @@ export function checkAttachedToken(
 
 /**
  * The binary an attached browser names, **as a path on disk and nothing
- * more** (§13m).
+ * more** (§13n).
  *
  * For the two launched kinds this path is the executable the service starts;
  * for the attached kind it is the executable **whose connect page the
@@ -1216,7 +1216,7 @@ export function checkAttachedBinary(
  * whether that was checked and passed, checked and failed, or declined. So
  * the row exists, reports `unknown` **always and for a stated reason**, and
  * carries the two facts that live only inside a connection: whether the
- * extension is through, and which protocol version it speaks. §13m puts the
+ * extension is through, and which protocol version it speaks. §13n puts the
  * version question at lease time for the same reason — the answer is a
  * property of a live extension, and a connection is the lease's act, not a
  * readiness probe's.

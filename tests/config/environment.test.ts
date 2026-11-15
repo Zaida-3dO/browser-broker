@@ -74,7 +74,7 @@ test('every declared variable refuses independently', () => {
   // **One declared exception, named here rather than skipped quietly**:
   // `BROKER_ATTACHED_BROWSERS` accepts blank, because a list whose default
   // is empty has exactly one thing blank can mean — *none*, the capability
-  // off (§13m). That case is asserted positively in `browsers.test.ts`
+  // off (§13n). That case is asserted positively in `browsers.test.ts`
   // ('a set-but-empty attached list is the capability off'), so excluding
   // it here removes a refusal this build deliberately does not make, not a
   // test. Every other variable keeps the rule: set a value, get nothing
@@ -123,7 +123,7 @@ test('every variable this build declares is the set below, and no other', () => 
   // a deliberate edit here rather than a silent widening.
   assert.deepEqual([...DECLARED_VARIABLES].sort(), [
     'BROKER_ARTIFACTS_ROOT',
-    // The attached four (§13m): the list defaults to off, the tab cap
+    // The attached four (§13n): the list defaults to off, the tab cap
     // defaults to 3, and the two tokens have no default at all. Their
     // refusals are tested in `browsers.test.ts`.
     'BROKER_ATTACHED_BROWSERS',

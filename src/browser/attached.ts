@@ -24,7 +24,7 @@
 // across connections and across processes for as long as the browser runs,
 // and `bridge.isOurs(tabId)` is the contract's ownership test. So an attached
 // handle is `tab-<tabId>`, and the mirror doubles as the address book. The
-// consequence is stated in full in `DECISIONS.md` §13m: pages and mirror tabs
+// consequence is stated in full in `DECISIONS.md` §13n: pages and mirror tabs
 // are paired at connect time by address where the address is unambiguous and
 // by order otherwise, which cannot mispair tabs this connection owns and
 // could not mispair tabs it does not — a foreign tab is absent from the

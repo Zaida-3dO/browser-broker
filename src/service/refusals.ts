@@ -236,7 +236,7 @@ export const REFUSALS = {
   },
 
   /**
-   * §7.1 `claim.no_seed_on_attached` (§13m): a storage seed writes a
+   * §7.1 `claim.no_seed_on_attached` (§13n): a storage seed writes a
    * credential **into** a browser before its first navigation, and the
    * attached kind reads a person's own browser and never writes to it.
    *
@@ -250,7 +250,7 @@ export const REFUSALS = {
   },
 
   /**
-   * §7.1 `attached.tab_cap` (§13m): the per-browser cap a shared budget
+   * §7.1 `attached.tab_cap` (§13n): the per-browser cap a shared budget
    * cannot express — how much of a person's own browsing one caller may
    * hold at a time.
    *
