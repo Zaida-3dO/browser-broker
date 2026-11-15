@@ -78,6 +78,7 @@ import type {
   TabCloseOutcome,
   TabHandle,
 } from './driver.ts';
+import { readPngDimensions, renderNetworkLog, type NetworkEntry } from './render.ts';
 
 /**
  * How long the open path waits for the extension to arrive before it refuses.
@@ -138,71 +139,14 @@ const ALLOWED_PRESS_KEYS = new Set([
   'Escape',
 ]);
 
-/** One page's accumulated console and network history, as `real.ts` records it. */
+/**
+ * One page's accumulated console and network history. The entry shape is
+ * `render.ts`'s, shared with `real.ts` — the two drivers render one log
+ * format, and this is what they accumulate to render it from.
+ */
 interface PageRecording {
   readonly console: string[];
   readonly network: NetworkEntry[];
-}
-
-/** A request observed on a page, settled later by its response or its failure. */
-interface NetworkEntry {
-  readonly method: string;
-  readonly url: string;
-  readonly startedAt: number;
-  outcome?:
-    | { kind: 'response'; status: number; elapsedMs: number }
-    | { kind: 'failed'; reason: string; elapsedMs: number };
-}
-
-/**
- * Render one accumulated request, **identically to `real.ts`'s line format**.
- *
- * The duplication is deliberate and reported: `real.ts`'s own copy is
- * module-private and that file is not edited beyond its `modeFor` fix in this
- * change, so a shared helper would be a second file moved. Extracting the
- * pair is the follow-up; two renderers that may drift is not a cost to hide.
- */
-function formatNetworkEntry(entry: NetworkEntry, index: number): string {
-  const request = `${entry.method} ${entry.url}`;
-  const at = `[${String(index + 1)}]`;
-  if (entry.outcome === undefined) {
-    return `${at} PENDING ${request} (in flight when this log was written)`;
-  }
-  if (entry.outcome.kind === 'failed') {
-    return `${at} FAILED  ${request} (${entry.outcome.reason}, ${String(entry.outcome.elapsedMs)}ms)`;
-  }
-  return `${at} ${String(entry.outcome.status)}     ${request} (${String(entry.outcome.elapsedMs)}ms)`;
-}
-
-/** The whole network log, header and all — same shape as `real.ts`'s. */
-function renderNetworkLog(entries: readonly NetworkEntry[]): string {
-  if (entries.length === 0) {
-    return 'No requests were observed on this tab.';
-  }
-  const pending = entries.filter((entry) => entry.outcome === undefined).length;
-  const counted = `${String(entries.length)} request${entries.length === 1 ? '' : 's'}`;
-  const header =
-    pending === 0
-      ? `${counted}, all settled.`
-      : `${counted}, ${String(pending)} still in flight when this was written.`;
-  return [
-    header,
-    ...[...entries.entries()].map(([index, entry]) => formatNetworkEntry(entry, index)),
-  ].join('\n');
-}
-
-/**
- * The pixel dimensions a PNG declares about itself — `real.ts`'s reader,
- * duplicated for the same reported reason as the network renderer above.
- */
-function readPngDimensions(image: Uint8Array): { width: number; height: number } | undefined {
-  const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-  for (let at = 0; at < pngSignature.length; at += 1) {
-    if (image[at] !== pngSignature[at]) return undefined;
-  }
-  if (image.length < 24 || image[12] !== 0x49 || image[13] !== 0x48) return undefined;
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
 /** The handle identifier for one of the bridge's tabs. */
