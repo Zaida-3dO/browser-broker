@@ -416,8 +416,8 @@ const DECLARATIONS = [
     /**
      * How many tabs may be held at once against one attached browser (§13m).
      *
-     * **A cap in front of the budget, not a replacement for it.** Those tabs
-     * are pages in somebody's own browser and count against
+     * **A cap in front of the budget, with the budget still standing.**
+     * Those tabs are pages in somebody's own browser and count against
      * `BROKER_TAB_BUDGET` exactly as any other page does; this number answers
      * the different question of how much of a person's visible browsing one
      * caller may hold at a time. It is enforced by **refusing the claim
@@ -1262,10 +1262,10 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
   // has no single answer to *which browser is this*, and picking one would
   // hand a caller the other kind roughly half the time it mattered. Checked
   // here rather than in any list's own reader, because no reader can see the
-  // others — and the attached list joins the pair this check used to run
-  // across, since a browser named in both the signed-in list and the attached
-  // list is the same impossible question with a worse second answer: one of
-  // the two is a person's own machine.
+  // others — and every configured list is in scope, attached included: a
+  // browser named in both the signed-in list and the attached list is the
+  // same impossible question with a worse second answer: one of the two is a
+  // person's own machine.
   const LISTS: readonly [key: string, names: readonly string[]][] = [
     ['BROKER_REGULAR_BROWSERS', regularBrowsers],
     ['BROKER_PRIVATE_BROWSERS', privateBrowsers],

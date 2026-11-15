@@ -301,9 +301,9 @@ export interface ArbitrationSettings {
    * and even when set it holds at most one name.
    *
    * Optional with an empty default, and not because a caller may leave it
-   * out by choice: the processes that assemble these settings today predate
-   * the kind, and the honest reading of "not supplied" is exactly what every
-   * installation without attached configuration reads — no attached browser.
+   * out by choice: the honest reading of "not supplied" is exactly what
+   * every installation without attached configuration reads — no attached
+   * browser.
    */
   readonly attachedBrowsers?: readonly string[];
   /**
