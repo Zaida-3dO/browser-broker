@@ -38,6 +38,7 @@ import type {
   BrowserDescription,
   BrowserDriver,
   BrowserId,
+  BrowserKind,
   BrowserMode,
   BrowserSession,
   CaptureRequest,
@@ -2623,8 +2624,25 @@ export interface RealDriverOptions {
   readonly outputDirectory?: string;
 }
 
-/** The browser modes, fixed by which browser it is (§1.2, §3.15). */
-export function modeFor(browser: BrowserId): BrowserMode {
+/**
+ * The browser modes, fixed by which browser it is (§1.2, §3.15).
+ *
+ * **The kind wins when the caller knows it, and it has to be asked for.**
+ * The name-only fallback is wrong for the attached kind in a way worth
+ * naming: attached browsers are named whatever the operator configured, so
+ * falling back to the name would call a person's own browser — which always
+ * has a window on it — `headless`, and `headless` is not a label here but the
+ * fact that decides the keeper-tab rule (§3.15). A caller holding a kind
+ * holds the truth and should pass it; the name fallback stands, unchanged,
+ * for every call site that passes a name alone.
+ */
+export function modeFor(browser: BrowserId, kind?: BrowserKind): BrowserMode {
+  if (kind !== undefined) {
+    // The signed-in browser is headed and the attached one is somebody's
+    // window; only the private kind is headless, and it has no sign-in to
+    // lose and no keeper to die without.
+    return kind === 'private' ? 'headless' : 'headed';
+  }
   // The signed-in browser is headed, and that is the fact the keeper tab
   // exists for; the private one is headless and has no sign-in to lose.
   return browser === 'regular' ? 'headed' : 'headless';

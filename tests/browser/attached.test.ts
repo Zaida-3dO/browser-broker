@@ -1,0 +1,573 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { connect } from '../../src/attach/session.ts';
+import type { AttachedBridge } from '../../src/attach/session.ts';
+import { AttachedError } from '../../src/attach/errors.ts';
+import { attachOverBridge, openAttachedSession } from '../../src/browser/attached.ts';
+import type { ActionRequest, SecretScope, TabHandle } from '../../src/browser/driver.ts';
+import { FakeExtension } from '../attach/fake-extension.ts';
+
+/**
+ * The attached session, over the relay and the fake extension.
+ *
+ * The point of these tests is the rule every one of them shares: **a refused
+ * verb is a verb the extension was never asked to perform.** The response
+ * half is easy to fake and proves nothing on its own — a guard that refuses
+ * *after* `Input.dispatchMouseEvent` crossed the bridge would report a
+ * refusal that did not happen, and his page would have been clicked. So every
+ * rejection here reads the fake's call log as well as the error, and the
+ * refusals are all decided before any page is resolved.
+ *
+ * The fake cannot answer an accessibility render, a screenshot, or a
+ * navigation completion — it answers commands and nothing else — so the
+ * happy-path halves those verbs depend on are not provable on it; where a
+ * test is pinning a gate rather than a completed verb, it says so. The bridge
+ * handshake itself (Playwright's real client through the relay) is pinned by
+ * `tests/attach/over-cdp.test.ts`, which these tests lean on rather than
+ * re-prove.
+ */
+
+const EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
+const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
+const BROWSER = 'his';
+
+interface Live {
+  bridge: AttachedBridge;
+  ext: FakeExtension;
+  session: Awaited<ReturnType<typeof attachOverBridge>>;
+}
+
+async function live(): Promise<Live> {
+  const bridge = await connect({ clientName: 'attached test', extensionId: EXTENSION_ID });
+  const ext = await FakeExtension.connect(bridge.extensionEndpoint, {
+    origin: EXTENSION_ORIGIN,
+  });
+  await ext.initialize();
+  const session = await attachOverBridge(bridge, {
+    browser: BROWSER,
+    clientName: 'attached test',
+    extensionId: EXTENSION_ID,
+  });
+  return { bridge, ext, session };
+}
+
+/** CDP methods the extension was asked to run on a tab. */
+function cdpCalls(ext: FakeExtension, cdpMethod: string): unknown[] {
+  return ext.calls.filter(
+    (call) => call.method === 'chrome.debugger.sendCommand' && call.params[1] === cdpMethod,
+  );
+}
+
+function sawCdp(ext: FakeExtension, cdpMethod: string): boolean {
+  return cdpCalls(ext, cdpMethod).length > 0;
+}
+
+async function openedTab(live: Live): Promise<TabHandle> {
+  return await live.session.openTab();
+}
+
+/** Wait for a condition the socket updates a turn after the request. */
+async function waitFor(predicate: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
+// ── Opening ────────────────────────────────────────────────────────────────
+
+test('a session against an extension that never connects is refused, not queued, and leaves nothing listening', async () => {
+  const bridge = await connect({ clientName: 'attached test', extensionId: EXTENSION_ID });
+  const endpoint = bridge.extensionEndpoint;
+  await assert.rejects(
+    attachOverBridge(bridge, {
+      browser: BROWSER,
+      clientName: 'attached test',
+      extensionId: EXTENSION_ID,
+      connectTimeoutMs: 500,
+    }),
+    (error: unknown) => error instanceof AttachedError && error.rule === 'attached.not_connected',
+  );
+  // The refusal closed the bridge: the contract's own rule is that nothing
+  // listens after close, and "not queued" means the next command can bind
+  // this very port again — which it cannot while a listener is open.
+  await assert.rejects(FakeExtension.connect(endpoint, { origin: EXTENSION_ORIGIN }));
+});
+
+test('the one-shot open path refuses an extension that never arrives', async () => {
+  // `openAttachedSession` is the production entry: bind, wait, attach. With no
+  // extension on the other end it must say so — and the relay contract's rule
+  // is that a failed open closes the bridge again (asserted concretely in the
+  // test below it, where the bridge handle is in reach).
+  await assert.rejects(
+    openAttachedSession({
+      browser: BROWSER,
+      clientName: 'attached test',
+      extensionId: EXTENSION_ID,
+      connectTimeoutMs: 400,
+    }),
+    (error: unknown) => error instanceof AttachedError && error.rule === 'attached.not_connected',
+  );
+});
+
+test('a refused open does not reach the browser at all: the extension never connected, and no client did either', async () => {
+  // The stronger half of the same claim: open the socket but never send the
+  // handshake, so the wait times out, and check nothing browser-side happened.
+  const bridge = await connect({ clientName: 'attached test', extensionId: EXTENSION_ID });
+  const ext = await FakeExtension.connect(bridge.extensionEndpoint, {
+    origin: EXTENSION_ORIGIN,
+  });
+  // The extension is connected but has not finished its handshake, so
+  // waitForExtension must be the thing that times out — not a hang.
+  const error = await attachOverBridge(bridge, {
+    browser: BROWSER,
+    clientName: 'attached test',
+    extensionId: EXTENSION_ID,
+    connectTimeoutMs: 300,
+  }).then(
+    () => undefined,
+    (thrown: unknown) => thrown,
+  );
+  assert.ok(error instanceof AttachedError);
+  assert.equal(error.rule, 'attached.not_connected');
+  assert.equal(ext.sawCall('chrome.tabs.create'), false, 'no tab was ever asked for');
+  bridge.close('test over');
+});
+
+// ── Tab lifecycle over the bridge ──────────────────────────────────────────
+
+test("openTab goes through the bridge, and the handle is the bridge's own name for the tab", async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    assert.match(tab.driverTabId, /^tab-\d+$/);
+    assert.ok(ext.sawCall('chrome.tabs.create'), 'the open crossed the bridge');
+    assert.equal(bridge.isOurs(Number(tab.driverTabId.slice(4))), true);
+    const listed = await session.listTabs();
+    assert.deepEqual(listed, [tab]);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('listTabs reports exactly the ownership mirror: a tab the extension did not report is absent, not hidden', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    await openedTab({ bridge, ext, session });
+    await openedTab({ bridge, ext, session });
+    const listed = await session.listTabs();
+    assert.equal(listed.length, 2);
+    // There is no third tab anywhere in the mirror — `isOurs` says the next
+    // id up is disowned, and listTabs is built from the mirror itself.
+    assert.equal(bridge.isOurs(999_999), false);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('closeTab closes one of our tabs and ends it in the mirror', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    assert.equal(await session.closeTab(tab), 'closed');
+    assert.ok(ext.sawCall('chrome.tabs.remove'), 'the close crossed the bridge');
+    await waitFor(() => bridge.tabs().length === 0, 'the tab out of the mirror');
+    const second = await session.closeTab(tab);
+    assert.equal(second, 'not_found', 'closing it again finds nothing');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── Ownership: the foreign-tab refusals ────────────────────────────────────
+
+test('closing a handle the mirror disowns is refused, and the extension is never asked to remove anything', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    await openedTab({ bridge, ext, session });
+    const foreign: TabHandle = { browser: BROWSER, driverTabId: 'tab-999999' };
+    assert.equal(await session.closeTab(foreign), 'refused');
+    assert.equal(ext.sawCall('chrome.tabs.remove'), false, 'and nothing was removed');
+    // A foreign handle cannot be laundered through the other verbs either.
+    for (const call of [
+      () => session.navigate(foreign, 'https://example.com/page', 300),
+      () => session.act(foreign, { action: 'scroll' }),
+      () => session.read(foreign, ['console']),
+      () => session.cookies(foreign),
+      () => session.capture(foreign, { fullPage: false }),
+      () => session.evaluate(foreign, '1 + 1'),
+      () => session.settlePage(foreign),
+      () =>
+        session.seedStorage(foreign, [
+          { origin: 'https://example.com', area: 'local', key: 'auth', value: 'a-value' },
+        ]),
+    ]) {
+      await assert.rejects(call(), (error: unknown) => {
+        return error instanceof AttachedError && error.rule === 'attached.foreign_tab';
+      });
+    }
+    assert.equal(ext.sawCall('chrome.tabs.remove'), false);
+    assert.equal(sawCdp(ext, 'Page.navigate'), false);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── The read-only rule ─────────────────────────────────────────────────────
+
+test('every write verb is refused and its browser-side command is never sent', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    // `countCdp` before/after rather than absence: the Playwright handshake
+    // itself puts a few domain commands on the log at attach time (media
+    // emulation is one), and the claim this test makes is **no new one after
+    // the refused act**, which is what "the browser was not asked" means.
+    const refused: readonly { request: ActionRequest; forbidden: readonly string[] }[] = [
+      { request: { action: 'click', ref: 'e1' }, forbidden: ['Input.dispatchMouseEvent'] },
+      { request: { action: 'check', ref: 'e1' }, forbidden: ['Input.dispatchMouseEvent'] },
+      { request: { action: 'type', ref: 'e1', value: 'text' }, forbidden: ['Input.insertText'] },
+      { request: { action: 'fill', ref: 'e1', value: 'text' }, forbidden: ['Input.insertText'] },
+      {
+        request: { action: 'select', ref: 'e1', value: 'x' },
+        forbidden: ['Input.dispatchMouseEvent'],
+      },
+      { request: { action: 'press', value: 'a' }, forbidden: ['Input.dispatchKeyEvent'] },
+      {
+        request: { action: 'resize', viewport: { width: 800, height: 600 } },
+        forbidden: ['Emulation.setDeviceMetricsOverride'],
+      },
+      {
+        request: { action: 'emulate', preferences: { colourScheme: 'dark' } },
+        forbidden: ['Emulation.setEmulatedMedia'],
+      },
+      {
+        request: { action: 'dialog', response: { accept: true } },
+        forbidden: ['Page.handleJavaScriptDialog'],
+      },
+      {
+        request: { action: 'fill_form', fields: [{ ref: 'e1', value: 'v' }] },
+        forbidden: ['Input.insertText'],
+      },
+      {
+        request: { action: 'drag', ref: 'e1', targetRef: 'e2' },
+        forbidden: ['Input.dispatchMouseEvent'],
+      },
+      { request: { action: 'upload', ref: 'e1', files: [] }, forbidden: ['DOM.setFileInputFiles'] },
+    ];
+    for (const { request, forbidden } of refused) {
+      const before = forbidden.map((method) => cdpCalls(ext, method).length);
+      await assert.rejects(
+        session.act(tab, request),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.read_only' &&
+          error.message.includes(request.action),
+        `${request.action} must refuse by name`,
+      );
+      forbidden.forEach((method, at) => {
+        assert.equal(
+          cdpCalls(ext, method).length,
+          before[at],
+          `${method} was never asked for by ${request.action}`,
+        );
+      });
+    }
+    // The tab itself is undisturbed: creating it is the only tabs call, and no
+    // navigation of any kind ran.
+    assert.equal(ext.calls.filter((call) => call.method === 'chrome.tabs.create').length, 1);
+    assert.equal(sawCdp(ext, 'Page.navigate'), false);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('hover passes the read-only gate, and a non-movement press does not', async () => {
+  // Pins the gate itself: the fake cannot answer the accessibility render
+  // `hover` resolves through, so the honest probe is to send hover to a
+  // **foreign** handle — the gate lets it through and the ownership rule is
+  // what refuses, proving hover is not on the refused side of the gate.
+  const { bridge, ext, session } = await live();
+  try {
+    await openedTab({ bridge, ext, session });
+    const foreign: TabHandle = { browser: BROWSER, driverTabId: 'tab-999999' };
+    await assert.rejects(
+      session.act(foreign, { action: 'hover', ref: 'e1' }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.foreign_tab',
+    );
+    // Presses that could reach a field are refused by the gate before any
+    // page or ownership question is even asked.
+    await assert.rejects(
+      session.act(foreign, { action: 'press', value: 'Enter' }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.read_only',
+    );
+    assert.equal(sawCdp(ext, 'Input.dispatchKeyEvent'), false);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('scroll and a view-moving press pass the gate and reach the extension', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    // Both verbs end in the session's bounded snapshot render, which the fake
+    // cannot answer — so each act eventually settles on that later refusal.
+    // What they must never produce is `attached.read_only`, and what proves
+    // they ran is the command log.
+    const failures: unknown[] = [];
+    // The scroll's fixed expression runs through Playwright's isolated-world
+    // machinery, and the fake answers `Page.createIsolatedWorld` without an
+    // execution context — so the expression itself never completes on it (same
+    // fake-side limit as the accessibility render). What is provable is the
+    // gate: the evaluate machinery was engaged, i.e. the world creation crossed
+    // the bridge. The scroll fires alone so its crossing is unambiguous.
+    const worldsBeforeScroll = cdpCalls(ext, 'Page.createIsolatedWorld').length;
+    void session.act(tab, { action: 'scroll' }).catch((error: unknown) => failures.push(error));
+    await waitFor(
+      () => cdpCalls(ext, 'Page.createIsolatedWorld').length > worldsBeforeScroll,
+      'the scroll evaluate machinery crossing',
+    );
+    const keysBeforePress = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    void session
+      .act(tab, { action: 'press', value: 'PageDown' })
+      .catch((error: unknown) => failures.push(error));
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBeforePress,
+      'the key press crossing',
+    );
+    for (const failure of failures) {
+      assert.ok(
+        !(failure instanceof AttachedError && failure.rule === 'attached.read_only'),
+        'neither allowed verb was refused as a write',
+      );
+    }
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── Secrets, seeds, expressions, pictures ──────────────────────────────────
+
+test('a secret scope reaching any verb is refused unopened; the sentinel is never resolved', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    let resolved = 0;
+    const scope: SecretScope = {
+      resolve: () => {
+        resolved += 1;
+        return Promise.reject(new Error('unreachable'));
+      },
+      received: [],
+      record: () => undefined,
+    };
+    await assert.rejects(
+      session.navigate(tab, 'https://example.com/page', 300, scope),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_secrets',
+    );
+    await assert.rejects(
+      session.act(tab, { action: 'scroll' }, scope),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_secrets',
+    );
+    await assert.rejects(
+      session.read(tab, ['snapshot'], { secrets: scope }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_secrets',
+    );
+    await assert.rejects(
+      session.capture(tab, { fullPage: false, secrets: scope }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_secrets',
+    );
+    assert.equal(resolved, 0, 'the scope was never opened');
+    // A sentinel spelled in a value is refused at the same door.
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: '{{secret:token}}' }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_secrets',
+    );
+    assert.equal(sawCdp(ext, 'Input.dispatchKeyEvent'), false, 'nothing typed');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a storage seed is refused, and no navigation to any origin was asked for', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    await assert.rejects(
+      session.seedStorage(tab, [
+        { origin: 'https://example.com', area: 'local', key: 'auth', value: 'a-value' },
+      ]),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_seed',
+    );
+    assert.equal(sawCdp(ext, 'Page.navigate'), false, 'the seed never reached an origin');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('an expression is refused at the door and no runtime call is made for it', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    await assert.rejects(
+      session.evaluate(tab, 'document.title'),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_evaluate',
+    );
+    assert.equal(cdpCalls(ext, 'Runtime.evaluate').length, 0, 'no expression ran in his browser');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a full-page or masked capture is refused, and the shutter never opened', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    await assert.rejects(
+      session.capture(tab, { fullPage: true }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_full_page',
+    );
+    await assert.rejects(
+      session.capture(tab, { fullPage: false, mask: [{ x: 0, y: 0, width: 10, height: 10 }] }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.read_only',
+    );
+    assert.equal(sawCdp(ext, 'Page.captureScreenshot'), false, 'no picture was taken');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('there is no keeper tab, and asking for one opens nothing', async () => {
+  const { ext, session } = await live();
+  try {
+    await assert.rejects(
+      session.ensureKeeperTab(),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_keeper',
+    );
+    assert.equal(ext.sawCall('chrome.tabs.create'), false, 'no blank tab entered his window');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── Navigation plumbing and Cancel ─────────────────────────────────────────
+
+test('navigate sends the address across the bridge and is bounded by waitMs', async () => {
+  // The fake answers Page.navigate and never completes it, so the commit wait
+  // can only ever end in its own bound here — which is exactly the bound the
+  // seam asks for. That the bound bites, and that the exact address crossed,
+  // is what this pins; the commit resolving on a real browser belongs to the
+  // gated browser job.
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const started = Date.now();
+    await assert.rejects(session.navigate(tab, 'https://example.com/other', 1_000));
+    assert.ok(Date.now() - started < 20_000, 'the bound, not the library default');
+    const navigates = cdpCalls(ext, 'Page.navigate');
+    assert.equal(navigates.length, 1);
+    const navParams = (navigates[0] as { params: unknown[] }).params[2] as { url?: string };
+    assert.equal(
+      navParams.url,
+      'https://example.com/other',
+      'the address reached the browser side verbatim',
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('his Cancel on the debugger bar makes the tab undrivable without closing anything', async () => {
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const tabId = Number(tab.driverTabId.slice(4));
+    const delivered = new Promise<void>((resolve) => {
+      bridge.on('debuggerDetached', () => resolve());
+    });
+    ext.sendEvent('chrome.debugger.onDetach', [{ tabId }, { reason: 'canceled' }]);
+    await delivered;
+    // The session drops its binding when the bridge reports the detach, and
+    // the detached tab is never paired again — the next verb must say so
+    // rather than pretend the page is drivable.
+    await assert.rejects(
+      session.read(tab, ['console']),
+      (error: unknown) => error instanceof Error && error.message.includes('canceled'),
+    );
+    assert.equal(ext.sawCall('chrome.tabs.remove'), false, 'his tab stays his');
+    // And it is still listed: the tab is open on his screen, merely no
+    // longer debuggable by this connection.
+    assert.deepEqual(
+      (await session.listTabs()).map((handle) => handle.driverTabId),
+      [tab.driverTabId],
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── Connection bookkeeping ─────────────────────────────────────────────────
+
+test('describe reports a headed adopted browser at the bridge address', async () => {
+  const { bridge, session } = await live();
+  try {
+    const description = session.describe();
+    assert.equal(description.browser, BROWSER);
+    assert.equal(description.mode, 'headed');
+    assert.equal(description.pid, 0, 'his process is not ours to know');
+    assert.equal(description.discovery.endpoint, bridge.cdpEndpoint);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('detach ends the bridge and the connection, and closes no tab on the way out', async () => {
+  const { bridge, ext, session } = await live();
+  // Open a real tab first: the claim under test is what detach does *not* do
+  // to a live lease, and that only means something with a tab open.
+  await openedTab({ bridge, ext, session });
+  assert.equal(session.isConnected(), true);
+  await session.detach();
+  assert.equal(bridge.extensionConnected(), false, 'the bridge stopped listening');
+  assert.equal(session.isConnected(), false);
+  assert.equal(
+    ext.sawCall('chrome.tabs.remove'),
+    false,
+    'the tab stays open — the lease ended, not the browser',
+  );
+});
+
+test('the fake bridge survives a second session over it only after the first released it', async () => {
+  // The relay admits one CDP client at a time; a released bridge still serves
+  // its extension, but a *fresh* bridge — which is what a new lease means —
+  // binds its own port. What this pins is that open→detach→reopen cycles do
+  // not leak listeners, the fact the not-connected refusal also relies on.
+  const first = await live();
+  await first.session.detach();
+  const second = await live();
+  try {
+    await openedTab(second);
+    assert.equal((await second.session.listTabs()).length, 1);
+  } finally {
+    second.session.detach().catch(() => undefined);
+  }
+});
+
+// ── modeFor, widened for the attached kind ─────────────────────────────────
+
+test('modeFor: the kind decides when the caller knows it; the name fallback stands without it', async () => {
+  const { modeFor } = await import('../../src/browser/real.ts');
+  // An attached browser always has a window on it, but its name is whatever
+  // the operator configured, so a name-only rule would label it headless —
+  // the label that decides the keeper-tab rule (§3.15) — and a keeper tab
+  // belongs to this design only for browsers this service starts.
+  assert.equal(modeFor('his', 'attached'), 'headed');
+  assert.equal(modeFor('his', 'private'), 'headless');
+  assert.equal(modeFor('his', 'regular'), 'headed');
+  // Name-only callers keep the behaviour they had.
+  assert.equal(modeFor('regular'), 'headed');
+  assert.equal(modeFor('anything-else'), 'headless');
+});
