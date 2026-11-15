@@ -66,6 +66,18 @@ import { readStoreClock, readTabBudget } from '../../operations/status.ts';
 export interface PoolBrowserView {
   readonly id: string;
   /**
+   * Which of the three kinds this is (§1.2): `regular`, `private` or
+   * `attached`.
+   *
+   * Without it an attached browser misreads. Its row is `stopped` with no
+   * discovery record — that is what a browser this service *never launches*
+   * looks like, deliberately (§13n, step twelve) — and a caller choosing a
+   * browser from counts alone would read "stopped, no record" as the reason
+   * its claim is failing, when the real reason is a person's browser and a
+   * bridge, which this count cannot see.
+   */
+  readonly kind: string;
+  /**
    * What the store says about this browser.
    *
    * **A claim rather than a proof** (§1.2c), and labelled as one: the record
@@ -129,8 +141,11 @@ export function readPoolStatus(db: Database): PoolStatusResult {
   // answer that contradicts itself is worse than one that is slightly old.
   const at = readStoreClock(db);
 
-  const browserRows = db.prepare(`SELECT id, state, endpoint FROM browsers ORDER BY id`).all() as {
+  const browserRows = db
+    .prepare(`SELECT id, kind, state, endpoint FROM browsers ORDER BY id`)
+    .all() as {
     id: string;
+    kind: string;
     state: string;
     endpoint: string | null;
   }[];
@@ -181,6 +196,7 @@ export function readPoolStatus(db: Database): PoolStatusResult {
     at,
     browsers: browserRows.map((row) => ({
       id: row.id,
+      kind: row.kind,
       state: row.state,
       discoveryRecorded: row.endpoint !== null,
       liveTabs: liveTabsByBrowser.get(row.id) ?? 0,

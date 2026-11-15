@@ -306,6 +306,7 @@ function browsersSection(status: OperationsStatus): string {
     return [
       '<tr>',
       `<td>${escapeValue(browser.id)}</td>`,
+      `<td>${escapeValue(browser.kind)}</td>`,
       `<td>${browserStateTag(browser.state)}</td>`,
       `<td class="num">${escapeValue(browser.restartCount)}</td>`,
       `<td class="num">${escapeValue(browser.pid)}</td>`,
@@ -319,7 +320,16 @@ function browsersSection(status: OperationsStatus): string {
   return [
     '<h2>Browsers</h2>',
     table(
-      ['Browser', 'State', 'Restarts', 'Process', 'Launched', 'Discovery record', 'Leased tabs'],
+      [
+        'Browser',
+        'Kind',
+        'State',
+        'Restarts',
+        'Process',
+        'Launched',
+        'Discovery record',
+        'Leased tabs',
+      ],
       rows,
       'No browsers are recorded, which should not happen — the schema seeds two.',
     ),

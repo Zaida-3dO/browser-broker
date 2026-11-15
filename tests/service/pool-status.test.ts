@@ -160,6 +160,33 @@ test('THE KEYLESS ANSWER NAMES NOBODY — counts, never identities', async () =>
   });
 });
 
+test('every browser is reported with its kind, and an attached one reads stopped on purpose', async () => {
+  // The kind is the field that makes an attached row's other columns
+  // readable. Seeded the way the claim path writes one — `stopped`, no pid,
+  // no discovery record — a caller that cannot see the kind reads that as a
+  // dead browser and goes looking for a fault that does not exist (§13n).
+  await withBroker(({ store }) => {
+    store.db
+      .prepare(`INSERT INTO browsers (id, kind, state) VALUES ('desktop', 'attached', 'stopped')`)
+      .run();
+
+    const pool = readPoolStatus(store.db);
+
+    const regular = pool.browsers.find((browser) => browser.id === 'regular');
+    assert.ok(regular);
+    assert.equal(regular.kind, 'regular');
+
+    const attached = pool.browsers.find((browser) => browser.id === 'desktop');
+    assert.ok(attached, 'a configured attached browser is missing from the pool answer');
+    assert.equal(attached.kind, 'attached');
+    // What the kind is there to explain: these columns are by design, not
+    // damage, and the kind is how a keyless caller can tell.
+    assert.equal(attached.state, 'stopped');
+    assert.equal(attached.discoveryRecorded, false);
+    assert.equal(attached.liveTabs, 0);
+  });
+});
+
 test('reading the pool RENEWS NOTHING and sweeps nothing', async () => {
   // The property that keeps this outside arbitration (§3.3). A keyless caller
   // holds no lease, so there is nothing to renew — and a sweep charged to it

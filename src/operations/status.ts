@@ -59,6 +59,18 @@ import { countByGuard, readLedger, type GuardCount, type LedgerEntry } from './l
 /** A browser as the document reports it (§4.2). */
 export interface BrowserView {
   readonly id: string;
+  /**
+   * Which of the three kinds this is (§1.2): `regular`, `private` or
+   * `attached`.
+   *
+   * **The field that makes the rest of the row readable.** An attached
+   * browser's row is `stopped` with no pid and no discovery record by
+   * design — this service never launches it and writes none of that for it
+   * (step twelve) — and without the kind those columns read as a browser
+   * that died, inviting exactly the "why isn't it starting?" intervention
+   * §13n forbids against a person's own browser.
+   */
+  readonly kind: string;
   readonly state: string;
   readonly restartCount: number;
   readonly pid: number | null;
@@ -228,6 +240,7 @@ interface ClaimRow {
 
 interface BrowserRow {
   readonly id: string;
+  readonly kind: string;
   readonly state: string;
   readonly restart_count: number;
   readonly pid: number | null;
@@ -329,7 +342,7 @@ export function readOperationsStatus(db: Database, options: StatusOptions = {}):
 
   const browserRows = db
     .prepare(
-      `SELECT id, state, restart_count, pid, launched_at, endpoint, browser_uuid
+      `SELECT id, kind, state, restart_count, pid, launched_at, endpoint, browser_uuid
        FROM browsers ORDER BY id`,
     )
     .all() as BrowserRow[];
@@ -395,6 +408,7 @@ export function readOperationsStatus(db: Database, options: StatusOptions = {}):
 
   const browsers: BrowserView[] = browserRows.map((row) => ({
     id: row.id,
+    kind: row.kind,
     state: row.state,
     restartCount: row.restart_count,
     pid: row.pid,

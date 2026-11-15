@@ -275,6 +275,7 @@ describe('the operations status read', () => {
 
       const regular = status.browsers.find((browser) => browser.id === 'regular');
       assert.ok(regular);
+      assert.equal(regular.kind, 'regular');
       assert.equal(regular.state, 'running');
       assert.equal(regular.restartCount, 2);
       assert.equal(regular.discoveryRecorded, true);
@@ -282,7 +283,30 @@ describe('the operations status read', () => {
 
       const priv = status.browsers.find((browser) => browser.id === 'private');
       assert.ok(priv);
+      assert.equal(priv.kind, 'private');
       assert.equal(priv.discoveryRecorded, false);
+      await Promise.resolve();
+    });
+  });
+
+  it('shows an attached browser by kind, with the stopped row the kind explains', async () => {
+    // §13n and step twelve: an attached row is `stopped`, pidless and record-
+    // less **by design**, and the document reader needs the kind to see that
+    // rather than a dead browser. Seeded the way the claim path writes one.
+    await withSteppedStore(async (store) => {
+      store.db
+        .prepare(`INSERT INTO browsers (id, kind, state) VALUES ('desktop', 'attached', 'stopped')`)
+        .run();
+
+      const status = readOperationsStatus(store.db, { now });
+
+      const attached = status.browsers.find((browser) => browser.id === 'desktop');
+      assert.ok(attached, 'the operator document omits the attached browser');
+      assert.equal(attached.kind, 'attached');
+      assert.equal(attached.state, 'stopped');
+      assert.equal(attached.pid, null);
+      assert.equal(attached.discoveryRecorded, false);
+      assert.equal(attached.identityRecorded, false);
       await Promise.resolve();
     });
   });

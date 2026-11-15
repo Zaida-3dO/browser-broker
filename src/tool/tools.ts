@@ -404,8 +404,11 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       'else. Call it to keep a lease alive, and to poll a queued one. ' +
       'Without a lease key it answers about the pool instead — which browsers are up, how much ' +
       'of the tab budget is in use, how many are waiting — so you can still ask what is going on ' +
-      'when you hold no lease or the one you hold has stopped working. For which precondition is ' +
-      'actually broken, and what to do about it, use browser_doctor.',
+      'when you hold no lease or the one you hold has stopped working. Each browser is reported ' +
+      'with its kind: an attached browser always reads as stopped with no discovery record, ' +
+      "because it is a person's own browser that this service never launches — the kind is why, " +
+      'not a fault. For which precondition is actually broken, and what to do about it, use ' +
+      'browser_doctor.',
     arguments: [OPTIONAL_LEASE_KEY],
   },
   {
