@@ -1,0 +1,28 @@
+Browser Broker
+Copyright (c) 2026 Zaida-3dO
+
+Portions of this software are adapted from Playwright
+(https://playwright.dev), Copyright (c) Microsoft, and are used under the
+Apache License, Version 2.0 (the "License"). You may obtain a copy of the
+License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+The adapted portions, and where each came from:
+
+  src/attach/cdp-relay.ts      from playwright-core's src/tools/mcp/cdpRelay.ts
+                               (CDPRelayServer, ExtensionConnection)
+  src/attach/cdp-relay-v2.ts   from playwright-core's src/tools/mcp/cdpRelayV2.ts
+                               (ExtensionProtocolV2)
+  src/attach/browser-model.ts  from playwright-core's src/tools/mcp/browserModel.ts
+                               (BrowserModel)
+
+as found in Playwright 1.65.1. Each adaptation keeps the wire protocol of the
+source — the other end of the socket is the published Playwright Extension —
+and carries over the parts that were Playwright's own context — transport
+wiring, path defaults, environment reads — as this package's equivalents,
+adding the Host and Origin checks the attach surface requires. Those
+additions are this project's contribution under the same Apache-2.0 grant;
+the rest stays Apache-2.0 as licensed.
+
+Everything not named above is MIT, as stated in LICENSE.

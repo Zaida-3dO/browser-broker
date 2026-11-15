@@ -217,6 +217,7 @@ describe("check-external-refs — the host allowlist", () => {
       "npmjs.com",
       "modelcontextprotocol.io",
       "opensource.org",
+      "www.apache.org",
     ]);
   });
 });

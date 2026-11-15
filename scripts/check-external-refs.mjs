@@ -116,6 +116,8 @@ export const ALLOWED_HOSTS = [
   "npmjs.com",
   "modelcontextprotocol.io",
   "opensource.org",
+  // The license-text URL carried by the NOTICE for the Apache-2.0 grant.
+  "www.apache.org",
 ];
 
 /** `example.com` → `example\.com`, so the list above stays readable. */
