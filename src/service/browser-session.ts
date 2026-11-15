@@ -7,6 +7,7 @@ import {
   recordLaunchFailed,
   type AdoptionDecision,
 } from '../browser/adoption.ts';
+import { openAttachedSession, type AttachedSessionOptions } from '../browser/attached.ts';
 import type { BrowserDriver, BrowserId, BrowserSession } from '../browser/driver.ts';
 import { browserIsRunning, modeFor, RealBrowserDriver } from '../browser/real.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
@@ -122,6 +123,19 @@ export interface BrowserSessionProviderOptions {
   readonly environment: Environment;
   /** Defaults to {@link RealBrowserDriver}. */
   readonly driver?: BrowserDriver;
+  /**
+   * How an **attached** browser gets its session (§13n) — injected on the
+   * seam's own convention (`fetchImpl`/`spawnImpl`/`killImpl` in
+   * `launch.ts`, `sleepImpl` below) so a test can watch the attached branch
+   * without a person's browser, an extension, or a loopback listener.
+   *
+   * Defaults to {@link openAttachedSession}. It replaces the adoption path
+   * rather than joining it: an attached browser is a person's own, there is
+   * no launch race to arbitrate, no process to record, and no discovery
+   * record to verify — `decideAdoption` over it would be this service
+   * deciding the fate of a browser it does not own.
+   */
+  readonly attachedOpener?: (options: AttachedSessionOptions) => Promise<BrowserSession>;
   /**
    * Where `act` and `read` write the artefacts they hand back paths to.
    *
@@ -321,6 +335,20 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
       // (`browser_scoped.never`, §7.3) and none is started from here: a
       // second process launching against one profile directory is the
       // measured silent-collision failure the race exists to prevent.
+      //
+      // **An attached session is the exception the sentence above does not
+      // cover, and the exception is about the port, not the browser.** A
+      // dead attached session still holds the relay's loopback listener
+      // open, and §13n's rule is that the port exists only for the life of
+      // an attached connection — dropping the memo while the listener keeps
+      // accepting would keep the door open after the room was vacated.
+      // `detach()` closes the bridge first (which stops the listener and
+      // tells the extension the connection ended) and then the dead
+      // connection; failures are swallowed because there is nobody to
+      // report them to, and closing the port is the point.
+      if (options.environment.attachedBrowsers.includes(browser)) {
+        void open.detach().catch(() => undefined);
+      }
       settled.delete(browser);
       inFlight.delete(browser);
     }
@@ -342,6 +370,21 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
   };
 
   const liveness = async (browser: BrowserId): Promise<BrowserLiveness> => {
+    // **An attached browser answers `unknown`, and answering anything else
+    // would be a lie about a browser this service does not own.** The probe
+    // below reads a discovery record that only a browser *this service*
+    // launches or adopts writes — an attached row carries no pid, no
+    // endpoint and no profile directory by design (step twelve says so in
+    // its own comment). And `gone` is the worst answer to guess: `status`
+    // downgrades an active lease to expired on `gone`, which would end a
+    // person's lease on the evidence of a probe that was never carried out.
+    // Whether his browser and extension are up right now is a fact about
+    // the bridge — `isConnected` on the held session, and the doctor's
+    // configuration checks — and those are where that question is answered.
+    if (options.environment.attachedBrowsers.includes(browser)) {
+      return 'unknown';
+    }
+
     const isRunning = options.isRunning ?? browserIsRunning;
     const profileDir = profileDirectory(options.environment.profileRoot, browser);
     try {
@@ -447,6 +490,17 @@ async function acquire(
   browser: BrowserId,
   options: BrowserSessionProviderOptions,
 ): Promise<BrowserSession> {
+  // **An attached browser skips the adoption transaction entirely.** The
+  // race answers "who launches this browser", and nobody launches an
+  // attached one — §13n and step twelve are explicit that this service
+  // never starts, never closes, and never writes to it. Running the race
+  // over it would let this service's store claim a launch state for a
+  // process that is a person's own, which is the exact shape the step's
+  // `state != 'stopped' OR pid IS NULL` invariant exists to forbid.
+  if (options.environment.attachedBrowsers.includes(browser)) {
+    return acquireAttached(browser, options);
+  }
+
   const isRunning = options.isRunning ?? browserIsRunning;
   const profileDir = profileDirectory(options.environment.profileRoot, browser);
 
@@ -460,6 +514,67 @@ async function acquire(
   );
 
   return performDecision(driver, decision, profileDir, options);
+}
+
+/**
+ * Open an attached session: a bridge to a person's browser, not a launch.
+ *
+ * ── What replaces the adoption path, and what deliberately carries over ──
+ *
+ * No observation (`isRunning` reads a discovery record this service writes,
+ * and it writes none for an attached browser), no transaction, and no
+ * `recordLaunched`/`recordLaunchFailed` — the row stays `stopped` with no
+ * pid, which is the state step twelve built its invariant around, and a
+ * "launch failure" here would record something about a process this service
+ * has never touched. **The row is not touched at all**: the claim that
+ * resolved to this browser already wrote it (`claim.ts`), and the memo's
+ * once-per-browser rule is what keeps this from racing even that.
+ *
+ * ── The refusal when the extension id is absent, and why it is defensive ─
+ *
+ * `config/environment.ts` refuses a spawn where `BROKER_ATTACHED_BROWSERS`
+ * is non-empty and `BROKER_ATTACHED_EXTENSION_ID` is not set, so a valid
+ * configuration cannot arrive here without one. The check is still written
+ * because the alternative — handing `undefined` to the relay as an Origin to
+ * match against — is a bridge that accepts *no* connection and hangs on a
+ * wait nobody set up; a named refusal says which knob to turn, and it costs
+ * one line against the one caller that could bypass the config (a test).
+ *
+ * ── `clientName`: the configured name, and what that defers ─────────────
+ *
+ * §3.4 wants the claim's purpose shown in the tab group's title, and the
+ * honest answer is that a *session* cannot carry it: the memo holds one
+ * session per browser per process, serving every lease against that browser,
+ * while the purpose belongs to one claim. Putting the first lease's purpose
+ * on the group every later lease shares would be a fact about the wrong
+ * caller — the lease-scoped directory problem {@link
+ * BrowserSessionProviderOptions.artifacts} documents, one level over. The
+ * configured browser name is the one label that is true of every lease and
+ * carries nothing personal. Purpose-in-title belongs with the row that
+ * carries purpose per lease.
+ */
+async function acquireAttached(
+  browser: BrowserId,
+  options: BrowserSessionProviderOptions,
+): Promise<BrowserSession> {
+  const extensionId = options.environment.attachedExtensionId;
+  if (extensionId === undefined) {
+    throw new StartupRefusal(
+      'attached.bad_extension_id',
+      `The attached browser "${browser}" cannot be reached: no extension id is configured to route an attach to, so the relay would accept no connection at all. Set BROKER_ATTACHED_EXTENSION_ID, or empty BROKER_ATTACHED_BROWSERS to leave the capability off.`,
+    );
+  }
+  const token = options.environment.attachedToken;
+  const open = options.attachedOpener ?? openAttachedSession;
+  return open({
+    browser,
+    clientName: browser,
+    extensionId,
+    ...(token === undefined ? {} : { token }),
+    ...(options.artifacts === undefined
+      ? {}
+      : { outputDirectory: path.join(options.artifacts.root, 'snapshots') }),
+  });
 }
 
 /** Do what the transaction decided, outside it. */
