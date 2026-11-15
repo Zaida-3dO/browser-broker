@@ -219,6 +219,16 @@ its cookie jar, so they are isolated from other browsers and not from each other
 browser is a process before it holds a single tab**, which the tab budget does not count —
 `.env.example` gives the arithmetic beside the variables.
 
+**A third kind exists, and it is off by default.** `BROKER_ATTACHED_BROWSERS` names a person's own
+browser, already open and already signed in, read **read-only** through an extension and a local
+relay: the service never launches it, never closes it, and refuses every operation that would change
+a page beyond what watching its owner could do — scroll, hover and navigation keys only. A caller
+reaches it **only** by an explicit kind word or its configured name; a claim that names no browser
+never lands there. Its pages count against the shared tab budget and against a per-browser
+`BROKER_ATTACHED_TABS` cap that refuses rather than queues. Unset, the capability is off and nothing
+listens for an attach. The reasoning is in
+[`DECISIONS.md` §13n](docs/plans/DECISIONS.md#13n-the-attached-kind--a-persons-own-browser-read-over-a-relay-2026-11-15).
+
 **Credentials can be typed without the caller ever seeing them.** With `BROKER_SECRET_RESOLVER` set
 to a command that answers `resolve NAME` with `{"value": …, "origins": […]}`, a caller sends
 `{{secret:NAME}}` as a `type`/`fill` value; the service types it only into a matching field on a bound

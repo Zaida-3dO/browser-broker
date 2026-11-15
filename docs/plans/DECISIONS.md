@@ -2481,6 +2481,127 @@ secret cannot be evaluated for the rest of its lease; a fresh lease starts clean
 - **Marking a tab only once a secret was typed successfully.** A typing that fails half way has still
   put characters in the page, so the tab is marked when the fill is decided.
 
+## 13n. The attached kind — a person's own browser, read over a relay (2026-11-15)
+
+**The need:** some work can only be answered from a browser that is already open and already signed
+in — a page that belongs to a session this service must not own. The launched kinds cannot answer it:
+a second copy of the browser would not carry the sign-in, and being handed the profile directory
+would mean being handed the login as well, with everything that follows from a shared authenticated
+profile being destroyable by any single caller's action. So a third kind attaches to the live browser
+through an extension and a relay (`src/attach/`), and nearly every decision below is about what that
+makes dangerous: the browser is somebody's, and this service borrows it.
+
+### Why a kind rather than a setting on a browser
+
+`regular` and `private` are both defined by ownership: the service launches the browser, owns its
+profile, and reclaims capacity by ending processes when a caller dies. None of those verbs exists for
+a browser the person is using. The difference is not a flag on the same object — capacity accounting,
+reconciliation, the driver seam and the doctor all have to ask a *different question* about this
+browser — so it is a third kind, recorded as such (`browsers.kind`) so every guard can ask which
+kind's rules apply before it decides anything.
+
+### Why every attached setting is off by default, and why an unnamed claim never lands here
+
+All three variables default to empty, and **an empty list is the capability off**: nothing listens for
+an attach, and no browser on the machine is reachable this way. A default that *could* name a
+person's own machine is a default that eventually does. The same principle decides claim resolution:
+an attached browser is matched **only** by an explicit kind word or by its configured name, and a
+claim that names no browser resolves against the two launched kinds and never lands on an attached
+one. A caller must reach for this browser by name; it can never fall to it. A name may also appear in
+only one of the three lists — a name is what a caller claims by, and one name cannot answer two kinds.
+
+### Why the attached cap refuses rather than queues
+
+`BROKER_ATTACHED_TABS` (default 3) answers a question the shared budget cannot see: *how much of a
+person's visible browsing may be held at once?* Those pages still count against `BROKER_TAB_BUDGET`
+exactly as any other page does — capacity stays one pool; this is the one per-kind cap, and it is a
+cap on *whose pages*, not on cost. It is enforced by refusing the claim **before any row is written**,
+never by queueing it: the queue's promotion arithmetic weighs the shared budget alone, so a per-kind
+cap held through the queue would be breached the moment capacity freed. The refusal is
+`attached.tab_cap`, and the tests pin the side effect — the tab count did not move — not just the
+answer.
+
+### Why not-connected refuses too, and why the wait is bounded
+
+A queue's whole promise is that capacity frees up. An extension that is not connected has promised
+nothing of the kind — the person may never open that browser again this session — so a wait there is
+a queue against a slot that will not open. The open path gives the extension a short, bounded wait
+(a few seconds, deliberately far under the relay's own much longer default) and then refuses with
+`attached.not_connected`. A service spawned per command must not hold a process, a port and a queue
+position for half a minute before saying the browser is not there.
+
+### Why read-only is enforced at the seam, with the call log as the proof
+
+Every verb that would write to the page — a seed, an expression, a click, a typed value, an injected
+style, a secret — is refused **inside the session, before the bridge is asked**, so the refusal and
+the absence of the side effect are one fact rather than two promises that can drift. What remains is
+an allow-list, not a deny-list: scroll, hover, and key presses restricted to the keys a person
+watching a page would press (`PageUp`, `PageDown`, the arrows, `Escape`). Navigate is allowed but
+waits only for the commit — arrival-with-network-idle over a page this service does not own can never
+be guaranteed — and the snapshot render is bounded, because an unbounded wait over somebody else's
+page holds a lease on his browser indefinitely; the bound fails the read and leaves the browser
+untouched. The refusals each name their rule (`attached.no_evaluate`, `attached.no_seed`,
+`attached.no_secrets`, `attached.no_keeper`, `attached.no_full_page`, `attached.read_only`), and
+**every rejection test asserts the relay's call log shows the bridge was never asked** — per this
+repository's rejection rule, a refusal that still performed the action is worse than no refusal.
+
+`evaluate` gets §13m's shape argument and one on top: §13m refuses it on any tab that received a
+secret because the result's shape is the caller's choice; on attached the page itself is not this
+service's either, so a script injected into a page where a person is signed in has no defensible
+answer at all.
+
+### Why the handle names the browser's own tab id
+
+The launched session mints handles from the debugging protocol's target id because that id is
+identical across every connection to one browser. The relay cannot supply one: `Target.getTargetInfo`
+is answered for a tab's own protocol session only, and opening an extra session through the bridge
+has no child session to answer. What the relay *can* supply is the extension's tab id — the
+browser's own name for the tab, stable across connections and processes for the browser's life — and
+the bridge's ownership test, `isOurs`. So an attached handle is `tab-<tabId>`, and the ownership
+mirror doubles as the address book. Pages and mirror tabs are paired at connect time by address where
+the address is unambiguous and by order otherwise. The honest limit of that pairing: it cannot
+mispair tabs this connection owns, and it cannot mispair tabs it does not — a foreign tab is absent
+from the mirror entirely, so `listTabs` never shows one and reconciliation closes nothing foreign. A
+handle from a different connection reads as foreign, and closing one is refused rather than reported
+as not found: that is a rule doing its job, not a lookup that missed.
+
+### Why the doctor reads the configuration and never opens a connection
+
+The attached group answers from environment values and one file existence test: is the extension id
+configured (and of the shape Chrome assigns), is the relay token set, is the binary the attach page
+opens present. The connectivity row exists but reports `unknown` **by construction** — a connection
+is precisely what this command never makes, and the protocol version is only knowable at lease time,
+where the refusal `attached.not_connected` carries it instead. Group exit code 18. No report line
+echoes the token, the extension id or a configured path: the remedy names the *variable*, never the
+value, because a report that quotes secrets is a leak with a green exit code.
+
+### Rejected
+
+- **Queueing an over-cap or not-connected claim.** Capacity that frees is capacity someone held and
+  released; attached capacity is pages in a person's window, and nothing here can make it free.
+- **Defaulting the attached name, or letting an unnamed claim fall through to it.** See above.
+- **Scrubbing `evaluate` results on attached.** Scrubbing needs a shape this service chose; the page
+  is not this service's either.
+- **A keeper tab on attached.** Establishing one would open a tab in his browser that he did not ask
+  for and that no cap counts — the kind has no page it owns to hold capacity with.
+- **Starting or ending his browser, ever.** Launch and close do not exist for this kind; reclaim
+  ends leases and the bridge, and closes only tabs this connection created.
+
+### What is given up
+
+The fake relay in `tests/attach/` answers the *refusal* axis completely and the *completion* axis
+partly: it does not finish a navigation, an accessibility snapshot, a screenshot or a cookie read.
+So the happy paths where an attached verb *completes* await the gated browser job that owns a real
+attached browser, and what ships now proves the refusals, the call logs, handle identity and
+ownership. The conformance subject for this kind therefore skips exactly four properties by stated
+reason — the three keeper properties, which could only come out green by the session inventing a
+keeper the kind refuses, and the cookie property the fake cannot answer — and a subject that skipped
+*everything* is reported as a finding, so a skip list can never become a quiet pass. Two guards,
+`attached.no_context` (a page the bridge cannot command) and `attached.tab_untracked` (a
+handle this session never issued and the mirror does not show), defend states that cannot be reached
+against the fake; `SCHEMA.md` §7.1's rule is that a row owes a test that fires it, so they are
+recorded here rather than in that table.
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because
