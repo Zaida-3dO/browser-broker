@@ -207,6 +207,12 @@ export function createBroker(options: BrokerOptions): Broker {
     queueSeconds: options.environment.queueSeconds,
     regularBrowsers: options.environment.regularBrowsers,
     privateBrowsers: options.environment.privateBrowsers,
+    // The attached pair reads straight through: `readEnvironment` has
+    // already refused the configurations that cannot work and defaulted the
+    // rest, so "off" arrives here as an empty list, which is exactly what
+    // the claim rules below read (§13m).
+    attachedBrowsers: options.environment.attachedBrowsers,
+    attachedTabs: options.environment.attachedTabs,
   };
 
   // The same one-per-process snapshot the arbitration settings are, taken

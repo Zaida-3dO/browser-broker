@@ -50,6 +50,23 @@ export function countActiveClaims(db: Database): number {
 }
 
 /**
+ * Count the claims holding a tab **on one named browser**.
+ *
+ * The count above answers *is the pool full*; this answers *is this browser
+ * full* — the question the attached kind asks and no other kind has
+ * (`DECISIONS.md` §13m): its pages sit inside a person's own browsing, and
+ * how many of them may be out at once is a per-browser cap that the shared
+ * budget does not see. Everything else is as above: live claims only, read
+ * inside the arbitration transaction, against the same reconciled state.
+ */
+export function countActiveClaimsForBrowser(db: Database, browserId: string): number {
+  const row = db
+    .prepare("SELECT count(*) AS n FROM claims WHERE state = 'active' AND browser_id = @browserId")
+    .get({ browserId }) as { n: number };
+  return row.n;
+}
+
+/**
  * The admission predicate, entire: `count of live claims + 1 <= budget`.
  *
  * The `+ 1` is the claim being decided, and it is written out rather than

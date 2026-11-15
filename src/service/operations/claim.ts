@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
 import { BROWSER_CHOICE_GUIDANCE, type BrowserId } from '../../browser/driver.ts';
-import { admits, countActiveClaims } from '../capacity.ts';
+import { admits, countActiveClaims, countActiveClaimsForBrowser } from '../capacity.ts';
 import { append, type EventAdapter } from '../events.ts';
 import { hashKey, mintKey } from '../keys.ts';
 import { nudgeIfOwnObstacle, type OwnObstacleNudge } from '../nudge.ts';
@@ -141,9 +141,11 @@ export interface ClaimInput {
   /**
    * Which browser, **optional** (§3.2, `DECISIONS.md` §13i).
    *
-   * Unstated resolves to the first signed-in browser; `regular` or `private`
-   * resolves to the first of that kind; a configured name resolves to that
-   * browser exactly.
+   * Unstated resolves to the first signed-in browser; `regular`, `private`
+   * or `attached` resolves to the first of that kind; a configured name
+   * resolves to that browser exactly. **An attached browser is reachable
+   * only by an explicit word or name** — nothing about omitting or
+   * defaulting ever lands work on a person's own browser (§13m).
    */
   readonly browser?: string;
   /** What this lease is for, in human words. What an operator reads when revoking. */
@@ -293,6 +295,26 @@ export interface ArbitrationSettings {
   readonly regularBrowsers: readonly string[];
   /** The configured ephemeral, clean-room browsers, in configured order (§1.2). */
   readonly privateBrowsers: readonly string[];
+  /**
+   * The configured attached browsers, in configured order (§1.2,
+   * `DECISIONS.md` §13m). **May be empty — empty is the capability off** —
+   * and even when set it holds at most one name.
+   *
+   * Optional with an empty default, and not because a caller may leave it
+   * out by choice: the processes that assemble these settings today predate
+   * the kind, and the honest reading of "not supplied" is exactly what every
+   * installation without attached configuration reads — no attached browser.
+   */
+  readonly attachedBrowsers?: readonly string[];
+  /**
+   * The most tabs that may be held at once against one attached browser
+   * (§13m). A cap in front of `tabBudget`, not a substitute for it — those
+   * pages still count against the budget, and this answers the separate
+   * question of how much of a person's visible browsing one caller may
+   * hold. Optional for the same reason as the list above; the default is
+   * the declared one.
+   */
+  readonly attachedTabs?: number;
 }
 
 /**
@@ -316,6 +338,15 @@ export interface ArbitrationSettings {
  * Returns `undefined` for a name no configured browser has, which the caller
  * turns into the refusal; this function does not refuse, so that the ledger
  * write and the refusal text stay in one place.
+ *
+ * ── Attached is reachable only by an explicit choice ────────────────────
+ *
+ * The word `attached` and the configured name are the only routes in
+ * (`DECISIONS.md` §13m). The default does not consider it, and nothing else
+ * in the resolution can reach it — because the one outcome this kind must
+ * never have is work landing on a person's own browser by omission, and the
+ * name-collision refusal at startup means it cannot hide behind another
+ * kind's name either.
  */
 export function resolveBrowser(
   requested: string | undefined,
@@ -336,10 +367,17 @@ export function resolveBrowser(
   if (requested === 'private') {
     return settings.privateBrowsers[0];
   }
+  if (requested === 'attached') {
+    // Empty when nothing is attached, and `undefined` out of an empty list
+    // is the honest answer: this installation has no attached browser, and
+    // the refusal that follows says so by listing what it does have.
+    return settings.attachedBrowsers?.[0];
+  }
 
   if (
     settings.regularBrowsers.includes(requested) ||
-    settings.privateBrowsers.includes(requested)
+    settings.privateBrowsers.includes(requested) ||
+    settings.attachedBrowsers?.includes(requested) === true
   ) {
     return requested;
   }
@@ -347,9 +385,13 @@ export function resolveBrowser(
   return undefined;
 }
 
-/** Every configured browser, both kinds, for a refusal that lists them. */
+/** Every configured browser, all three kinds, for a refusal that lists them. */
 export function configuredBrowsers(settings: ArbitrationSettings): readonly string[] {
-  return [...settings.regularBrowsers, ...settings.privateBrowsers];
+  return [
+    ...settings.regularBrowsers,
+    ...settings.privateBrowsers,
+    ...(settings.attachedBrowsers ?? []),
+  ];
 }
 
 /**
@@ -560,6 +602,43 @@ export function decideClaim(
   }
 
   const browserId = resolvedBrowser;
+  const configuredKind: 'attached' | 'private' | 'regular' =
+    settings.attachedBrowsers?.includes(browserId) === true
+      ? 'attached'
+      : settings.privateBrowsers.includes(browserId)
+        ? 'private'
+        : 'regular';
+
+  // **Storage seeding is refused on an attached browser** (§13m's
+  // `claim.no_seed_on_attached`). A seed writes a credential into an origin
+  // before the tab's first navigation — writing *into* the browser — and an
+  // attached browser is a person's own, which this capability reads and does
+  // not write. The position is the seed validation's own: before the first
+  // insert, so a refused caller is not charged capacity, holds no key, and
+  // has nothing to release.
+  //
+  // A defender will notice the page layer refuses this too, and both are
+  // kept on purpose: a lease that had been granted with a seed attached
+  // would carry that seed across its whole life waiting for a page call to
+  // turn it down, and the ledger would have recorded the ask as accepted.
+  if (storageSeed.length > 0 && configuredKind === 'attached') {
+    scope.recordRefusal({
+      kind: 'claim_requested',
+      outcome: 'deny',
+      guard: 'claim.no_seed_on_attached',
+      adapter,
+      sessionId: input.sessionId,
+      // The entry count and nothing else — the same discipline the seed
+      // validation keeps: origins, keys and never values, and here not even
+      // the origins, because the browser itself is the reason.
+      detail: { browser: browserId, entries: storageSeed.length },
+    });
+    throw new CallRefusal(
+      'attached_no_seed',
+      `An attached browser is a person's own, and a storage seed writes a credential into a browser before its first navigation. This claim names ${JSON.stringify(browserId)} and carries a seed, and that combination is refused: the attached kind reads a page and does not write to the browser that shows it. Drop the seed for this browser — sign in there by hand, the way its owner would.`,
+      { detail: { browser: browserId, entries: storageSeed.length } },
+    );
+  }
 
   // **The row for a configured browser is created here, on the way to its
   // first launch** (§1.2, `DECISIONS.md` §13i).
@@ -597,8 +676,9 @@ export function decideClaim(
   //
   // The kind is written from the list the name was found in, which is the
   // only place it is known — the name itself carries no kind once names are
-  // configured, which is why the column exists (schema step nine).
-  const configuredKind = settings.privateBrowsers.includes(browserId) ? 'private' : 'regular';
+  // configured, which is why the column exists (schema step nine), and
+  // which of the three lists it is read from decides `attached` as surely as
+  // it decides the other two.
   db.prepare<{ id: string; kind: string }>(
     "INSERT OR IGNORE INTO browsers (id, kind, state) VALUES (@id, @kind, 'stopped')",
   ).run({ id: browserId, kind: configuredKind });
@@ -676,6 +756,45 @@ export function decideClaim(
       `The ${browserId} browser is being signed into by a person right now, so it is not serving callers. This is a pause rather than a fault: it will serve again as soon as they are finished, and a place in the queue would not help because nothing here is waiting on capacity. Try again shortly.`,
       { detail: { browser: browserId, state: browserState.state } },
     );
+  }
+
+  // **The per-browser cap on an attached browser, enforced by refusal**
+  // (§13m's `attached.tab_cap`, from `BROKER_ATTACHED_TABS`). The shared
+  // budget says whether the pool is full; it cannot say whether *this*
+  // browser is full, and for an attached browser that second question is the
+  // one that protects a person: their own tabs, visible in their own window,
+  // held by somebody else's leases.
+  //
+  // Refused rather than queued, and that is a difference in kind from the
+  // budget's queue-or-grant, not a shortcut past it: **the queue's promotion
+  // arithmetic weighs the shared budget alone**, so a place held against a
+  // per-browser cap would be promoted the moment capacity freed *anywhere* —
+  // the cap would exist on the request and not on the outcome. A refusal
+  // here says what a queue place could not: nothing you are waiting for will
+  // change this answer, because the thing that has to change is a lease on
+  // this browser ending.
+  //
+  // The position is the refusals' position — before the arrival counter and
+  // before any row is written, so the claim count, the queue length and the
+  // tab count all stay exactly where they were.
+  if (configuredKind === 'attached') {
+    const cap = settings.attachedTabs ?? 3;
+    const held = countActiveClaimsForBrowser(db, browserId);
+    if (held >= cap) {
+      scope.recordRefusal({
+        kind: 'claim_requested',
+        outcome: 'deny',
+        guard: 'attached.tab_cap',
+        adapter,
+        sessionId: input.sessionId,
+        detail: { browser: browserId, held, cap },
+      });
+      throw new CallRefusal(
+        'attached_full',
+        `The ${browserId} browser is an attached one, and it is holding ${String(held)} of the ${String(cap)} tabs it allows at once — so this claim is refused rather than queued. Queuing would promise that capacity frees up somewhere, and nothing out there answers this: what has to end is a lease on this browser. Try again when one has ended, or use another browser if this work does not need someone's signed-in identity.`,
+        { detail: { browser: browserId, held, cap } },
+      );
+    }
   }
 
   const now = swept.sweptAt;

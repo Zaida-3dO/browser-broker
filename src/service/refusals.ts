@@ -236,6 +236,37 @@ export const REFUSALS = {
   },
 
   /**
+   * §7.1 `claim.no_seed_on_attached` (§13m): a storage seed writes a
+   * credential **into** a browser before its first navigation, and the
+   * attached kind reads a person's own browser and never writes to it.
+   *
+   * Not retryable: the identical call fails identically until the seed is
+   * dropped. What changes is the request, not the world.
+   */
+  attached_no_seed: {
+    rule: 'claim.no_seed_on_attached',
+    summary: 'A claim on an attached browser carries no storage seed.',
+    retryable: false,
+  },
+
+  /**
+   * §7.1 `attached.tab_cap` (§13m): the per-browser cap a shared budget
+   * cannot express — how much of a person's own browsing one caller may
+   * hold at a time.
+   *
+   * Retryable, unlike the argument refusals and unlike `unknown_browser`:
+   * the identical call succeeds the next time a lease on **this** browser
+   * ends. That is also why the refusal says so on its sentence — a caller
+   * that assumed queue-or-grant would wait for shared capacity that was
+   * never what it was blocked on.
+   */
+  attached_full: {
+    rule: 'attached.tab_cap',
+    summary: 'The attached browser has room for another tab.',
+    retryable: true,
+  },
+
+  /**
    * §7.1 `tab.owned` **and** `tab.open` produce this one code, and the
    * sharing is the point rather than an economy: §7.1 says outright that an
    * unowned tab gets "the same refusal as an unknown tab, so probing cannot

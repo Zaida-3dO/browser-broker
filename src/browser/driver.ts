@@ -206,7 +206,8 @@ export const BROWSER_CHOICE_GUIDANCE =
   'browser name to pick that one exactly. Tabs in one browser share its cookie jar, ' +
   'so callers in the same browser are isolated from other browsers but not from each ' +
   'other: for two identities at once, claim two differently-named browsers rather than ' +
-  'two tabs in one.';
+  'two tabs in one. An "attached" browser is the operator\'s own, read-only — claim ' +
+  'it only if you were told to.';
 
 /**
  * Whether a browser draws a window.
