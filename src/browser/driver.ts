@@ -23,11 +23,11 @@
  *
  * **Structural — the compiler refuses these.**
  *
- * - **A browser's *kind* is one of two, and there is no third.**
- *   {@link BrowserKind} is a union of two string literals, and the store
- *   enforces the same thing with a check constraint (schema step nine), so
- *   the code that talks to browsers agrees with the database by
- *   construction.
+ * - **A browser's *kind* is one of three, and there is no fourth.**
+ *   {@link BrowserKind} is a union of three string literals, and the store
+ *   enforces the same thing with a check constraint (schema step nine,
+ *   widened by step twelve), so the code that talks to browsers agrees with
+ *   the database by construction.
  *
  *   **What is not structural, said plainly rather than left to be
  *   discovered:** the *number* of browsers. `DECISIONS.md` §13i makes the
@@ -83,9 +83,11 @@ import type { ResolvedSecret, SecretFieldKind } from '../secrets/resolver.ts';
 /**
  * One browser, by the name it was configured under.
  *
- * `SCHEMA.md` §1.2: a browser is either **regular** — persistent, signed in
- * by a person — or **private** — ephemeral, signed in to nothing. Which one a
- * given browser is, is its {@link BrowserKind}; what it is *called* is
+ * `SCHEMA.md` §1.2: a browser is **regular** — persistent, signed in by a
+ * person — or **private** — ephemeral, signed in to nothing; since schema step
+ * twelve, also **attached** — the operator's own browser, reached read-only
+ * through the attach relay, never launched or closed by this service. Which
+ * one a given browser is, is its {@link BrowserKind}; what it is *called* is
  * configuration, and the default configuration names them after their kinds.
  *
  * ── Why this is `string` rather than a union of the configured names ────
@@ -110,11 +112,13 @@ export type BrowserId = string;
 /**
  * What a browser **is**, as against what it is called.
  *
- * Total, and enforced by the store's own check (schema step nine): every
- * browser is one of these two and there is no third. This is the property the
- * rest of the design branches on — a clean-room browser launches against an
- * ephemeral profile, a signed-in one does not, and §5.5.1's sign-in is a
- * claim over a persistent profile.
+ * Total, and enforced by the store's own check (schema step nine, widened by
+ * step twelve): every browser is one of these three and there is no fourth.
+ * This is the property the rest of the design branches on — a clean-room
+ * browser launches against an ephemeral profile, a signed-in one does not,
+ * §5.5.1's sign-in is a claim over a persistent profile, and an attached
+ * browser belongs to a person: this service never launches it, never closes
+ * it, and never writes to it.
  *
  * It is a separate type from {@link BrowserId} because a configured name like
  * `checkout` carries no kind in the word. §1.2's *"whether a browser uses a
@@ -122,10 +126,10 @@ export type BrowserId = string;
  * the name was one of two literals; once a name is free, the property has to
  * be written down or it is enforced nowhere.
  */
-export type BrowserKind = 'regular' | 'private';
+export type BrowserKind = 'regular' | 'private' | 'attached';
 
-/** Both kinds, in a fixed order, for anything that has to visit each. */
-export const BROWSER_KINDS: readonly BrowserKind[] = ['regular', 'private'];
+/** Every kind, in a fixed order, for anything that has to visit each. */
+export const BROWSER_KINDS: readonly BrowserKind[] = ['regular', 'private', 'attached'];
 
 /**
  * The browsers the default configuration names, in a fixed order.

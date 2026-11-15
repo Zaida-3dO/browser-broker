@@ -161,11 +161,28 @@ test('a browser with a name of its own is accepted, and its kind is stated', asy
   });
 });
 
-test('a browser kind outside the two is refused', async () => {
+test('an attached browser row is accepted by the store', async () => {
+  // Step twelve widened the kind check for the third kind. The name is free
+  // and the kind stays database-enforced: `attached` is a legal value now,
+  // and `state='stopped'` with no pid is exactly what step one's own
+  // invariant asks of a browser nobody has reached yet.
+  await withSteppedStore((store) => {
+    store.db
+      .prepare("INSERT INTO browsers (id, kind, state) VALUES ('desktop', 'attached', 'stopped')")
+      .run();
+    const row = store.db
+      .prepare<{ id: string }, { kind: string }>('SELECT kind FROM browsers WHERE id = @id')
+      .get({ id: 'desktop' });
+    assert.equal(row?.kind, 'attached');
+  });
+});
+
+test('a browser kind outside the three is refused', async () => {
   // **The load-bearing half of what the dropped check protected.**
   // The name is free; the kind is not, because the rest of the design
   // branches on it — an ephemeral profile is launched differently and cannot
-  // be signed into.
+  // be signed into, and an attached browser is a person's own and must not
+  // silently become a fourth kind nothing enforces a rule for.
   await withSteppedStore((store) => {
     assert.throws(() => {
       store.db

@@ -276,12 +276,12 @@ test('clearing the log leaves the browser state alone', async () => {
   assert.equal(driver.openTabCount('regular'), 1, 'a cleared log is not a closed tab');
 });
 
-test('there are exactly two browser kinds, and the default configuration names two browsers', () => {
+test('there are exactly three browser kinds, and the default configuration names two browsers', () => {
   // **The bound that is still structural is the KIND, not the count.**
-  // `BrowserKind` is a union of two literals, so a third kind is a compile
-  // error; this asserts the runtime list agrees with the type.
+  // `BrowserKind` is a union of three literals, so a fourth kind is a
+  // compile error; this asserts the runtime list agrees with the type.
   const kinds: BrowserKind[] = [...BROWSER_KINDS];
-  assert.deepEqual(kinds, ['regular', 'private']);
+  assert.deepEqual(kinds, ['regular', 'private', 'attached']);
 
   // The default configuration's browsers, which is what an installation that
   // has set nothing runs. **Deliberately not asserted to be the permitted

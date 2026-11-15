@@ -75,15 +75,15 @@ test(
     // EXPECTED_VERSION deliberately: deriving it would make the test agree
     // with the build by construction, and the assertion is precisely that a
     // build refuses a version it does not know.
-    store.db.pragma('user_version = 12');
+    store.db.pragma('user_version = 13');
     await assert.rejects(stepSchema(store.db), (error: unknown) => {
       assert.ok(error instanceof StartupRefusal);
       assert.equal(error.rule, 'startup.schema_stepped');
-      assert.match(error.message, /12/);
+      assert.match(error.message, /13/);
       return true;
     });
     // Nothing was written: the version is untouched, not reset.
-    assert.equal(readStoreVersion(store.db), 12);
+    assert.equal(readStoreVersion(store.db), 13);
   }),
 );
 
