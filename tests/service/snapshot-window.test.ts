@@ -216,12 +216,14 @@ test('the window pages a filtered snapshot with no special case', () => {
   const limit = 250;
   const seen: string[] = [];
   let offset = 0;
-  let total = 0;
   for (let guard = 0; ; guard += 1) {
     assert.ok(guard < 50, 'the paging loop did not terminate');
     const page = applyReadWindow(filtered, { offset, limit });
+    // Every window reports the total of the **same** file, whatever its
+    // offset — a per-page assertion, not one against the last page, so a
+    // window that reported its own length as the total cannot slip through.
+    assert.equal(page.total, filtered.length);
     seen.push(page.text);
-    total = page.total;
     if (!page.hasMore) break;
     offset = page.nextOffset;
   }
@@ -230,8 +232,7 @@ test('the window pages a filtered snapshot with no special case', () => {
     assert.equal(page.length, limit, 'every full window must be exactly `limit` long');
   }
   assert.equal(seen.join(''), filtered, 'the windows tile the filtered text');
-  assert.equal(total, filtered.length);
-  assert.ok(total < whole.length, 'filtering must have shrunk the input the window pages');
+  assert.ok(filtered.length < whole.length, 'filtering must have shrunk the input the window pages');
 });
 
 /** Assert a refusal under a given §7 rule. */

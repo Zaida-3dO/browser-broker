@@ -402,7 +402,8 @@ test('a limit past the ceiling is refused, naming the ceiling', async () => {
   try {
     assert.equal(run.outcome, 'refused');
     assert.equal(run.refusal['rule'], 'read.window_shape');
-    const message = String(run.refusal['message'] ?? '');
+    const message = run.refusal['message'];
+    assert.ok(typeof message === 'string', 'the refusal carried no message text');
     assert.match(message, /16000/);
     assert.match(message, /4000/);
     assert.equal(run.reads.length, 0, 'the driver was asked to read despite the refusal');
@@ -419,7 +420,8 @@ test('inline with no artifact store reports honestly: told, not silently pathed'
     // keeps for the same reasons (§2.4b).
     assert.equal(run.outcome, 'accepted');
     assert.equal(run.value['pageDriven'], false);
-    const reason = String(run.value['notDrivenReason'] ?? '');
+    const reason = run.value['notDrivenReason'];
+    assert.ok(typeof reason === 'string', 'the answer carried no reason text');
     assert.match(reason, /artifact store/i);
     assert.equal(run.value['inlined'], undefined, 'no text may be claimed without a store');
     // The driver was reached — the files were written — and then the answer
