@@ -716,7 +716,7 @@ function readOptionalCommand(
     return undefined;
   }
   const words = parseCommandLine(raw);
-  if (words === undefined || raw.includes(' ')) {
+  if (words === undefined || raw.includes('\0')) {
     throw new StartupRefusal(
       'config.value_readable',
       `${declaration.key} is set but is not a readable command: it is empty, contains a null byte, or has an unclosed double quote. Expected a program and its arguments separated by spaces; unset it to leave the capability it enables switched off.`,
