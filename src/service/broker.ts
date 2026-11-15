@@ -403,7 +403,17 @@ export function createBroker(options: BrokerOptions): Broker {
           ? {}
           : { uploadRoot: options.environment.uploadRoot }),
       }),
-    read: (input) => run<ReadInput, ReadResult>('read', withBrowser(input)),
+    // The artifact store, alongside the browser: an `inline` read returns the
+    // text of the artefact **file** the read writes, so it needs somewhere to
+    // read it back from — the same pairing `evaluate` and `capture` keep. It
+    // arrives under `artifactStore` rather than `artifacts` because
+    // `ReadInput.artifacts` already spells the list of artefacts asked for,
+    // and the store would arrive in the slot the artefact list vacates.
+    read: (input) =>
+      run<ReadInput, ReadResult>('read', {
+        ...withBrowser(input),
+        ...(options.artifacts === undefined ? {} : { artifactStore: options.artifacts }),
+      }),
     evaluate: (input) =>
       run<EvaluateInput, EvaluateResult>('evaluate', {
         ...withBrowser(input),

@@ -11,12 +11,15 @@ import type {
 import { append, type EventKind } from '../events.ts';
 import { claimIdForKey, extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
 import { resolveOwnedTabOrRefuse } from '../ownership.ts';
+import { readFileSync } from 'node:fs';
+
 import {
   disposeEvaluationResult,
   MAX_INLINE_RESULT_BYTES,
   validateCaptureMode,
   validateCaptureTier,
   resolveReadArtifacts,
+  resolveReadWindow,
   resolveSnapshotFilter,
   validateAction,
   validateExpression,
@@ -24,6 +27,7 @@ import {
   validateNavigationTarget,
   validateNavigationWait,
 } from '../pages.ts';
+import { applyReadWindow, type WindowedText } from '../snapshot-window.ts';
 import { recordTabOpened, reserveTab } from '../tabs.ts';
 import type { PendingSeeds } from '../pending-seeds.ts';
 import { seedRecord } from '../storage-seed.ts';
@@ -1038,6 +1042,30 @@ export interface ReadInput extends TabOperationInput {
    * field here would be a claim this layer is not the one that checks.
    */
   readonly find?: unknown;
+  /**
+   * Return the artefact text back through the call, windowed, instead of
+   * leaving the caller to open the file. Every kind, not just the snapshot.
+   *
+   * Validated by `resolveReadWindow` before admission, so an inert `offset`
+   * or `limit` — the defect this repository has named and measured elsewhere
+   * — is refused here rather than dropped at the call site.
+   */
+  readonly inline?: unknown;
+  /** First character of the window; `unknown` for the same reason as above. */
+  readonly offset?: unknown;
+  /** Most characters the window returns; `unknown` for the same reason. */
+  readonly limit?: unknown;
+  /**
+   * Where the artefacts were written, so an inline read can read them back.
+   *
+   * **Optional for exactly the reason {@link EvaluateInput.artifacts} is**:
+   * a caller with no browser has no artefact to read back, and every guard
+   * here is testable without either. A caller that supplies a browser and an
+   * `inline` request with no store gets the ordinary after-commit failure
+   * path — see the throw inside the closure below — rather than a silent
+   * downgrade to a path-only answer, because the caller asked for text.
+   */
+  readonly artifactStore?: ArtifactStore;
 }
 
 export interface ReadResult extends TabOperationResult {
@@ -1049,6 +1077,19 @@ export interface ReadResult extends TabOperationResult {
    * is a read nobody can act on.
    */
   readonly artifacts: readonly ReadArtifact[];
+  /**
+   * The windowed text of each artefact, **present exactly when the caller
+   * asked for `inline`** — and absent otherwise, including on a read that
+   * could not produce one (see the throw in {@link decideRead}).
+   *
+   * `collected` is present alongside it, because the file exists on disk
+   * whichever way the answer is phrased: the window is about what enters the
+   * conversation, not about whether the artefact was written. A caller that
+   * paged to the end of an inline read and then wants the whole artefact has
+   * the path to open it, and nothing had to be withheld to teach that
+   * distinction.
+   */
+  readonly inlined?: readonly InlinedArtifact[];
   /**
    * Where each one was written, once the work has run.
    *
@@ -1093,6 +1134,18 @@ export interface CollectedArtifact {
 }
 
 /**
+ * One artefact's text, cut to the window the caller asked for.
+ *
+ * Carries the coordinates (`start`, `end`, `total`, `nextOffset`) and not
+ * just the slice, for the reason `applyReadWindow` gives: the next window
+ * has to be derivable from this answer alone, and a caller that re-asks the
+ * range it already used is a caller that read the same page twice.
+ */
+export interface InlinedArtifact extends WindowedText {
+  readonly artifact: ReadArtifact;
+}
+
+/**
  * `read` (§3.7) — collect artifacts from an owned tab.
  */
 export function decideRead(
@@ -1105,6 +1158,11 @@ export function decideRead(
   // the artefact check already keeps, and for the same reason: a caller whose
   // request cannot be honoured should not learn that from a ledger entry.
   const snapshotFind = resolveSnapshotFilter(input.find);
+  // Same order and same reason for the window. A caller who typed `offset`
+  // without `inline` — an inert argument, which is this repository's named
+  // defect — is refused before the lease is renewed, before the row is
+  // written, and before any tab is reached.
+  const window = resolveReadWindow(input.inline, input.offset, input.limit);
   const { lease, tab, expiresAt } = admit(scope, input, 'read');
 
   append(scope.db, {
@@ -1127,6 +1185,11 @@ export function decideRead(
             find:
               snapshotFind.kind === 'text' ? snapshotFind.text : `/${snapshotFind.pattern.source}/`,
           }),
+      // The same argument one line up, applied to the window: an inline read
+      // and a path read write the same file, and "why did this read come back
+      // with four thousand characters" has to be answerable from the row.
+      // The numbers only — the text itself never reaches the ledger.
+      ...(window === undefined ? {} : { inline: true, offset: window.offset, limit: window.limit }),
     },
   });
 
@@ -1135,6 +1198,9 @@ export function decideRead(
   // reason: the paths do not exist until the work has run, so a value read
   // eagerly here would always be empty.
   let collected: readonly CollectedArtifact[] | undefined;
+  // Same arrangement again: the windowed text is cut from the file the read
+  // has just written, so it cannot exist before the work has run either.
+  let inlined: readonly InlinedArtifact[] | undefined;
   const secrets = secretScopeFor(
     input.secretResolver,
     receivedSecretNames(scope.db, tab.tabId),
@@ -1169,6 +1235,42 @@ export function decideRead(
         path: result.path,
         bytes: result.bytes,
       }));
+
+      if (window !== undefined) {
+        // ── The text half, cut from the file the read has just written ──────
+        //
+        // **The store here, or nothing.** An inline request with no artifact
+        // store cannot be honoured in either of the two shapes §3.9 allows —
+        // the text is in the file, and there is no file to read. Thrown
+        // rather than returned, for the reason `decideCapture` gives where a
+        // browser arrives without a store: running on would report
+        // `pageDriven: true` for a call whose answer the caller cannot reach,
+        // and the caller asked for text. The ordinary after-commit failure
+        // path tells it plainly, with `notDrivenReason` naming which half was
+        // missing.
+        if (input.artifactStore === undefined) {
+          throw new BrokerError(
+            'read.window_shape',
+            'An inline read returns the artefact text, which lives in the file the read writes — and this call supplied a browser without an artifact store to read it back from. Nothing was returned.',
+          );
+        }
+
+        // The file the **driver** named, under the directory **this service**
+        // handed it (§1.7a: the driver refuses to choose a location while
+        // still choosing a name; the wiring row decided the directory). It is
+        // not a caller-supplied path, which is what `ArtifactStore.resolve`
+        // exists to police (§1.9, `artifact.no_request_path` — *"a caller
+        // never supplies a filesystem path"*), and it is absolute by
+        // construction, which that resolver would refuse on sight. So the
+        // containment that guard supplies is already true of this path by
+        // where it came from, and re-asking it here would be the second
+        // resolver this repository warns about — one that would also, here,
+        // be wrong.
+        inlined = results.map((result) => {
+          const text = readFileSync(result.path, 'utf8');
+          return { artifact: result.artifact, ...applyReadWindow(text, window) };
+        });
+      }
     },
     lease.claimId,
   );
@@ -1181,11 +1283,17 @@ export function decideRead(
   return {
     // Enumerable, deliberately: both surfaces serialise their result, and a
     // getter that is not enumerable is invisible to `JSON.stringify` — present
-    // in process, absent on the wire.
-    value: Object.defineProperty(value, 'collected', {
-      get: () => collected,
-      enumerable: true,
-    }),
+    // in process, absent on the wire. `inlined` composes the same way for the
+    // same reason, and stays absent on the wire exactly when no window was
+    // asked for: presence is the signal there too.
+    value: Object.defineProperty(
+      Object.defineProperty(value, 'collected', {
+        get: () => collected,
+        enumerable: true,
+      }),
+      'inlined',
+      { get: () => inlined, enumerable: true },
+    ),
     afterCommit: work.afterCommit,
   };
 }

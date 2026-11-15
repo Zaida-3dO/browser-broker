@@ -614,6 +614,32 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           'node ("listitem" under list "Footer"). Plain text matches anywhere, ignoring case; ' +
           '/slashes/ make it a regular expression. Still returns a path, not the lines.',
       },
+      {
+        name: 'inline',
+        type: 'boolean',
+        required: false,
+        description:
+          'Return the artefact text back in the answer instead of leaving you to open the file. ' +
+          'Works for every kind. A big page is cheaper to search with find first; with inline and ' +
+          'find together you get the matches straight back. The file is still written and its path ' +
+          'still comes back, so paging to the end does not strand you.',
+      },
+      {
+        name: 'offset',
+        type: 'integer',
+        required: false,
+        description:
+          'With inline: the character to start at. Page with the nextOffset the answer reports. ' +
+          'Means nothing without inline, and is refused rather than ignored.',
+      },
+      {
+        name: 'limit',
+        type: 'integer',
+        required: false,
+        description:
+          'With inline: the most characters to return. Default 4,000; maximum 16,000. The whole ' +
+          'answer reports total and hasMore so you know what remains.',
+      },
     ],
   },
   {

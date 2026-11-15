@@ -201,6 +201,20 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
           'Narrow the snapshot to matching lines and their parents. Plain text ignores case; ' +
           'slashes make it a regular expression. The result is still a path to a file.',
       },
+      {
+        flag: '--inline',
+        summary:
+          'Return the artefact text in the answer, not just its path. Works for every kind. ' +
+          'The file is still written and the path still reported.',
+      },
+      {
+        flag: '--offset <n>',
+        summary: 'With --inline: the character to start at. Page with the reported nextOffset.',
+      },
+      {
+        flag: '--limit <n>',
+        summary: 'With --inline: the most characters to return. Default 4000; maximum 16000.',
+      },
     ],
   },
   { words: ['evaluate'], operation: 'evaluate', summary: 'Evaluate an expression in the page.' },

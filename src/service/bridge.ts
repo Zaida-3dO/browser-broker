@@ -307,6 +307,15 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         // which the resolver refuses with a message, rather than silently
         // treating as absent the way a truthiness test here would.
         const find = argument(args, 'find');
+        // The inline window, coerced only and never validated: `--offset
+        // 4000` from the command line is text, and an uncoerced one would
+        // reach the integer guard as a string and be refused however correctly
+        // it was written — the same split `wait_ms` keeps above. Whether the
+        // numbers are whole, in range, and meaningful without `inline` is
+        // `resolveReadWindow`'s decision, on the ledger.
+        const inline = argument(args, 'inline');
+        const offset = argument(args, 'offset');
+        const limit = argument(args, 'limit');
         return {
           ...(await broker.read({
             key,
@@ -315,6 +324,9 @@ export function serviceFor(options: BridgeOptions): BrokerService {
               ? {}
               : { artifacts: artifactsFrom(argument(args, 'what', 'artifacts')) }),
             ...(find === undefined ? {} : { find }),
+            ...(inline === undefined ? {} : { inline: asBoolean(inline) }),
+            ...(offset === undefined ? {} : { offset: asInteger(offset) }),
+            ...(limit === undefined ? {} : { limit: asInteger(limit) }),
           })),
         };
       }
