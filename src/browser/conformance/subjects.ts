@@ -1,5 +1,6 @@
 import type { BrowserId, BrowserSession } from '../driver.ts';
 import { FakeBrowserDriver } from '../fake.ts';
+import type { SeamProperty } from './case.ts';
 import { CONFORMANCE_RECORD } from './cases.ts';
 
 /**
@@ -31,6 +32,21 @@ export interface SeamSubject {
    * printed, so a skip is visible in the output as a skip.
    */
   readonly unavailable: () => string | undefined;
+  /**
+   * Whether a property does not apply to this implementation, and why not —
+   * the per-property peer of {@link unavailable}, carrying the same rule:
+   * **a reason, never a silent boolean**.
+   *
+   * The kind this exists for is the attached browser's keeper: the kind
+   * refuses `ensureKeeperTab` at the seam, by construction and on purpose
+   * (`DECISIONS.md` §13m). Asking a keeper property of it could only come out
+   * green by the session implementing a keeper — which is exactly the
+   * fixture-side fiction this suite was built to stop. So the honest answer
+   * is a skip, reported by name and with its reason, and the runner fails a
+   * subject whose every property skipped rather than letting one prove
+   * nothing as a pass.
+   */
+  readonly notApplicable?: (property: SeamProperty) => string | undefined;
   readonly open: (browser: BrowserId) => Promise<SeamSession>;
 }
 

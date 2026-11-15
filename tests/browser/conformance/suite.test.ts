@@ -4,6 +4,7 @@ import test from 'node:test';
 import { SEAM_PROPERTIES } from '../../../src/browser/conformance/cases.ts';
 import { runSeamConformance } from '../../../src/browser/conformance/run.ts';
 import { fakeSubject } from '../../../src/browser/conformance/subjects.ts';
+import { attachedSubject } from './attached-subject.ts';
 import { realSubject } from './real-subject.ts';
 
 /**
@@ -41,16 +42,29 @@ import { realSubject } from './real-subject.ts';
  * property could reach for that exists on one side and not the other.
  */
 
-const SUBJECTS = [fakeSubject, realSubject];
+// Three subjects now: the fake, the real browser, and the attached session
+// over the relay and the fake extension. The attached kind differs from the
+// other two **on purpose** — no keeper, no writes, handles naming the
+// extension's tab — and a property that fires on attached where it does not
+// fire elsewhere is the service deciding differently against a person's
+// browser than against its own, which is the most valuable kind of finding
+// this matrix can produce.
+const SUBJECTS = [fakeSubject, realSubject, attachedSubject];
 
 test('every seam property holds on every implementation available here', async () => {
   const report = await runSeamConformance({ subjects: SUBJECTS, properties: SEAM_PROPERTIES });
 
   // Printed rather than swallowed. The whole failure this suite exists to
   // prevent is a green result that proves less than it appears to, and a
-  // subject that did not run is precisely that.
+  // subject that did not run is precisely that. A property that skipped is
+  // the same shape one level down, so it prints too.
   for (const skip of report.skipped) {
     console.log(`  seam conformance: subject "${skip.subject}" did not run — ${skip.reason}`);
+  }
+  for (const skip of report.propertySkips) {
+    console.log(
+      `  seam conformance: property "${skip.property}" did not apply to "${skip.subject}" — ${skip.reason}`,
+    );
   }
   console.log(
     `  seam conformance: ${String(report.pairsRun)} property-and-implementation pairs ran across [${report.subjectsRun.join(', ')}]`,
@@ -73,15 +87,69 @@ test('the matrix is not empty — a green run over nothing is the failure this s
 
   // Computed independently and compared, rather than read back from the report
   // that would also be empty. The adapter suite next door makes the same move
-  // for the same reason.
-  const expected = report.subjectsRun.length * SEAM_PROPERTIES.length;
+  // for the same reason. The declared property inapplicabilities are the one
+  // sanctioned subtraction — and they are counted from the report, whose
+  // skips the next test pins by name, so the arithmetic cannot absorb an
+  // unexplained gap.
+  const expected = report.subjectsRun.length * SEAM_PROPERTIES.length - report.propertySkips.length;
 
   assert.ok(SEAM_PROPERTIES.length > 0, 'there are no properties at all');
   assert.ok(report.subjectsRun.length > 0, 'no implementation ran, so the run proves nothing');
   assert.equal(
     report.pairsRun,
     expected,
-    'not every property ran on every available implementation',
+    'not every applicable property ran on every available implementation',
+  );
+});
+
+/**
+ * The attached subject's skips, pinned **by name and with their reasons**.
+ *
+ * A subject that declares itself inapplicable to properties is holding a
+ * loaded weapon: every skip subtracts from the matrix, so an unlisted skip
+ * is the suite quietly proving less. This test fixes the exact set — the
+ * three keeper properties (the kind refuses `ensureKeeperTab` by
+ * construction) and the cookie-shape property (the fake extension answers no
+ * jar) — and refuses both a fifth skip and a reason-less one. The properties
+ * the attached session *does* run are the rest of the table, computed here
+ * rather than asserted as a magic number.
+ */
+test('the attached subject’s inapplicable set is pinned by name, argued, and everything else ran', async () => {
+  const declared = SEAM_PROPERTIES.filter((property) => attachedSubject.notApplicable?.(property));
+  assert.deepEqual(
+    declared.map((property) => property.name),
+    [
+      'the keeper tab is absent from listTabs',
+      'the keeper tab survives being named to closeTab',
+      'establishing the keeper twice yields one keeper, not two',
+      'a cookie summary carries no value, on any implementation',
+    ],
+    'the attached subject declares a different set of inapplicable properties than this suite records',
+  );
+  for (const property of declared) {
+    const reason = attachedSubject.notApplicable?.(property) ?? '';
+    assert.ok(
+      reason.trim().split(/\s+/u).length >= 12,
+      `the skip of "${property.name}" carries no argument a person can read`,
+    );
+  }
+
+  const report = await runSeamConformance({
+    subjects: [attachedSubject],
+    properties: SEAM_PROPERTIES,
+  });
+  assert.ok(
+    report.subjectsRun.includes('attached'),
+    'the attached subject skipped entirely — the relay or the fake extension failed to start',
+  );
+  assert.equal(report.pairsRun, SEAM_PROPERTIES.length - declared.length);
+  assert.equal(report.propertySkips.length, declared.length);
+  assert.deepEqual(
+    report.findings,
+    [],
+    `the attached subject produced findings:\n${report.findings
+      .map((finding) => `  [${finding.kind}] ${finding.property ?? '-'}: ${finding.detail}`)
+      .join('\n')}`,
   );
 });
 

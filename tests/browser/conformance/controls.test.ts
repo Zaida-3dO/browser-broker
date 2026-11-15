@@ -427,6 +427,72 @@ test('CONTROL — a run in which every subject skipped is caught rather than pas
   );
 });
 
+test('CONTROL — a declared property skip is reported by name, not passed as a silent green', async () => {
+  // A skip that is not in the report is indistinguishable from a property
+  // that passed, and every skip subtracts from the matrix the suite reports.
+  // So the skip itself is the assertion here: named, reasoned, and one pair
+  // short of the full cross product — with no findings, because a declared
+  // inapplicability is not a defect.
+  const skippedProperty = SEAM_PROPERTIES[0];
+  assert.ok(skippedProperty, 'the control needs a property to skip');
+  let opened = 0;
+  const bent: SeamSubject = {
+    name: 'fake-that-skips-one-property',
+    unavailable: () => undefined,
+    notApplicable: (property) =>
+      property.name === skippedProperty.name
+        ? 'CONTROL: this property is skipped by design'
+        : undefined,
+    open: async (browser) => {
+      opened += 1;
+      return await fakeSubject.open(browser);
+    },
+  };
+
+  const report = await runAgainst(bent);
+  assert.ok(opened > 0, 'THE MUTATION DID NOT APPLY: the subject was never opened');
+  assert.equal(
+    report.propertySkips.length,
+    1,
+    'the declared skip was not reported — a silent skip is a silent gap in the matrix',
+  );
+  const skip = report.propertySkips[0];
+  assert.equal(skip?.property, skippedProperty.name);
+  assert.match(skip?.reason ?? '', /CONTROL/u);
+  assert.equal(report.pairsRun, SEAM_PROPERTIES.length - 1);
+  assert.deepEqual(report.findings, [], 'a declared inapplicability was reported as a finding');
+});
+
+test('CONTROL — a subject that skips every property is caught, not passed as a green run over nothing', async () => {
+  // The hollow-green shape one level below `no-subject-ran`: the subject
+  // opens, every property declines, the findings list is empty — and the run
+  // proved nothing. A mis-declared `notApplicable` set would look exactly
+  // like this, so "every pair skipped" is its own finding kind.
+  const neverApplicable: SeamSubject = {
+    name: 'a subject that declines every property',
+    unavailable: () => undefined,
+    notApplicable: () => 'CONTROL: this subject declines every property, by construction',
+    open: () => {
+      throw new Error('this subject must never be opened — every property declined');
+    },
+  };
+
+  const report = await runSeamConformance({
+    subjects: [neverApplicable],
+    properties: SEAM_PROPERTIES,
+  });
+
+  assert.ok(
+    kinds(report.findings).includes('all-properties-skipped'),
+    'a subject whose every property skipped was reported as green',
+  );
+  assert.equal(report.pairsRun, 0);
+  assert.ok(
+    report.subjectsRun.includes('a subject that declines every property'),
+    'the subject itself must count as run — the finding is about the pairs, not the subject',
+  );
+});
+
 test('CONTROL — two properties sharing a name are caught, so a finding is always attributable', async () => {
   const duplicated: SeamProperty = {
     name: 'the same name twice',

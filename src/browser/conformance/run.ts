@@ -39,6 +39,8 @@ export type SeamFindingKind =
   | 'property-name-duplicated'
   /** The property table is empty, so every per-property assertion is vacuous. */
   | 'property-table-empty'
+  /** A subject ran but every property skipped against it — a pass over nothing. */
+  | 'all-properties-skipped'
   /** No subject could run, so a green report would prove nothing at all. */
   | 'no-subject-ran';
 
@@ -56,6 +58,13 @@ export interface SeamSkip {
   readonly reason: string;
 }
 
+/** A property the subject declared inapplicable, and the reason it gave. */
+export interface SeamPropertySkip {
+  readonly subject: string;
+  readonly property: string;
+  readonly reason: string;
+}
+
 export interface SeamReport {
   readonly findings: readonly SeamFinding[];
   /**
@@ -67,6 +76,13 @@ export interface SeamReport {
    */
   readonly pairsRun: number;
   readonly skipped: readonly SeamSkip[];
+  /**
+   * Every property a running subject declared inapplicable, named with the
+   * reason — the per-property peer of {@link skipped}, reported for the same
+   * reason: a skip that is not in the report is indistinguishable from a
+   * property that passed.
+   */
+  readonly propertySkips: readonly SeamPropertySkip[];
   /** Every subject that actually ran, named. */
   readonly subjectsRun: readonly string[];
 }
@@ -111,6 +127,7 @@ function wordCount(text: string): number {
 export async function runSeamConformance(options: SeamRunOptions): Promise<SeamReport> {
   const findings: SeamFinding[] = [];
   const skipped: SeamSkip[] = [];
+  const propertySkips: SeamPropertySkip[] = [];
   const subjectsRun: string[] = [];
   const browser: BrowserId = options.browser ?? 'private';
   let pairsRun = 0;
@@ -155,9 +172,20 @@ export async function runSeamConformance(options: SeamRunOptions): Promise<SeamR
       continue;
     }
     subjectsRun.push(subject.name);
+    let pairsForSubject = 0;
 
     for (const property of options.properties) {
+      const notApplicable = subject.notApplicable?.(property);
+      if (notApplicable !== undefined) {
+        propertySkips.push({
+          subject: subject.name,
+          property: property.name,
+          reason: notApplicable,
+        });
+        continue;
+      }
       const opened = await subject.open(browser);
+      pairsForSubject += 1;
       try {
         const complaint = await property.check({ session: opened.session });
         pairsRun += 1;
@@ -183,6 +211,23 @@ export async function runSeamConformance(options: SeamRunOptions): Promise<SeamR
         await opened.dispose();
       }
     }
+
+    // A subject that ran but had every property skipped is the hollow-green
+    // shape one level down from `no-subject-ran`: the subject opened, nothing
+    // was ever asked of it, and an empty findings list would read as
+    // agreement. The skips are real for their own reasons — that is what the
+    // report's `propertySkips` is for — but "everything skipped" is never a
+    // pass, and a subject configured that way is almost always a subject
+    // mis-declared.
+    if (options.properties.length > 0 && pairsForSubject === 0) {
+      findings.push({
+        kind: 'all-properties-skipped',
+        subject: subject.name,
+        detail: `every property skipped against "${subject.name}", so nothing was asked of it: ${options.properties
+          .map((property) => `"${property.name}"`)
+          .join(', ')}`,
+      });
+    }
   }
 
   // Every subject skipping is not the same as every subject passing, and a
@@ -197,5 +242,5 @@ export async function runSeamConformance(options: SeamRunOptions): Promise<SeamR
     });
   }
 
-  return { findings, pairsRun, skipped, subjectsRun };
+  return { findings, pairsRun, skipped, propertySkips, subjectsRun };
 }

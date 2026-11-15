@@ -62,7 +62,13 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
     rule: 'keeper.never_leased',
     why: 'The property above is satisfied by an implementation whose listTabs always answers nothing — an assertion over an empty set passes forever and silently. Reconciliation reads this list to decide what exists, so an always-empty answer would make every recorded tab look vanished and close every live lease.',
     check: async ({ session }) => {
-      await session.ensureKeeperTab();
+      // **No keeper call here, and that is load-bearing for the subject list,
+      // not a simplification:** the keeper half of this session's behaviour
+      // has its own three properties below; this one asks only about the
+      // leased tab. A call that is not part of the question being asked would
+      // silently make every property a keeper property — and the attached
+      // kind, which refuses keepers by construction (§13m), could then never
+      // be asked anything at all.
       const leased = await session.openTab();
       const listed = await session.listTabs();
 
@@ -126,12 +132,19 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
     rule: 'tab.open',
     why: 'Whether a tab is open is the fact this seam is asked to change and the fact the store then records. runtime.ts derives the row directly from the answer: `closed` writes `state=closed, close_failed=0`, and anything else flags the row instead. So an implementation that answers the same way whether or not it closed anything makes the service record a clean close for a page that is still open — and that pair is invisible to both instruments built to find leaked pages, because doctor counts rows stranded at `closing` and status selects `close_failed = 1`. The store then reports health while pages from released leases stay on the screen.',
     check: async ({ session }) => {
-      await session.ensureKeeperTab();
-
+      // **Two leased tabs, not one-plus-a-keeper:** the close under test must
+      // not be the browser's last page — a headless browser exits when its
+      // final page closes, and then the *second* close would be answering a
+      // dead connection rather than a vanished page, which is a different
+      // question. A keeper would hold the browser open too, but the attached
+      // kind has no keeper by construction (§13m) and this property has to be
+      // askable of it.
+      //
       // A tab this session really has. Closing it must be reported as a
       // close, or an honest release is flagged as a failure forever and the
       // flag `status` selects on becomes noise.
       const opened = await session.openTab();
+      await session.openTab();
       const closed = await session.closeTab(opened);
       if (closed !== 'closed') {
         return `closeTab answered ${closed} for a tab this session had just opened, so a release that genuinely closed its page is recorded as one that did not`;
@@ -176,14 +189,14 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
     rule: 'claim.browser_known',
     why: 'Capacity is one total across both browsers (DECISIONS.md §6) and the store indexes a physical tab by (browser_id, driver_tab_id) — so a handle carrying the wrong browser is a row written against the wrong browser, and reconciliation then compares one browser’s pages against the other’s records.',
     check: async ({ session }) => {
+      // The keeper handle is not part of this question — every handle the
+      // session can hand out is, but a keeper call would make the property
+      // unaskable of the keeper-less kind, and §7.3 already says nothing may
+      // drive it anyway. Its identity is pinned by the keeper properties.
       const described = session.describe();
       const leased = await session.openTab();
-      const keeper = await session.ensureKeeperTab();
 
-      for (const [label, handle] of [
-        ['openTab', leased],
-        ['ensureKeeperTab', keeper],
-      ] as const) {
+      for (const [label, handle] of [['openTab', leased]] as const) {
         if (handle.browser !== described.browser) {
           return `${label} returned a handle naming the ${handle.browser} browser from a session describing itself as ${described.browser}`;
         }
