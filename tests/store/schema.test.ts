@@ -177,6 +177,42 @@ test('an attached browser row is accepted by the store', async () => {
   });
 });
 
+test('the rebuilt browsers table keeps EVERY column, including the ones later steps added', async () => {
+  // Step twelve rebuilds `browsers` to widen one check, and a rebuild is
+  // exactly where an added column goes missing: step ten added
+  // `signin_deadline` and `signin_claim_id` by `ALTER`, after step nine
+  // defined the table, and a rebuild modeled on step nine's shape would
+  // silently delete them for every existing installation — the service
+  // reads both on every arbitration pass, so the loss surfaces as
+  // `no such column` at the worst possible moment. **This test has to fail
+  // for a rebuild that drops any column**, which is why the full set is
+  // pinned rather than a spot check: a rebuild that keeps the famous
+  // columns and drops a quiet one is the failure mode.
+  await withSteppedStore((store) => {
+    const columns = store.db.prepare('PRAGMA table_info(browsers)').all() as {
+      name: string;
+    }[];
+    assert.deepEqual(
+      columns.map((column) => column.name).sort(),
+      [
+        'browser_uuid',
+        'created_at',
+        'endpoint',
+        'id',
+        'kind',
+        'launched_at',
+        'pid',
+        'restart_count',
+        'signin_claim_id',
+        'signin_deadline',
+        'signin_owner_pid',
+        'state',
+        'updated_at',
+      ].sort(),
+    );
+  });
+});
+
 test('a browser kind outside the three is refused', async () => {
   // **The load-bearing half of what the dropped check protected.**
   // The name is free; the kind is not, because the rest of the design

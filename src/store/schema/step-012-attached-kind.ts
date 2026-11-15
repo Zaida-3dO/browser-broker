@@ -61,6 +61,12 @@ CREATE TABLE browsers_next (
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   signin_owner_pid INTEGER,
+  -- Step ten added these two by ALTER, after step nine's table shape —
+  -- and a rebuild that copies the nine-plus-one columns it was modeled on
+  -- silently deletes them for every existing installation. The service
+  -- reads both on every arbitration pass, so the loss is not quiet.
+  signin_deadline TEXT,
+  signin_claim_id TEXT,
   -- The two invariants step nine carried forward unchanged. The first is
   -- load-bearing for the new kind: an attached browser's process is a
   -- person's own, is not recorded here, and must never be.
@@ -74,10 +80,10 @@ CREATE TABLE browsers_next (
   `
 INSERT INTO browsers_next
   (id, kind, state, pid, launched_at, endpoint, browser_uuid, restart_count,
-   created_at, updated_at, signin_owner_pid)
+   created_at, updated_at, signin_owner_pid, signin_deadline, signin_claim_id)
 SELECT
   id, kind, state, pid, launched_at, endpoint, browser_uuid, restart_count,
-  created_at, updated_at, signin_owner_pid
+  created_at, updated_at, signin_owner_pid, signin_deadline, signin_claim_id
 FROM browsers
 `,
   `DROP TABLE browsers`,
