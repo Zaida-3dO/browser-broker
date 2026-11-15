@@ -63,10 +63,7 @@ import { makeTempStore } from '../helpers/temp-store.ts';
 /** The full snapshot the fixture's page "has": header, links, footer. */
 const FULL_SNAPSHOT = [
   '- page "Catalogue" [ref=e0]:',
-  ...Array.from(
-    { length: 60 },
-    (_, i) => `  - link "Item ${String(i)}" [ref=e${String(i + 1)}]`,
-  ),
+  ...Array.from({ length: 60 }, (_, i) => `  - link "Item ${String(i)}" [ref=e${String(i + 1)}]`),
   '- status [ref=e61]: 60 items listed',
 ].join('\n');
 
@@ -95,9 +92,7 @@ interface ReadCall {
   readonly snapshotFind: SnapshotFilter | undefined;
 }
 
-function writingSession(
-  outputDirectory: string,
-): { session: BrowserSession; reads: ReadCall[] } {
+function writingSession(outputDirectory: string): { session: BrowserSession; reads: ReadCall[] } {
   const reads: ReadCall[] = [];
   const handle: TabHandle = { browser: 'regular', driverTabId: 'driver-tab' };
   mkdirSync(outputDirectory, { recursive: true });
@@ -330,10 +325,9 @@ test('the CLI spelling of the window is coerced and honoured end to end', async 
 });
 
 test('inline covers every kind in one read, each windowed from its own file', async () => {
-  const run = await readThrough(
-    ['--inline', '--what', 'snapshot,console,network,cookies'],
-    { withArtifacts: true },
-  );
+  const run = await readThrough(['--inline', '--what', 'snapshot,console,network,cookies'], {
+    withArtifacts: true,
+  });
   try {
     assert.equal(
       run.outcome,

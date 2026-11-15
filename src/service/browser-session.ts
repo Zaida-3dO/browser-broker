@@ -129,8 +129,8 @@ export interface BrowserSessionProviderOptions {
    * `launch.ts`, `sleepImpl` below) so a test can watch the attached branch
    * without a person's browser, an extension, or a loopback listener.
    *
-   * Defaults to {@link openAttachedSession}. It replaces the adoption path
-   * rather than joining it: an attached browser is a person's own, there is
+   * Defaults to {@link openAttachedSession}. The adoption path is not walked
+   * for an attached browser at all: an attached browser is a person's own, there is
    * no launch race to arbitrate, no process to record, and no discovery
    * record to verify — `decideAdoption` over it would be this service
    * deciding the fate of a browser it does not own.
@@ -519,7 +519,7 @@ async function acquire(
 /**
  * Open an attached session: a bridge to a person's browser, not a launch.
  *
- * ── What replaces the adoption path, and what deliberately carries over ──
+ * ── Why the adoption path is not walked here, and what carries over ─────
  *
  * No observation (`isRunning` reads a discovery record this service writes,
  * and it writes none for an attached browser), no transaction, and no

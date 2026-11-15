@@ -886,7 +886,6 @@ export const DEFAULT_READ_WINDOW_CHARS = 4_000;
  */
 export const MAX_READ_WINDOW_CHARS = 16_000;
 
-
 /**
  * Read a caller's `inline`, `offset` and `limit` into a window, or refuse.
  *
@@ -950,7 +949,12 @@ export function resolveReadWindow(
       throw new PageRefusal(
         'read.window_shape',
         `limit is the most characters to return: a whole number from 1 to ${String(MAX_READ_WINDOW_CHARS)}, and ${String(DEFAULT_READ_WINDOW_CHARS)} if you leave it out.`,
-        { limit, minimum: 1, maximum: MAX_READ_WINDOW_CHARS, defaultValue: DEFAULT_READ_WINDOW_CHARS },
+        {
+          limit,
+          minimum: 1,
+          maximum: MAX_READ_WINDOW_CHARS,
+          defaultValue: DEFAULT_READ_WINDOW_CHARS,
+        },
       );
     }
   }

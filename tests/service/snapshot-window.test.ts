@@ -198,9 +198,10 @@ test('the window pages a filtered snapshot with no special case', () => {
   const whole = [
     '- navigation [ref=e1]:',
     '  - list "Products" [ref=e2]:',
-    Array.from({ length: 40 }, (_, i) => `    - link "Widget ${String(i)}" [ref=e${String(i + 3)}]`).join(
-      '\n',
-    ),
+    Array.from(
+      { length: 40 },
+      (_, i) => `    - link "Widget ${String(i)}" [ref=e${String(i + 3)}]`,
+    ).join('\n'),
     '  - status [ref=e43]: 40 results',
   ].join('\n');
 
@@ -232,7 +233,10 @@ test('the window pages a filtered snapshot with no special case', () => {
     assert.equal(page.length, limit, 'every full window must be exactly `limit` long');
   }
   assert.equal(seen.join(''), filtered, 'the windows tile the filtered text');
-  assert.ok(filtered.length < whole.length, 'filtering must have shrunk the input the window pages');
+  assert.ok(
+    filtered.length < whole.length,
+    'filtering must have shrunk the input the window pages',
+  );
 });
 
 /** Assert a refusal under a given §7 rule. */
@@ -259,7 +263,11 @@ test('resolveReadWindow defaults, bounds, and refusals', async (t) => {
   }[] = [
     { name: 'no window asked at all', inline: undefined, expect: undefined },
     { name: 'inline false is the path read of before', inline: false, expect: undefined },
-    { name: 'inline true takes the default page', inline: true, expect: { offset: 0, limit: 4_000 } },
+    {
+      name: 'inline true takes the default page',
+      inline: true,
+      expect: { offset: 0, limit: 4_000 },
+    },
     {
       name: 'an explicit limit is honoured',
       inline: true,
@@ -305,9 +313,8 @@ test('resolveReadWindow defaults, bounds, and refusals', async (t) => {
   for (const row of rows) {
     await t.test(row.name, () => {
       if (row.expect === undefined && !('expect' in row)) {
-        const refusal = refusesWith(
-          'read.window_shape',
-          () => resolveReadWindow(row.inline, row.offset, row.limit),
+        const refusal = refusesWith('read.window_shape', () =>
+          resolveReadWindow(row.inline, row.offset, row.limit),
         );
         if (row.messageMustSay !== undefined) {
           assert.ok(
