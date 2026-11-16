@@ -189,10 +189,11 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
     rule: 'claim.browser_known',
     why: 'Capacity is one total across both browsers (DECISIONS.md §6) and the store indexes a physical tab by (browser_id, driver_tab_id) — so a handle carrying the wrong browser is a row written against the wrong browser, and reconciliation then compares one browser’s pages against the other’s records.',
     check: async ({ session }) => {
-      // The keeper handle is not part of this question — every handle the
-      // session can hand out is, but a keeper call would make the property
-      // unaskable of the keeper-less kind, and §7.3 already says nothing may
-      // drive it anyway. Its identity is pinned by the keeper properties.
+      // The leased handles and the listed tabs: asked of every subject. The
+      // keeper half of this same question is its own property next door, so
+      // a subject that has no keeper skips **that half alone** rather than
+      // this whole one — dropping it for everyone was how the check on the
+      // keeper handle went missing from the two subjects that do have one.
       const described = session.describe();
       const leased = await session.openTab();
 
@@ -206,6 +207,20 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
         if (tab.browser !== described.browser) {
           return `listTabs returned a handle naming the ${tab.browser} browser from a session describing itself as ${described.browser}`;
         }
+      }
+      return undefined;
+    },
+  },
+
+  {
+    name: 'a keeper handle names the browser it belongs to',
+    rule: 'keeper.present',
+    why: 'The keeper is the one tab whose presence every spawn checks (§7.2), and that presence is a tab row keyed by (browser_id, driver_tab_id) — the same index as every other handle, with capacity one total across the browsers (DECISIONS.md §6). A keeper handle naming the wrong browser anchors that check in another browser’s inventory, where no keeper exists to find. This is the property above asked of the handle a keeper-less kind cannot hand out, so it is its own property: subjects with a keeper answer it, and the attached kind skips it alone.',
+    check: async ({ session }) => {
+      const described = session.describe();
+      const keeper = await session.ensureKeeperTab();
+      if (keeper.browser !== described.browser) {
+        return `ensureKeeperTab returned a handle naming the ${keeper.browser} browser from a session describing itself as ${described.browser}, so the keeper is recorded as belonging to a browser this session is not`;
       }
       return undefined;
     },

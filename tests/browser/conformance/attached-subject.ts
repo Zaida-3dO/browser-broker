@@ -40,6 +40,7 @@ const NO_KEEPER_BY_CONSTRUCTION = new Set([
   'the keeper tab is absent from listTabs',
   'the keeper tab survives being named to closeTab',
   'establishing the keeper twice yields one keeper, not two',
+  'a keeper handle names the browser it belongs to',
 ]);
 
 /**

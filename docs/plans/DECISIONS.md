@@ -2606,8 +2606,8 @@ The fake relay in `tests/attach/` answers the *refusal* axis completely and the 
 partly: it does not finish a navigation, an accessibility snapshot, a screenshot or a cookie read.
 So the happy paths where an attached verb *completes* await the gated browser job that owns a real
 attached browser, and what ships now proves the refusals, the call logs, handle identity and
-ownership. The conformance subject for this kind therefore skips exactly four properties by stated
-reason — the three keeper properties, which could only come out green by the session inventing a
+ownership. The conformance subject for this kind therefore skips exactly five properties by stated
+reason — the four keeper properties, which could only come out green by the session inventing a
 keeper the kind refuses, and the cookie property the fake cannot answer — and a subject that skipped
 *everything* is reported as a finding, so a skip list can never become a quiet pass. Two guards,
 `attached.no_context` (a page the bridge cannot command) and `attached.tab_untracked` (a
