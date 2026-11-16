@@ -324,6 +324,46 @@ test('listTabs reports exactly the ownership mirror: a tab the extension did not
   }
 });
 
+test('two opens racing through one session bind two handles, not one handle twice', async () => {
+  // The mirror is the address book here, so "which fresh entry is mine"
+  // is decided by a snapshot diff — and an unserialised pair of opens
+  // takes the same snapshot, creates two pages, and both claim the same
+  // first fresh id: identical handles, one page bound over the other,
+  // and a tab in the person's own window nothing can address or close.
+  // Two leases' first-touch verbs through one memoised provider is a
+  // production shape (parallel tool calls), not a hypothetical.
+  const { bridge, ext, session } = await live();
+  try {
+    const [first, second] = await Promise.all([session.openTab(), session.openTab()]);
+    assert.notEqual(
+      first.driverTabId,
+      second.driverTabId,
+      'both opens bound the same physical tab',
+    );
+    assert.equal(
+      ext.calls.filter((call) => call.method === 'chrome.tabs.create').length,
+      2,
+      'both opens asked the extension for a tab',
+    );
+    assert.deepEqual(
+      (await session.listTabs()).map((tab) => tab.driverTabId).sort(),
+      [first.driverTabId, second.driverTabId].sort(),
+      'the mirror holds both and only both',
+    );
+    assert.equal(bridge.tabs().length, 2);
+    // The physical fact that "bound to different pages" buys: each
+    // handle closes **its own** tab, and the person's window ends with
+    // neither in it. A page overwritten by the second bind would be a
+    // tab nothing can address — it would still be sitting in the mirror
+    // after both closes.
+    assert.equal(await session.closeTab(first), 'closed');
+    assert.equal(await session.closeTab(second), 'closed');
+    await waitFor(() => bridge.tabs().length === 0, 'both tabs out of the mirror');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
 test('closeTab closes one of our tabs and ends it in the mirror', async () => {
   const { bridge, ext, session } = await live();
   try {

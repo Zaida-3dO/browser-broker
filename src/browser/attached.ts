@@ -386,6 +386,24 @@ export class AttachedBrowserSession implements BrowserSession {
    */
   readonly #seenTabs = new Set<number>();
 
+  /**
+   * The tail of the `openTab` queue, one open at a time per session.
+   *
+   * {@link AttachedBrowserSession.openTab} decides "which mirror entry is
+   * mine" by diffing against a snapshot taken **before** the page is
+   * created, and that diff is only sound while nothing else moves the
+   * mirror mid-flight. Two first-touch verbs on two leases — parallel
+   * tool calls through one memoised provider — would otherwise both
+   * snapshot the same mirror, both create a page, and both bind the
+   * first fresh id: the second `#bind` overwrites the first page's entry,
+   * the store's one-row-per-physical-tab index then refuses the second
+   * open, and a page is left in the person's own window that neither
+   * lease can address or close. The real browser driver sidesteps this
+   * by naming tabs through CDP target ids; at this seam the mirror is
+   * the address book, so the opens have to take turns.
+   */
+  #openTail: Promise<unknown> = Promise.resolve();
+
   readonly #outputDirectory: string;
   #artifactsWritten = 0;
 
@@ -436,7 +454,17 @@ export class AttachedBrowserSession implements BrowserSession {
     };
   }
 
-  async openTab(): Promise<TabHandle> {
+  openTab(): Promise<TabHandle> {
+    // One open at a time per session — see {@link #openTail} for why the
+    // snapshot-diff below cannot be run twice at once. The tail swallows
+    // failures on purpose: a refused open must not poison the queue for
+    // every later one.
+    const turn = this.#openTail.then(() => this.#openTabNow());
+    this.#openTail = turn.catch(() => undefined);
+    return turn;
+  }
+
+  async #openTabNow(): Promise<TabHandle> {
     // No keeper tab here, and none is owed: the keeper exists so a headed
     // browser this service started survives its last tab closing. His browser
     // is alive because he is using it, and a blank tab added to his window is
