@@ -154,6 +154,29 @@ const ALLOWED_PRESS_KEYS = new Set([
 ]);
 
 /**
+ * Whether an `act` request stays inside the view-moving allow-list (§7.1
+ * `attached.read_only`): scroll, hover, and a press of an allowed key.
+ *
+ * **Exported because the rule now has two doors and one set.** The service's
+ * decide step refuses an attached breach before anything is written (so the
+ * caller gets a refusal and the ledger a `deny`, not `accepted` with
+ * `pageDriven: false`), and this session keeps its own door as the second —
+ * but both doors ask the same question, and two spellings of an allow-list
+ * are two lists that eventually disagree.
+ */
+export function isViewMovingAction(request: ActionRequest): boolean {
+  switch (request.action) {
+    case 'scroll':
+    case 'hover':
+      return true;
+    case 'press':
+      return ALLOWED_PRESS_KEYS.has(request.value);
+    default:
+      return false;
+  }
+}
+
+/**
  * One page's accumulated console and network history. The entry shape is
  * `render.ts`'s, shared with `real.ts` — the two drivers render one log
  * format, and this is what they accumulate to render it from.
@@ -833,22 +856,17 @@ export class AttachedBrowserSession implements BrowserSession {
   }
 
   #refuseOutsideAllowList(request: ActionRequest): void {
-    switch (request.action) {
-      case 'scroll':
-      case 'hover':
-        return;
-      case 'press':
-        if (ALLOWED_PRESS_KEYS.has(request.value)) return;
-        throw new AttachedError(
-          'attached.read_only',
-          `press of "${request.value}" is not available on an attached browser. Only view-moving and overlay-dismissing keys are: ${[...ALLOWED_PRESS_KEYS].join(', ')}. A key that could reach a focused field is typing, and typing writes to his page.`,
-        );
-      default:
-        throw new AttachedError(
-          'attached.read_only',
-          `The ${request.action} action is not available on an attached browser. An attached browser belongs to a person and this service only reads it: scroll, hover and press (${[...ALLOWED_PRESS_KEYS].join(', ')}) are the whole allow-list, and nothing that clicks, types, selects, resizes, emulates, answers dialogs, fills, drags or uploads ever runs.`,
-        );
+    if (isViewMovingAction(request)) return;
+    if (request.action === 'press') {
+      throw new AttachedError(
+        'attached.read_only',
+        `press of "${request.value}" is not available on an attached browser. Only view-moving and overlay-dismissing keys are: ${[...ALLOWED_PRESS_KEYS].join(', ')}. A key that could reach a focused field is typing, and typing writes to his page.`,
+      );
     }
+    throw new AttachedError(
+      'attached.read_only',
+      `The ${request.action} action is not available on an attached browser. An attached browser belongs to a person and this service only reads it: scroll, hover and press (${[...ALLOWED_PRESS_KEYS].join(', ')}) are the whole allow-list, and nothing that clicks, types, selects, resizes, emulates, answers dialogs, fills, drags or uploads ever runs.`,
+    );
   }
 
   // ── Resolution ──────────────────────────────────────────────────────────

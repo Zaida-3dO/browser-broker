@@ -8,6 +8,11 @@ import type {
   TabHandle,
   ValidatedAction,
 } from '../../browser/driver.ts';
+// The attached kind's allow-list, asked here as well as at the session —
+// a pure predicate on the request, with no browser anything, imported so
+// the service door and the seam door consult **one** list rather than two
+// that can drift.
+import { isViewMovingAction } from '../../browser/attached.ts';
 import { append, type EventKind } from '../events.ts';
 import { claimIdForKey, extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
 import { resolveOwnedTabOrRefuse } from '../ownership.ts';
@@ -315,6 +320,64 @@ interface ResolvedTab {
   readonly tabId: string;
   readonly browserId: string;
   readonly driverTabId: string | null;
+}
+
+/**
+ * The attached kind's service-layer door (§13n, §7.1).
+ *
+ * Every attached rule except the claim's seed used to live only in the
+ * session, which fires **inside the after-commit closure**. By then the
+ * operation has been decided and appended to the ledger as `allow`, and
+ * `pageFor` may already have opened a tab in a person's window before the
+ * session refuses — so `browser_act click` on an attached lease came back
+ * `accepted` with `pageDriven: false`, `broker events` showed the click as
+ * allowed, and the refusal itself survived only as text in
+ * `notDrivenReason`. A rule that decides an operation lives in the service
+ * layer (CLAUDE.md; and §3.4/S1 mean a refusal **on the wire**), so the
+ * breach is refused here: ledger `deny`, no `allow` row, no work scheduled,
+ * no tab opened. The session keeps its own door — the seam's rule is that
+ * the refusal and the absence of the side effect are one fact, and with a
+ * second door the rule can only be moved by editing both files.
+ *
+ * **The mask half stays behind the second door, and it can**: a capture
+ * mask is derived from secret values a call against an attached lease can
+ * never have produced — the first door refuses the secret before any value
+ * resolves, so there is nothing left for a mask to hide.
+ */
+function browserKind(scope: ArbitrationScope, browserId: string): string | undefined {
+  return scope.db
+    .prepare<{ id: string }, { kind: string }>('SELECT kind FROM browsers WHERE id = @id')
+    .get({ id: browserId })?.kind;
+}
+
+/**
+ * Refuse an attached breach **as the calling operation's own denial**: one
+ * `deny` row through `recordRefusal` — which survives the rollback the
+ * throw causes, and is the only row the call writes — then throw, before
+ * any `allow` row is appended and before any after-commit work exists. The
+ * same shape `decideEvaluate` uses for `evaluate.secret_tab`.
+ */
+function refuseAttachedOperation(
+  scope: ArbitrationScope,
+  lease: ResolvedLease,
+  tab: ResolvedTab,
+  kind: EventKind,
+  guard: string,
+  message: string,
+  detail: Readonly<Record<string, unknown>>,
+): never {
+  scope.recordRefusal({
+    kind,
+    outcome: 'deny',
+    guard,
+    adapter: scope.adapter,
+    claimId: lease.claimId,
+    tabId: tab.tabId,
+    sessionId: lease.sessionId,
+    browserId: tab.browserId,
+    detail,
+  });
+  throw new PageRefusal(guard, message, detail);
 }
 
 /**
@@ -959,6 +1022,29 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
   const request = resolveActionFiles(validated, input.uploadRoot);
   const { lease, tab, expiresAt } = admit(scope, input, 'act');
 
+  // **The attached door, before any row and before any work** (§13n): a
+  // verb that would write to a person's page is refused as `act`'s own
+  // denial — no `allow` row, no secret bookkeeping, no after-commit closure
+  // — and so no `pageFor` opening a tab on the way to a refusal. The
+  // allow-list asked here is the session's own `isViewMovingAction`: two
+  // doors, one set, so they cannot drift. Secret placeholders need no
+  // attached branch here: `act.secret_placement` and the unresolvable-
+  // sentinel rule already refuse them in this handler **before admission**
+  // for every browser (§3.8a), so a secret never reaches a decision about
+  // this kind at all — and every action that *could* carry a resolved
+  // secret is on the wrong side of this allow-list anyway.
+  if (browserKind(scope, tab.browserId) === 'attached' && !isViewMovingAction(request)) {
+    refuseAttachedOperation(
+      scope,
+      lease,
+      tab,
+      'act',
+      'attached.read_only',
+      `The ${request.action} action is not available on an attached browser: the browser belongs to a person, and scroll, hover and view-moving key presses are the whole allow-list. Nothing was asked of the browser, and no tab was opened.`,
+      { action: request.action },
+    );
+  }
+
   // Read before this call's own names are recorded, so `received` means
   // "before this call" — the driver resolves those for scrubbing and this
   // call's own as it types them.
@@ -1373,6 +1459,24 @@ export function decideEvaluate(
   refuseSentinelIn(expression, 'evaluate.secret_placement', 'an expression');
   const { lease, tab, expiresAt } = admit(scope, input, 'evaluate');
 
+  // **No expression ever runs in an attached browser** (§13n,
+  // `attached.no_evaluate`): refused as `evaluate`'s own denial before the
+  // secret-tab rule and before the `evaluate` row — the expression is
+  // reported by length and never sent, and no tab is opened on the way to
+  // the refusal. The session keeps the same refusal as the second door.
+  const expressionBytes = Buffer.byteLength(expression, 'utf8');
+  if (browserKind(scope, tab.browserId) === 'attached') {
+    refuseAttachedOperation(
+      scope,
+      lease,
+      tab,
+      'evaluate',
+      'attached.no_evaluate',
+      'No expression is ever evaluated in an attached browser: the session belongs to a person, not to this service. The expression is reported by length and never sent.',
+      { expressionBytes },
+    );
+  }
+
   // ── Refused outright on a tab that has received a secret (§3.8a) ──────
   //
   // An expression can read any field, and its result is the one output whose
@@ -1396,7 +1500,6 @@ export function decideEvaluate(
     throw refusal;
   }
 
-  const expressionBytes = Buffer.byteLength(expression, 'utf8');
   append(scope.db, {
     kind: 'evaluate',
     outcome: 'allow',
@@ -1817,6 +1920,25 @@ export function decideCapture(
     ...(typeof input.reason === 'string' ? { reason: input.reason } : {}),
   };
   const { lease, tab, expiresAt } = admit(scope, input, 'capture');
+
+  // **A full-page picture of an attached browser is refused as
+  // `capture`'s own denial** (§13n, `attached.no_full_page`): it would
+  // report regions neither the caller nor the owner pointed at. The
+  // session keeps the same refusal as the second door, and the mask half
+  // of §7.1's line lives there — it is derived from secret values that
+  // the first door has already refused upstream.
+  if (fullPage && browserKind(scope, tab.browserId) === 'attached') {
+    refuseAttachedOperation(
+      scope,
+      lease,
+      tab,
+      'capture',
+      'attached.no_full_page',
+      'A full-page picture of an attached browser reports regions neither the caller nor the owner pointed at. The lease is pointed at one viewport — capture that, without fullPage.',
+      { fullPage: true },
+    );
+  }
+
   const secrets = secretScopeFor(
     input.secretResolver,
     receivedSecretNames(scope.db, tab.tabId),
