@@ -1133,7 +1133,7 @@ export function checkAttachedToken(
       title,
       status: 'ok',
       detail:
-        'No connect token is set. That is a configuration choice, and it changes one thing: the extension\'s approval page stays in the first connect, for a person to press. Relay admission is the loopback Host, the per-lease path and the extension Origin, with or without a token — the token is never checked at that door.',
+        "No connect token is set. That is a configuration choice, and it changes one thing: the extension's approval page stays in the first connect, for a person to press. Relay admission is the loopback Host, the per-lease path and the extension Origin, with or without a token — the token is never checked at that door.",
     };
   }
   return {
