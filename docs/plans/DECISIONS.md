@@ -2561,7 +2561,11 @@ go out is the page's fact, not the key name's: over a focused select, radio grou
 same arrows move a value and fire its change — so before every movement key the session asks the
 browser what holds focus, refuses while a form control holds it, and refuses just as hard when the
 answer does not arrive: a key whose focus cannot be seen is a key that could reach his field, and
-this kind does not press on trust. `Escape` is exempt, because dismissing is not editing. Navigate is allowed but
+this kind does not press on trust. A frame or a shadow tree the read cannot see **through** counts
+as focused-control state rather than as a pass — the alternative is pressing a key blind — and a
+press refused on the page's answer writes its own `deny` row for the verb **after** its `allow`
+row: the decision was true and stays committed, but the ledger still shows that the page refused.
+`Escape` is exempt, because dismissing is not editing. Navigate is allowed but
 waits only for the commit — arrival-with-network-idle over a page this service does not own can never
 be guaranteed — and the snapshot render is bounded, because an unbounded wait over somebody else's
 page holds a lease on his browser indefinitely; the bound fails the read and leaves the browser

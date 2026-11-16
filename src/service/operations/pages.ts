@@ -568,6 +568,17 @@ function afterCommitWork(
   tab: ResolvedTab,
   work: (session: BrowserSession, page: TabHandle) => Promise<unknown>,
   claimId: string,
+  /**
+   * Set by the one verb whose session can refuse an *allowed* call on an
+   * attached browser at execution time — `act`'s press gate. See the
+   * comment in the `catch` for what this writes and why the `allow` row
+   * above it stays.
+   */
+  attachedDenial?: {
+    kind: EventKind;
+    sessionId: string;
+    detail: Readonly<Record<string, unknown>>;
+  },
 ): ScheduledWork {
   const source = input.session;
   if (source === undefined) {
@@ -621,6 +632,39 @@ function afterCommitWork(
               : error instanceof Error
                 ? error.message
                 : String(error);
+          // ── A session-layer refusal of an allowed call gets its own row ──
+          //
+          // The `allow` row this call committed is the **decision**, and it
+          // stays true: the lease is real, the verb was allowed, the caller
+          // keeps both. What refused is a fact only the page could know at
+          // execution time — §7.1 `attached.read_only`'s press gate asking
+          // what holds focus — and a decision cannot be retroactively
+          // un-made. But a ledger that shows the press as allowed and
+          // nothing else makes the refusal invisible to `broker events`,
+          // which is half the reason the door work exists. So the refusal
+          // writes its own `deny` row: `append` on the store's own
+          // connection, outside the (already committed) transaction, the
+          // way the claim gate appends its pre-transaction refusal and
+          // {@link applyPendingSeed} appends after its write. The wire
+          // keeps `pageDriven: false` with the reason in `notDrivenReason`
+          // — the split is stated in §7.1 beside the rows that show it.
+          if (
+            attachedDenial !== undefined &&
+            error instanceof BrokerError &&
+            error.rule === 'attached.read_only'
+          ) {
+            append(scope.db, {
+              kind: attachedDenial.kind,
+              outcome: 'deny',
+              guard: 'attached.read_only',
+              adapter: scope.adapter,
+              claimId,
+              tabId: tab.tabId,
+              sessionId: attachedDenial.sessionId,
+              browserId: tab.browserId,
+              detail: attachedDenial.detail,
+            });
+          }
           throw error;
         }
       },
@@ -1099,6 +1143,12 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
     tab,
     (session, page) => session.act(page, request, secrets),
     lease.claimId,
+    // The one session refusal this verb can still hit after admission.
+    // The decide door refused every off-list action by name before any row
+    // existed, so an `attached.read_only` coming back from the session is
+    // the page's own fact — a movement key refused by the focus gate — and
+    // this names the row it owes.
+    { kind: 'act', sessionId: lease.sessionId, detail: { action: request.action } },
   );
   return {
     value: withPageDriven(

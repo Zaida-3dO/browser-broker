@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { AttachedError } from '../../src/attach/errors.ts';
 import type {
+  ActionRequest,
   BrowserSession,
   CaptureRequest,
   ReadArtifact,
@@ -266,6 +268,67 @@ for (const row of REFUSALS) {
     }, ATTACHED_OPTIONS);
   });
 }
+
+test('a movement key the page refuses on focus keeps its decision row and writes its own denial', async () => {
+  // The split the door work cannot close: whether *this* press could reach
+  // a focused field is the page's fact, knowable only at execution, so the
+  // decide-time `allow` row was and stays true. What this pins is that the
+  // refusal then reaches the store too: one `allow` row (the decision, the
+  // lease, the renewal) **and** one `deny` row naming the guard, so
+  // `broker events` never reads the press as simply allowed. The wire
+  // answer stays `accepted` with `pageDriven: false` and the rule in
+  // `notDrivenReason` — the lease is real even though the key never moved,
+  // and the key-never-crossed half is the session test's call log.
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    // The gate branch: an on-list key that the session refuses with the
+    // focus rule — exactly what `attached.test.ts` proves the session does
+    // with an empty `Input.dispatchKeyEvent` log behind it.
+    const gate = {
+      ...driver.session,
+      act: (_tab: TabHandle, request: ActionRequest) => {
+        driver.calls.push(`act:${request.action}`);
+        return Promise.reject(
+          new AttachedError(
+            'attached.read_only',
+            "press of the key is refused while a form control holds the page's focus",
+          ),
+        );
+      },
+    } satisfies BrowserSession;
+
+    const result = await fixture.broker.act({
+      key: lease.key,
+      tabId: lease.tabId,
+      request: { action: 'press', value: 'ArrowDown' },
+      session: () => gate,
+    });
+    assert.equal(
+      result.pageDriven,
+      false,
+      'the press reported as driven although the session refused it',
+    );
+    assert.match(result.notDrivenReason ?? '', /attached\.read_only/);
+
+    // Both halves in the ledger: the decision stays, the refusal joins it.
+    assert.deepEqual(denyGuards(fixture, 'act'), ['attached.read_only']);
+    assert.equal(
+      allowCount(fixture, 'act'),
+      1,
+      'the split replaced the decision row instead of adding to it',
+    );
+    assert.deepEqual(
+      fixture
+        .readCommitted<{ detail: string }>(
+          "SELECT detail FROM events WHERE kind = 'act' AND outcome = 'deny' ORDER BY id",
+        )
+        .map((row) => JSON.parse(row.detail) as unknown),
+      [{ action: 'press' }],
+    );
+    assert.deepEqual(driver.calls, ['openTab', 'act:press']);
+  }, ATTACHED_OPTIONS);
+});
 
 test('a secret placeholder on an attached act is refused at the service before anything resolves, and the resolver never runs', async () => {
   // The secret half of the same promise. It is carried by the general
