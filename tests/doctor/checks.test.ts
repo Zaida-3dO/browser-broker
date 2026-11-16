@@ -805,10 +805,29 @@ describe('the attached browser’s configuration', () => {
     assert.equal(check.remedy, undefined, 'ok carries no remedy, and a token in use needs none');
   });
 
+  for (const state of [
+    { label: 'set', token: 'a-token-value' as string | undefined },
+    { label: 'unset', token: undefined },
+  ]) {
+    it(`says what the ${state.label} token does and does not guard, naming the door that actually decides`, () => {
+      // The report used to tell the operator the relay checks the token
+      // at the door. It does not — and a report that overstates a guard
+      // is worse than no report, because the operator stops checking the
+      // door that is real. Both states must name the real door and
+      // disclaim the token at it.
+      const check = checkAttachedToken(ON, state.token);
+      assert.match(check.detail, /Host/u, 'the row must name the admission that is real');
+      assert.match(check.detail, /Origin/u);
+      assert.match(check.detail, /never checks the token|token is never checked/u);
+      assert.doesNotMatch(check.detail, /relay checks it/u);
+    });
+  }
+
   it('reports an unset token as a choice, not a fault', () => {
     const check = checkAttachedToken(ON, undefined);
     assert.equal(check.status, 'ok');
     assert.match(check.detail, /configuration choice/u);
+    assert.match(check.detail, /approval page/u, 'what unset changes, in the row itself');
     assert.equal(exitCodeFor([check]), DOCTOR_EXIT.ok, 'no token is not a failure');
   });
 

@@ -1100,12 +1100,15 @@ export function checkAttachedExtensionId(
 /**
  * Whether a connect token is set — **reported, never judged**.
  *
- * A token is the operator's choice: with one, the relay turns away an
- * extension that cannot present it; without one, any extension presenting
- * the configured id on the loopback port is admitted. Neither state is a
- * fault this command can call one, so both report `ok` and say which was
- * found. The value itself is never echoed, and never named beyond that —
- * it is a credential the report has no business carrying.
+ * A token is the operator's choice, and it does exactly one thing: it
+ * rides the connect URL, and a copy of it lets the extension finish a
+ * reconnect without a person pressing *connect*. **It is not the relay's
+ * credential** — admission at the door is the loopback Host, the
+ * unguessable per-lease path and the exact extension Origin, checked
+ * whether or not a token is configured — so neither state changes who
+ * the relay admits. Neither state is a fault this command can call one,
+ * so both report `ok` and say which was found. The value itself is never
+ * echoed, and never named beyond that.
  */
 export function checkAttachedToken(
   attachedBrowsers: readonly string[],
@@ -1130,7 +1133,7 @@ export function checkAttachedToken(
       title,
       status: 'ok',
       detail:
-        'No connect token is set: the relay admits the extension by its id alone. That is a configuration choice — a token is what stops any other process on this machine that learns the port from completing the connect.',
+        'No connect token is set. That is a configuration choice, and it changes one thing: the extension\'s approval page stays in the first connect, for a person to press. Relay admission is the loopback Host, the per-lease path and the extension Origin, with or without a token — the token is never checked at that door.',
     };
   }
   return {
@@ -1139,7 +1142,7 @@ export function checkAttachedToken(
     title,
     status: 'ok',
     detail:
-      'A connect token is set and the relay checks it when the extension arrives. Its value is not reported here.',
+      'A connect token is set, so a reconnect can finish without a person: the token on the connect URL lets the extension skip its own approval page. The relay never checks the token at the door — Host, the per-lease path and the extension Origin decide admission there — and its value is not reported here.',
   };
 }
 

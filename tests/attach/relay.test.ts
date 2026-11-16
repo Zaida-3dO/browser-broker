@@ -125,6 +125,42 @@ test('a wrong door is refused, and nothing behind the door happens', async () =>
   }
 });
 
+test('a configured token rides the connect URL only — the door admits without it and refuses without it alike', async () => {
+  // The token's honest scope, pinned at the door it was once said to
+  // guard. Two halves:
+  //
+  // - **The door does not check it.** With a token configured, the
+  //   extension upgrades with no token anywhere in sight (there is no
+  //   place in the handshake to carry one) and is admitted; and the
+  //   impostors the table above turns away are turned away the same way
+  //   with the token set. The token changes nothing at admission.
+  // - **Where it does ride** is the connect URL — the one place the
+  //   extension reads it, to skip its own approval page.
+  const token = 'sekrit-token-value';
+  const bridge = await connect({ clientName: 'probe', extensionId: EXTENSION_ID, token });
+  try {
+    assert.match(bridge.connectUrl(), new RegExp(`token=${token}`));
+
+    const impostor = await statusCodeOf(bridge.extensionEndpoint, {
+      Origin: 'https://example.com',
+    });
+    assert.equal(impostor, 403, 'a set token did not make the Origin door more forgiving');
+    assert.equal(bridge.extensionConnected(), false);
+
+    const ext = await FakeExtension.connect(bridge.extensionEndpoint, {
+      origin: EXTENSION_ORIGIN,
+    });
+    assert.equal(
+      bridge.extensionConnected(),
+      true,
+      'the token was never presented, and was not asked for',
+    );
+    ext.close();
+  } finally {
+    bridge.close('test over');
+  }
+});
+
 test('the bridge refuses a shape it cannot mean: bad ids, empty names', async () => {
   for (const extensionId of [
     '',

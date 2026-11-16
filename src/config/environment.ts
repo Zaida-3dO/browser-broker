@@ -452,17 +452,20 @@ const DECLARATIONS = [
   },
   {
     /**
-     * The shared secret the attach extension presents to the relay (§13n).
+     * The token the connect URL carries to the attach extension (§13n).
      *
-     * **Carried, never echoed and never written**: it is handed to the relay
-     * at connect and kept out of the store, the ledger and every log line —
-     * the rule {@link OptionalTokenDeclaration} states and everything that
-     * reads this field inherits.
+     * **Carried, never echoed and never written**: it is handed to the
+     * connect page and kept out of the store, the ledger and every log
+     * line — the rule {@link OptionalTokenDeclaration} states and
+     * everything that reads this field inherits.
      *
-     * Unset is legal: the relay's own contract takes the token as optional,
-     * and whether an attach is authenticated is that relay's deployment's
-     * choice, not this service's. The doctor reports the token as unset so
-     * the exposure stays visible even when it is deliberate (§13n).
+     * What it changes is one thing: with it, the extension can finish a
+     * reconnect without a person pressing *connect*; without it, a person
+     * approves. It is **not presented to the relay and not checked by
+     * it** — admission there is the loopback Host, the unguessable
+     * per-lease path and the exact extension Origin — so unset is simply
+     * the configuration where a person approves, not an open door. The
+     * doctor reports the state so the choice stays visible (§13n).
      */
     key: 'BROKER_ATTACHED_TOKEN',
     kind: 'token',
