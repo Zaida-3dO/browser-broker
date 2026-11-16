@@ -346,14 +346,11 @@ test(
     store.db
       .prepare("INSERT INTO browsers (id, kind, state) VALUES ('desktop', 'attached', 'stopped')")
       .run();
-    assert.throws(
-      () => {
-        store.db
-          .prepare("INSERT INTO browsers (id, kind, state) VALUES ('odd', 'ephemeral', 'stopped')")
-          .run();
-      },
-      /CHECK constraint failed/,
-    );
+    assert.throws(() => {
+      store.db
+        .prepare("INSERT INTO browsers (id, kind, state) VALUES ('odd', 'ephemeral', 'stopped')")
+        .run();
+    }, /CHECK constraint failed/);
   }),
 );
 
