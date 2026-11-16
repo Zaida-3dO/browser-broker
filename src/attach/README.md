@@ -69,16 +69,20 @@ Refusals from this directory are `AttachedError extends BrokerError` with rules:
 `attached.bad_extension_id` (config), `attached.not_connected` (timeout or socket
 drop during a wait), `attached.no_binary` (connect page without a configured
 binary). Everything else this layer enforces is a **dropped upgrade**, not a
-thrown error: a wrong `Host`, a wrong `Origin` on the extension path, an unknown
-path or a requested subprotocol is answered at the HTTP layer (403/404/400) and
-the WebSocket never opens — so nothing downstream can observe a half-connection.
+thrown error: a wrong `Host`, a wrong `Origin` on the extension path, an
+**any-Origin** on the CDP path, an unknown path or a requested subprotocol is
+answered at the HTTP layer (403/404/400) and the WebSocket never opens — so
+nothing downstream can observe a half-connection.
 
 ## What the relay will and will not do
 
 - Listens on `127.0.0.1` only, on a random port, for the life of the bridge.
 - Accepts the extension only from its `chrome-extension://<id>` Origin, and CDP
-  clients only on the per-launch uuid path. A second CDP client is refused while
-  one is connected. A CDP client is refused while no extension is connected.
+  clients only on their own per-lease uuid path **and only from a client that
+  carries no Origin header** — the extension path demands one exact Origin, the
+  CDP path demands none, because its only client is a local automation process
+  and a browser always reports one. A second CDP client is refused while one is
+  connected. A CDP client is refused while no extension is connected.
 - Answers `Browser.getVersion` and `Browser.setDownloadBehavior` itself; every
   other command goes to the extension. The extension refuses a handful of
   handshake commands ("Not allowed", `Browser.grantPermissions`); those come back

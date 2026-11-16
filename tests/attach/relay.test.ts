@@ -98,6 +98,35 @@ test('a wrong door is refused, and nothing behind the door happens', async () =>
         headers: { Origin: EXTENSION_ORIGIN, 'Sec-WebSocket-Protocol': 'chat' },
         status: 400,
       },
+      {
+        // The CDP door has its own Origin rule, the mirror of the
+        // extension's: that door admits exactly one Origin, this one
+        // admits none. A browser tags every upgrade with its page's
+        // Origin, and a browser is never this door's client — the page
+        // that learned the port is exactly the impostor the rule answers.
+        name: 'the CDP path from a web page origin',
+        url: bridge.cdpEndpoint,
+        headers: { Origin: 'https://example.com' },
+        status: 403,
+      },
+      {
+        name: 'the CDP path from the extension origin',
+        url: bridge.cdpEndpoint,
+        headers: { Origin: EXTENSION_ORIGIN },
+        status: 403,
+      },
+      {
+        // Two doors, two paths: the extension path's uuid rides the
+        // connect URL (argv, browser history), and it is **not** the key
+        // of the CDP door.
+        name: 'the CDP path with the extension path’s uuid',
+        url: bridge.cdpEndpoint.replace(
+          /\/cdp\/[^/]+$/u,
+          `/cdp/${bridge.extensionEndpoint.replace(/^.*\/extension\//u, '')}`,
+        ),
+        headers: {},
+        status: 404,
+      },
     ];
     for (const row of rows) {
       const status = await statusCodeOf(row.url, row.headers);

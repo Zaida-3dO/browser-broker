@@ -26,8 +26,9 @@
 //     because this package keeps `ws` out of its dependency set;
 //   - Host is checked against the loopback address the relay bound, the
 //     extension's upgrade is accepted only from its own chrome-extension
-//     Origin, and a requested subprotocol is refused — checks the source
-//     leaves to its delegate;
+//     Origin, an upgrade on the CDP path is accepted only from a client
+//     that carries no Origin at all, and a requested subprotocol is
+//     refused — checks the source leaves to its delegate;
 //   - the browser binary is always configuration (`openConnectPage`'s
 //     parameter), never a registry lookup;
 //   - the token is an option, not an environment variable the source reads,
@@ -104,7 +105,9 @@ const STATE_WRITING_METHODS: ReadonlySet<string> = new Set([
 /**
  * One live attached session's listener: a loopback port that exists only for
  * the life of the bridge, speaking CDP on one uuid path and the extension's
- * protocol on another.
+ * protocol on another — **different uuids**, because only the extension's
+ * path travels in the connect URL and nothing that travels should be a key
+ * to both doors.
  */
 export class AttachedRelay {
   readonly cdpPath: string;
@@ -148,9 +151,13 @@ export class AttachedRelay {
       this._emit('debuggerDetached', { tabId, reason } satisfies DebuggerDetachedDetail);
     };
 
-    const uuid = crypto.randomUUID();
-    this.cdpPath = `/cdp/${uuid}`;
-    this.extensionPath = `/extension/${uuid}`;
+    // Two doors, two paths. The extension path's uuid travels — it rides
+    // the connect URL, into the launcher's argv and, once a person opens
+    // the page, the browser's history — and one uuid shared between the
+    // doors would make that travelling value the key of the CDP door too.
+    // Each door is reachable only through its own unguessable path.
+    this.cdpPath = `/cdp/${crypto.randomUUID()}`;
+    this.extensionPath = `/extension/${crypto.randomUUID()}`;
     // The rejection this carries may land with nobody waiting on it (the
     // extension never arrives, and nobody called waitForExtension).
     void this._extensionConnectionPromise.promise.catch(() => {
@@ -354,6 +361,20 @@ export class AttachedRelay {
       // — a web page, another extension, a local process guessing the uuid —
       // never gets a socket.
       this._log('upgrade refused: Origin');
+      rejectUpgrade(socket, 403);
+      return;
+    }
+    if (isCdp && request.headers.origin !== undefined) {
+      // The mirror of that rule, and the same door asked from the other
+      // side: the extension door admits exactly one Origin, this one admits
+      // **none**. A browser tags every WebSocket upgrade with its page's
+      // Origin, and a browser is never the client this path serves — its
+      // only client is a local automation process, which sends no Origin
+      // header. So an upgrade for this path that reports an Origin is a
+      // page that somehow holds this path's address, and answering it would
+      // hand that page the whole debugger surface. Refused unread: which
+      // Origin it claimed changes nothing.
+      this._log('upgrade refused: Origin on the CDP path');
       rejectUpgrade(socket, 403);
       return;
     }
