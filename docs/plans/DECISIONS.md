@@ -2579,6 +2579,15 @@ secret because the result's shape is the caller's choice; on attached the page i
 service's either, so a script injected into a page where a person is signed in has no defensible
 answer at all.
 
+**The relay door's own limit, owned beside the argv residual.** The service never sends an
+expression, but the relay still forwards `Runtime.evaluate` and `Runtime.callFunctionOn`, because
+the session's fixed reads — the scroll instruction, the focus question — cross it. A raw client
+holding the CDP path could therefore write cookies, storage or a form submission by script; what
+§7.1's `attached.no_cookie_write` closes is the named cookie and storage methods, and the row says
+exactly that rather than promising that nothing writable crosses the port. The doors are about the
+commands the service speaks and the methods named at the relay; the evaluate residual is the
+protocol's, and it is stated here rather than left for someone to discover.
+
 ### Why the handle names the browser's own tab id
 
 The launched session mints handles from the debugging protocol's target id because that id is
