@@ -506,39 +506,87 @@ test('hover passes the read-only gate, and a non-movement press does not', async
   }
 });
 
-test('scroll and a view-moving press pass the gate and reach the extension', async () => {
+test('scroll reaches the bridge; a movement key refuses when the focus read cannot answer, and the key never crosses', async () => {
+  // Whether a movement key moves the view or moves a value is the page's
+  // fact — a focused select, radio group or range input moves under the
+  // arrows — so the session asks the page what holds focus before it presses.
+  // This fixture cannot complete that read (the same fake-side limit as the
+  // accessibility render: the evaluate machinery starts and the expression
+  // never finishes), and the bounded wait turns "cannot ask" into what a
+  // wedged page gets: **a refusal** — not a hang, and not a pressed key.
   const { bridge, ext, session } = await live();
   try {
     const tab = await openedTab({ bridge, ext, session });
-    // Both verbs end in the session's bounded snapshot render, which the fake
-    // cannot answer — so each act eventually settles on that later refusal.
-    // What they must never produce is `attached.read_only`, and what proves
-    // they ran is the command log.
     const failures: unknown[] = [];
     // The scroll's fixed expression runs through Playwright's isolated-world
     // machinery, and the fake answers `Page.createIsolatedWorld` without an
-    // execution context — so the expression itself never completes on it (same
-    // fake-side limit as the accessibility render). What is provable is the
-    // gate: the evaluate machinery was engaged, i.e. the world creation crossed
-    // the bridge. The scroll fires alone so its crossing is unambiguous.
+    // execution context — so the expression itself never completes on it.
+    // What is provable is the gate: the evaluate machinery was engaged, i.e.
+    // the world creation crossed the bridge. The scroll fires alone so its
+    // crossing is unambiguous.
     const worldsBeforeScroll = cdpCalls(ext, 'Page.createIsolatedWorld').length;
     void session.act(tab, { action: 'scroll' }).catch((error: unknown) => failures.push(error));
     await waitFor(
       () => cdpCalls(ext, 'Page.createIsolatedWorld').length > worldsBeforeScroll,
       'the scroll evaluate machinery crossing',
     );
+    // The press: the gate let the key through (§7.1's own row calls it a
+    // movement key), the read could not answer, and the refusal says **so** —
+    // not "not available", which is the allow-list's words. The call-log half
+    // is the one the rejection rule demands: the value never moved because no
+    // key event ever crossed.
     const keysBeforePress = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
-    void session
-      .act(tab, { action: 'press', value: 'PageDown' })
-      .catch((error: unknown) => failures.push(error));
-    await waitFor(
-      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBeforePress,
-      'the key press crossing',
+    for (const key of ['ArrowDown', 'PageDown']) {
+      await assert.rejects(
+        session.act(tab, { action: 'press', value: key }),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.read_only' &&
+          error.message.includes('could not be asked') &&
+          !error.message.includes('not available'),
+        `press of ${key} must refuse on the unread focus, not on the allow-list`,
+      );
+    }
+    assert.equal(
+      cdpCalls(ext, 'Input.dispatchKeyEvent').length,
+      keysBeforePress,
+      'no key event crossed: the refusal is a physical fact, not just a sentence',
     );
     for (const failure of failures) {
       assert.ok(
-        !(failure instanceof AttachedError && failure.rule === 'attached.read_only'),
-        'neither allowed verb was refused as a write',
+        !(failure instanceof AttachedError && failure.message.includes('not available')),
+        'the scroll was never refused as a write',
+      );
+    }
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('Escape never waits for the focus read: dismissing is not editing', async () => {
+  // Escape is on the allow-list precisely because it cannot edit a value, so
+  // it is exempt from the focus read — and the crossing proves the exemption:
+  // had the read run first, the fixture could not complete it and no key
+  // would ever have gone out. The act then settles on the fake's inability to
+  // render the follow-on snapshot, exactly as the other allowed verbs do.
+  const { bridge, ext, session } = await live();
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    const failures: unknown[] = [];
+    void session
+      .act(tab, { action: 'press', value: 'Escape' })
+      .catch((error: unknown) => failures.push(error));
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+      'the Escape key events crossing',
+    );
+    // The crossing itself is the proof the read was skipped: had the read run,
+    // this fixture could not complete it and no key would have been dispatched.
+    for (const failure of failures) {
+      assert.ok(
+        !(failure instanceof AttachedError && failure.message.includes('could not be asked')),
+        'Escape was never refused for an unread focus',
       );
     }
   } finally {

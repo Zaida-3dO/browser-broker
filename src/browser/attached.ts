@@ -132,13 +132,31 @@ const MIRROR_SETTLE_MS = 5_000;
 const SNAPSHOT_RENDER_MS = 15_000;
 
 /**
+ * How long a press may wait for the focus read before it refuses.
+ *
+ * The read is one small command over the bridge and answers in milliseconds
+ * where a real browser is on the other end. But **every wait over this
+ * bridge is bounded** — an unbounded one holds a lease on his browser
+ * indefinitely — and its failure mode must be a refusal rather than a hang:
+ * a page that will not answer the focus question gets the same answer a
+ * fixture that cannot complete the read gets, and in both cases the key
+ * never goes out.
+ */
+const FOCUS_PROBE_MS = 5_000;
+
+/**
  * The keys `press` may send.
  *
- * Scrolling and dismissing are the only things a key can do to a page this
- * kind is allowed to do: they change which part of the page is visible and
- * what is drawn over it, never what the page holds. A key that could reach a
- * focused field is a typing verb wearing a key's name, and typing is what the
- * read-only rule exists to forbid.
+ * Scrolling and dismissing are the only things a key may do to a page this
+ * kind reads: they change which part of the page is visible and what is drawn
+ * over it, never what the page holds. A key that could reach a focused field
+ * is a typing verb wearing a key's name, and typing is what the read-only
+ * rule exists to forbid — so the movement keys here are gated on the press
+ * path's focus read (the session's `focusedFormControl`): the same ArrowDown
+ * that scrolls an unfocused page moves the value of a focused select. The
+ * names are allow-listed because a person watching a
+ * page presses them (§13n); whether *this* press may go out is the page's
+ * fact, not the name's.
  */
 const ALLOWED_PRESS_KEYS = new Set([
   // The automation library's own key names — what a caller's `value` is
@@ -640,11 +658,89 @@ export class AttachedBrowserSession implements BrowserSession {
       case 'press': {
         // Allowed keys only reach the page, never a field's text: `#refuseOutsideAllowList`
         // already checked the key against the movement-and-dismiss set.
+        //
+        // **Whether a key could reach a focused field is a fact about the page,
+        // not about the key name** — §7.1's `attached.read_only` refuses "press
+        // of anything that could reach a focused field", and the same arrows
+        // that move the view over the page body move the value of a focused
+        // select, radio group or range input and fire its change. So the press
+        // is gated on one protocol command that asks Chrome itself what holds
+        // focus (see {@link #focusedFormControl} — no expression, not even a
+        // fixed one), and it refuses while a form control holds it. `Escape` is
+        // exempt: dismissing an overlay or blurring never edits a value, and
+        // that is the whole reason it is on the allow-list. And when the read
+        // cannot answer, the press does not happen either: a key whose focus
+        // cannot be seen is a key that could reach his field, and guessing is
+        // what the rule exists to stop.
+        if (request.value !== 'Escape') {
+          let formControlHoldsFocus: boolean;
+          try {
+            formControlHoldsFocus = await this.#focusedFormControl(page);
+          } catch {
+            throw new AttachedError(
+              'attached.read_only',
+              `press of "${request.value}" is refused because the page could not be asked what holds its focus, and a key that could reach a field is not pressed on trust.`,
+            );
+          }
+          if (formControlHoldsFocus) {
+            throw new AttachedError(
+              'attached.read_only',
+              `press of "${request.value}" is refused while a form control holds the page's focus: over a focused select, radio group, range input or field the movement keys change that control's value, not the view. What his page holds focused is not reported.`,
+            );
+          }
+        }
         await page.keyboard.press(request.value);
         break;
       }
     }
     return await this.#writeSnapshot(tab, page);
+  }
+
+  /**
+   * Whether the page currently holds a form control focused — one fixed
+   * read, written here, of the browser's own focus fact.
+   *
+   * This is a **fixed expression of this file**, in the same standing as the
+   * scroll instruction above: {@link evaluate} refuses the caller's program,
+   * and nothing the caller wrote is part of this one. (The alternative — one
+   * accessibility-tree command with no expression at all — was tried and
+   * dropped: the bridge has no browser-level CDP target, because
+   * `chrome.debugger` is per-tab, so a fresh protocol session cannot be
+   * opened over it. The expression route is the one that reaches focus.) A
+   * `SELECT`, a `TEXTAREA`, any `INPUT` (radio and range groups move under
+   * arrows; a text field takes carets, and a key next to his field is the
+   * thing the kind does not do), and a contenteditable region all answer
+   * true. Custom widgets built on other tags with `role` attributes are not
+   * caught — the honest limit of a tag-level read. If the read itself fails,
+   * this **throws**: an unread focus is refused upstream, never assumed safe.
+   */
+  async #focusedFormControl(page: Page): Promise<boolean> {
+    const read = page.evaluate(() => {
+      const scope = globalThis as unknown as {
+        document: { activeElement: { tagName: string; isContentEditable?: boolean } | null };
+      };
+      const el = scope.document.activeElement;
+      if (el === null) return false;
+      switch (el.tagName) {
+        case 'SELECT':
+        case 'TEXTAREA':
+        case 'INPUT':
+          return true;
+        default:
+          return el.isContentEditable === true;
+      }
+    });
+    void read.catch(() => undefined); // the race may win first; keep it handled
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unreadable = new Promise<'unreadable'>((resolve) => {
+      timer = setTimeout(() => resolve('unreadable'), FOCUS_PROBE_MS);
+    });
+    const answer = await Promise.race([read, unreadable]);
+    clearTimeout(timer);
+    if (answer === 'unreadable') {
+      throw new Error(`the focus read did not answer within ${String(FOCUS_PROBE_MS)}ms`);
+    }
+    return answer;
   }
 
   /**

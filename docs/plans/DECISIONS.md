@@ -2544,7 +2544,12 @@ Every verb that would write to the page — a seed, an expression, a click, a ty
 style, a secret — is refused **inside the session, before the bridge is asked**, so the refusal and
 the absence of the side effect are one fact rather than two promises that can drift. What remains is
 an allow-list, not a deny-list: scroll, hover, and key presses restricted to the keys a person
-watching a page would press (`PageUp`, `PageDown`, the arrows, `Escape`). Navigate is allowed but
+watching a page would press (`PageUp`, `PageDown`, the arrows, `Escape`). Whether *this* press may
+go out is the page's fact, not the key name's: over a focused select, radio group or range input the
+same arrows move a value and fire its change — so before every movement key the session asks the
+browser what holds focus, refuses while a form control holds it, and refuses just as hard when the
+answer does not arrive: a key whose focus cannot be seen is a key that could reach his field, and
+this kind does not press on trust. `Escape` is exempt, because dismissing is not editing. Navigate is allowed but
 waits only for the commit — arrival-with-network-idle over a page this service does not own can never
 be guaranteed — and the snapshot render is bounded, because an unbounded wait over somebody else's
 page holds a lease on his browser indefinitely; the bound fails the read and leaves the browser
