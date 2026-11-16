@@ -4,7 +4,12 @@ import test from 'node:test';
 import { connect } from '../../src/attach/session.ts';
 import type { AttachedBridge } from '../../src/attach/session.ts';
 import { AttachedError } from '../../src/attach/errors.ts';
-import { attachOverBridge, openAttachedSession } from '../../src/browser/attached.ts';
+import {
+  attachOverBridge,
+  focusChainHoldsFormControl,
+  openAttachedSession,
+  type FocusChainElement,
+} from '../../src/browser/attached.ts';
 import type { ActionRequest, SecretScope, TabHandle } from '../../src/browser/driver.ts';
 import { FakeExtension } from '../attach/fake-extension.ts';
 
@@ -38,7 +43,7 @@ interface Live {
   session: Awaited<ReturnType<typeof attachOverBridge>>;
 }
 
-async function live(): Promise<Live> {
+async function live(focusProbe?: () => Promise<readonly FocusChainElement[]>): Promise<Live> {
   const bridge = await connect({ clientName: 'attached test', extensionId: EXTENSION_ID });
   const ext = await FakeExtension.connect(bridge.extensionEndpoint, {
     origin: EXTENSION_ORIGIN,
@@ -48,6 +53,7 @@ async function live(): Promise<Live> {
     browser: BROWSER,
     clientName: 'attached test',
     extensionId: EXTENSION_ID,
+    ...(focusProbe === undefined ? {} : { focusProbe }),
   });
   return { bridge, ext, session };
 }
@@ -629,6 +635,119 @@ test('Escape never waits for the focus read: dismissing is not editing', async (
     }
   } finally {
     session.detach().catch(() => undefined);
+  }
+});
+
+test('the focus decision is table-driven: controls, editables, frames and shadow hosts hold focus; plain page focus does not', () => {
+  // The predicate half of the gate, with no page anywhere: what the read
+  // learns is data, and this is where the answer is decided. The two rows
+  // that are not controls are the fail-safe halves — focus the top-document
+  // read cannot see *through* (a frame's interior, a shadow tree's) counts
+  // as a focused control, because the alternative is pressing a key blind.
+  const element = (tagName: string, extra: Partial<FocusChainElement> = {}): FocusChainElement => ({
+    tagName,
+    isContentEditable: false,
+    hasShadowRoot: false,
+    ...extra,
+  });
+  const rows: [readonly FocusChainElement[], boolean][] = [
+    [[], false],
+    [[element('BODY')], false],
+    [[element('DIV')], false],
+    [[element('A')], false],
+    [[element('INPUT')], true],
+    [[element('SELECT')], true],
+    [[element('TEXTAREA')], true],
+    [[element('DIV', { isContentEditable: true })], true],
+    [[element('IFRAME')], true],
+    [[element('DIV', { hasShadowRoot: true })], true],
+    // A chain where any one element holds a control holds the answer.
+    [[element('BODY'), element('SELECT')], true],
+  ];
+  for (const [chain, expected] of rows) {
+    assert.equal(
+      focusChainHoldsFormControl(chain),
+      expected,
+      `chain ${JSON.stringify(chain)} must answer ${String(expected)}`,
+    );
+  }
+});
+
+test('the press gate, answered: a focused control refuses and the key never crosses; plain focus lets it through, and Escape never asks', async () => {
+  // The true branch the unread fixture can never show. The fake relay
+  // cannot complete the page's own evaluate — the same isolated-world
+  // limit the scroll row above pins — so the read is answered through the
+  // seam's own injection and both branches become provable: the refusal
+  // **and its call-log half**, the key crossing when there is nothing to
+  // reach, and Escape skipping the read outright. The real read's answer
+  // over the bridge stays what the bounded-wait row pins: unfinished, and
+  // unfinished is refused, not pressed.
+  {
+    // Plain promise returns, not async bodies: an `async` with no `await`
+    // is this repository's lint error, as in the service fixtures.
+    const probe = (): Promise<readonly FocusChainElement[]> =>
+      Promise.resolve([{ tagName: 'SELECT', isContentEditable: false, hasShadowRoot: false }]);
+    const { bridge, ext, session } = await live(probe);
+    try {
+      const tab = await openedTab({ bridge, ext, session });
+      const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+      await assert.rejects(
+        session.act(tab, { action: 'press', value: 'ArrowDown' }),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.read_only' &&
+          error.message.includes("a form control holds the page's focus") &&
+          !error.message.includes('could not be asked'),
+        'a focused select must refuse the movement key with the focused-control refusal',
+      );
+      assert.equal(
+        cdpCalls(ext, 'Input.dispatchKeyEvent').length,
+        keysBefore,
+        'the key crossed into the focused control: the refusal is a sentence, not a fact',
+      );
+    } finally {
+      session.detach().catch(() => undefined);
+    }
+  }
+  {
+    let probed = 0;
+    const probe = (): Promise<readonly FocusChainElement[]> => {
+      probed += 1;
+      return Promise.resolve([{ tagName: 'BODY', isContentEditable: false, hasShadowRoot: false }]);
+    };
+    const { bridge, ext, session } = await live(probe);
+    try {
+      const tab = await openedTab({ bridge, ext, session });
+      const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+      const failures: unknown[] = [];
+      void session
+        .act(tab, { action: 'press', value: 'PageDown' })
+        .catch((error: unknown) => failures.push(error));
+      await waitFor(
+        () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+        'the answered press crossing',
+      );
+      assert.equal(probed, 1, 'the gate did not ask the page before pressing');
+      // The other half of the Escape exemption, told directly: had the read
+      // run, the counter would have moved.
+      const escapeKeys = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+      void session
+        .act(tab, { action: 'press', value: 'Escape' })
+        .catch((error: unknown) => failures.push(error));
+      await waitFor(
+        () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > escapeKeys,
+        'the Escape key crossing',
+      );
+      assert.equal(probed, 1, 'Escape waited on the focus read');
+      for (const failure of failures) {
+        assert.ok(
+          !(failure instanceof AttachedError && failure.rule === 'attached.read_only'),
+          'a press with nothing focused was refused',
+        );
+      }
+    } finally {
+      session.detach().catch(() => undefined);
+    }
   }
 });
 

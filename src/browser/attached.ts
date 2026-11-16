@@ -195,6 +195,47 @@ export function isViewMovingAction(request: ActionRequest): boolean {
 }
 
 /**
+ * What the focus read learns about one element of the page's focus chain:
+ * the tag, whether it is editable, and whether it opens a shadow tree.
+ * JSON's shape on purpose — the read crosses the bridge as **data**, and
+ * the decision stays on this side of it, where a table of rows can test it
+ * without a browser.
+ */
+export interface FocusChainElement {
+  tagName: string;
+  isContentEditable: boolean;
+  hasShadowRoot: boolean;
+}
+
+/**
+ * The decision half of the press gate: does this focus chain hold anything
+ * a movement key could move a **value** on?
+ *
+ * The rows come in two families. The direct ones are the controls
+ * themselves — a `SELECT`, a `TEXTAREA`, any `INPUT` (radio and range
+ * groups move under arrows; a text field takes carets), and a
+ * contenteditable region. The fail-safe ones are the places a tag-level
+ * read **cannot see through**, and they refuse anyway rather than let a
+ * key press blind: a key event routes to the focused element of the
+ * focused frame, so focus reported as an `<IFRAME>` is focus inside a
+ * frame the top-document read cannot enter; and focus inside an open
+ * shadow tree reports at the **host** element, so a host is treated as
+ * holding whatever control hides beneath it. An empty chain — no element
+ * focused at all — answers false: there is nothing to reach.
+ */
+export function focusChainHoldsFormControl(chain: readonly FocusChainElement[]): boolean {
+  return chain.some(
+    (element) =>
+      element.isContentEditable ||
+      element.hasShadowRoot ||
+      element.tagName === 'SELECT' ||
+      element.tagName === 'TEXTAREA' ||
+      element.tagName === 'INPUT' ||
+      element.tagName === 'IFRAME',
+  );
+}
+
+/**
  * One page's accumulated console and network history. The entry shape is
  * `render.ts`'s, shared with `real.ts` — the two drivers render one log
  * format, and this is what they accumulate to render it from.
@@ -246,6 +287,16 @@ export interface AttachedSessionOptions {
    * person's browser. Defaults to `connect-launcher`'s `openConnectPage`.
    */
   readonly launchConnectPage?: (request: ConnectPageRequest) => void;
+  /**
+   * What the press gate learns about page focus, injected on the same seam
+   * convention as {@link launchConnectPage}. The default asks the page
+   * itself ({@link AttachedBrowserSession} reads the focus chain through the
+   * bridge); a test supplies the answer both ways, because the fake relay
+   * cannot complete a page evaluate — the same fixture limit the
+   * accessibility render runs into — and the gate's two branches must be
+   * provable anyway.
+   */
+  readonly focusProbe?: () => Promise<readonly FocusChainElement[]>;
 }
 
 /**
@@ -389,6 +440,7 @@ export async function attachOverBridge(
       ...(options.outputDirectory === undefined
         ? {}
         : { outputDirectory: options.outputDirectory }),
+      ...(options.focusProbe === undefined ? {} : { focusProbe: options.focusProbe }),
     });
   } catch (error) {
     // Whatever failed, the port must not outlive the refusal: the bridge is
@@ -410,6 +462,9 @@ export class AttachedBrowserSession implements BrowserSession {
   readonly #bridge: AttachedBridge;
   readonly #connection: Browser;
   readonly #context: BrowserContext;
+
+  /** The press gate's focus answer, when a test injected one — see {@link AttachedSessionOptions.focusProbe}. */
+  readonly #focusProbe: (() => Promise<readonly FocusChainElement[]>) | undefined;
 
   /**
    * The handle a page answers to, and the page it names.
@@ -475,11 +530,13 @@ export class AttachedBrowserSession implements BrowserSession {
     connection: Browser;
     context: BrowserContext;
     outputDirectory?: string;
+    focusProbe?: () => Promise<readonly FocusChainElement[]>;
   }) {
     this.#browser = options.browser;
     this.#bridge = options.bridge;
     this.#connection = options.connection;
     this.#context = options.context;
+    this.#focusProbe = options.focusProbe;
     // The same eager-name, lazy-create arrangement as `real.ts`, for the same
     // measured reason: an unwired session that never writes must not leave an
     // empty directory behind, and this module still does not know where the
@@ -708,9 +765,10 @@ export class AttachedBrowserSession implements BrowserSession {
         // of anything that could reach a focused field", and the same arrows
         // that move the view over the page body move the value of a focused
         // select, radio group or range input and fire its change. So the press
-        // is gated on one protocol command that asks Chrome itself what holds
-        // focus (see {@link #focusedFormControl} — no expression, not even a
-        // fixed one), and it refuses while a form control holds it. `Escape` is
+        // is gated on one fixed read this file owns, asking Chrome itself what
+        // holds focus (see {@link #focusedFormControl} — and its fail-safe
+        // halves: a frame or shadow tree the read cannot enter is refused, not
+        // guessed through), and it refuses while a form control holds it. `Escape` is
         // exempt: dismissing an overlay or blurring never edits a value, and
         // that is the whole reason it is on the allow-list. And when the read
         // cannot answer, the press does not happen either: a key whose focus
@@ -750,30 +808,27 @@ export class AttachedBrowserSession implements BrowserSession {
    * accessibility-tree command with no expression at all — was tried and
    * dropped: the bridge has no browser-level CDP target, because
    * `chrome.debugger` is per-tab, so a fresh protocol session cannot be
-   * opened over it. The expression route is the one that reaches focus.) A
-   * `SELECT`, a `TEXTAREA`, any `INPUT` (radio and range groups move under
-   * arrows; a text field takes carets, and a key next to his field is the
-   * thing the kind does not do), and a contenteditable region all answer
-   * true. Custom widgets built on other tags with `role` attributes are not
-   * caught — the honest limit of a tag-level read. If the read itself fails,
-   * this **throws**: an unread focus is refused upstream, never assumed safe.
+   * opened over it. The expression route is the one that reaches focus.)
+   * The read answers with the focused element's *facts* — tag, editability,
+   * shadow root — and {@link focusChainHoldsFormControl} makes the decision
+   * on this side of the bridge, where a table can prove it either way.
+   *
+   * **What the read cannot see, it refuses.** A key event routes to the
+   * focused element of the *focused frame*, and the top document's
+   * `activeElement` answers only for itself: focus inside a frame reports
+   * the `<IFRAME>` element, and focus inside an open shadow tree reports
+   * the **host**. Both are counted as focused-control state — the press
+   * refuses rather than dispatching into a frame or tree the read cannot
+   * enter. The honest limits of a tag-level read stay: custom widgets built
+   * on other tags with `role` attributes answer through their tag, and a
+   * **closed** shadow root reports nothing to anyone outside it — its host
+   * is indistinguishable from any other element. Those states are why this
+   * is a fail-safe gate, not a complete model of focus. If the read itself
+   * fails, this **throws**: an unread focus is refused upstream, never
+   * assumed safe.
    */
   async #focusedFormControl(page: Page): Promise<boolean> {
-    const read = page.evaluate(() => {
-      const scope = globalThis as unknown as {
-        document: { activeElement: { tagName: string; isContentEditable?: boolean } | null };
-      };
-      const el = scope.document.activeElement;
-      if (el === null) return false;
-      switch (el.tagName) {
-        case 'SELECT':
-        case 'TEXTAREA':
-        case 'INPUT':
-          return true;
-        default:
-          return el.isContentEditable === true;
-      }
-    });
+    const read = (this.#focusProbe ?? (() => this.#readFocusChain(page)))();
     void read.catch(() => undefined); // the race may win first; keep it handled
     let timer: ReturnType<typeof setTimeout> | undefined;
     const unreadable = new Promise<'unreadable'>((resolve) => {
@@ -784,7 +839,36 @@ export class AttachedBrowserSession implements BrowserSession {
     if (answer === 'unreadable') {
       throw new Error(`the focus read did not answer within ${String(FOCUS_PROBE_MS)}ms`);
     }
-    return answer;
+    return focusChainHoldsFormControl(answer);
+  }
+
+  /**
+   * The default focus answer: the top document's focused element, as data.
+   * The frame and shadow-tree cases are not looked *through* — they arrive
+   * here as an `<IFRAME>` tag and a shadow root on the host, and the
+   * predicate turns both into a refusal.
+   */
+  #readFocusChain(page: Page): Promise<readonly FocusChainElement[]> {
+    return page.evaluate(() => {
+      const scope = globalThis as unknown as {
+        document: {
+          activeElement: {
+            tagName: string;
+            isContentEditable?: boolean;
+            shadowRoot?: unknown;
+          } | null;
+        };
+      };
+      const element = scope.document.activeElement;
+      if (element === null) return [];
+      return [
+        {
+          tagName: element.tagName,
+          isContentEditable: element.isContentEditable === true,
+          hasShadowRoot: element.shadowRoot !== null && element.shadowRoot !== undefined,
+        },
+      ];
+    });
   }
 
   /**
