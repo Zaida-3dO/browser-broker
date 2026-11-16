@@ -161,6 +161,92 @@ test('a configured token rides the connect URL only — the door admits without 
   }
 });
 
+test('cookie- and storage-writing commands are refused by name at the door, and the extension never sees them', async () => {
+  // §7.1 `attached.no_cookie_write` (§13n). The relay forwards every CDP
+  // method it is not told otherwise about, so the read-only promise has to
+  // be kept here too — for **any** client that holds the port, not just
+  // the one the service framed. Each row asserts both halves of a
+  // rejection: the error frame the client got, **and** that the fake
+  // extension's call log never saw the method. A gate that answers an
+  // error after forwarding would pass the first half and protect nothing.
+  const logs: string[] = [];
+  const bridge = await connect({
+    clientName: 'probe',
+    extensionId: EXTENSION_ID,
+    log: (line) => logs.push(line),
+  });
+  const ext = await FakeExtension.connect(bridge.extensionEndpoint, {
+    origin: EXTENSION_ORIGIN,
+  });
+  await ext.initialize();
+
+  const ws = await connectWebSocket(bridge.cdpEndpoint, {});
+  try {
+    let nextId = 1;
+    const waiting = new Map<number, (message: Record<string, unknown>) => void>();
+    ws.onMessage = (text) => {
+      const message = JSON.parse(text) as Record<string, unknown>;
+      const at = waiting.get(message.id as number);
+      if (at !== undefined) {
+        waiting.delete(message.id as number);
+        at(message);
+      }
+    };
+    const ask = (
+      method: string,
+      params: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> =>
+      new Promise((resolve) => {
+        const id = nextId;
+        nextId += 1;
+        waiting.set(id, resolve);
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+
+    const refused: { method: string; params: Record<string, unknown> }[] = [
+      { method: 'Network.setCookie', params: { name: 'n', value: 'v' } },
+      { method: 'Network.setCookies', params: { cookies: [{ name: 'n', value: 'v' }] } },
+      { method: 'Network.deleteCookies', params: { name: 'n' } },
+      { method: 'Network.clearBrowserCookies', params: {} },
+      { method: 'Storage.setCookies', params: { cookies: [{ name: 'n', value: 'v' }] } },
+      { method: 'Storage.clearCookies', params: {} },
+      {
+        method: 'Storage.clearDataForOrigin',
+        params: { origin: 'https://example.com', storage_types: 'cookies' },
+      },
+    ];
+    for (const { method, params } of refused) {
+      const reply = await ask(method, params);
+      const error = reply.error as { message?: string } | undefined;
+      assert.ok(error?.message?.includes('attached.no_cookie_write'), `${method}: error frame`);
+      assert.ok(error?.message?.includes(method), `${method}: names the method`);
+      const crossed = ext.calls.filter(
+        (call) =>
+          call.method === 'chrome.debugger.sendCommand' && (call.params[1] as string) === method,
+      );
+      assert.equal(crossed.length, 0, `${method}: refused after it crossed — the guard is a lie`);
+      assert.ok(
+        logs.some((line) => line.includes(`refused by name: ${method}`)),
+        `${method}: the refusal is visible in the session log`,
+      );
+    }
+
+    // The control: reading cookies is the promise made, not broken. It is
+    // not refused by the deny list — the answer here is whatever the
+    // forwarding path says with no tab attached, and that answer is not
+    // this rule.
+    const read = await ask('Network.getCookies', { urls: ['https://example.com'] });
+    const readError = read.error as { message?: string } | undefined;
+    assert.ok(
+      !readError?.message?.includes('attached.no_cookie_write'),
+      'the deny list caught a read',
+    );
+  } finally {
+    ws.close();
+    bridge.close('test over');
+  }
+});
+
 test('the bridge refuses a shape it cannot mean: bad ids, empty names', async () => {
   for (const extensionId of [
     '',

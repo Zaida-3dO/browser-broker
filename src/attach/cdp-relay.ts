@@ -61,6 +61,31 @@ export interface DebuggerDetachedDetail {
 type RelayListener = (...args: unknown[]) => void;
 
 /**
+ * CDP methods that **change browsing state the person owns**, refused by name
+ * at the relay (§7.1 `attached.no_cookie_write`, §13n).
+ *
+ * The relay forwards every method it is not told otherwise about, and the
+ * session-layer read-only rule sits above it — so the one door closing these
+ * is this one, and it closes them for **every** client of the port, whatever
+ * it framed. A cookie jar is browsing state in the strongest sense: it is
+ * who he is signed in as, on pages this service was pointed at to *look* at.
+ * Reads — `Network.getCookies` and friends — are not on this list: the read
+ * promise was never a promise not to see.
+ *
+ * Matched as this fixed set, never as a denylist grown from anything real;
+ * the names are Chrome's own protocol, not anybody's site.
+ */
+const STATE_WRITING_METHODS: ReadonlySet<string> = new Set([
+  'Network.setCookie',
+  'Network.setCookies',
+  'Network.deleteCookies',
+  'Network.clearBrowserCookies',
+  'Storage.setCookies',
+  'Storage.clearCookies',
+  'Storage.clearDataForOrigin',
+]);
+
+/**
  * One live attached session's listener: a loopback port that exists only for
  * the life of the bridge, speaking CDP on one uuid path and the extension's
  * protocol on another.
@@ -372,6 +397,16 @@ export class AttachedRelay {
     params: Record<string, unknown> | undefined,
     sessionId: string | undefined,
   ): Promise<unknown> {
+    // Refused **before the switch and before any forwarding**: the answer is
+    // a CDP error to the client and nothing ever crosses to the extension,
+    // which is what the paired test asserts on — the fake's call log is the
+    // proof, not just the error the caller got.
+    if (STATE_WRITING_METHODS.has(method)) {
+      this._log(`refused by name: ${method}`);
+      throw new Error(
+        `attached.no_cookie_write: ${method} is not forwarded to an attached browser — his browsing state is read through this connection, never written.`,
+      );
+    }
     switch (method) {
       case 'Browser.getVersion': {
         return {
