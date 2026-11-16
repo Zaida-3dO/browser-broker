@@ -2528,10 +2528,15 @@ side effect — the tab count did not move — not just the answer.
 
 A queue's whole promise is that capacity frees up. An extension that is not connected has promised
 nothing of the kind — the person may never open that browser again this session — so a wait there is
-a queue against a slot that will not open. The open path gives the extension a short, bounded wait
-(a few seconds, deliberately far under the relay's own much longer default) and then refuses with
-`attached.not_connected`. A service spawned per command must not hold a process, a port and a queue
-position for half a minute before saying the browser is not there.
+a queue against a slot that will not open. So the open belongs at the **claim, ahead of every row**:
+connect page, bounded wait for the extension, and the bound is honest about **who answers it** — a
+few seconds when the connect URL carries the token, because that reconnect needs no person, and
+tens of seconds when it does not, because the one who presses *connect* on the approval page is a
+person. The bound protects the spawn, not the store: a service started by a command must not wait
+indefinitely on a browser that is not there, and because the attempt runs before arbitration, the
+wait holds no claim, no queue position and no cap slot — the refusal leaves every count where it was
+and writes only its ledger row. `attached.no_binary` refuses at the same place as its own rule rather
+than as a connect timeout, because its bound is the opposite kind: waiting changes nothing.
 
 ### Why read-only is enforced at the seam, with the call log as the proof
 

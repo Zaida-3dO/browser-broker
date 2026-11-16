@@ -267,6 +267,33 @@ export const REFUSALS = {
   },
 
   /**
+   * §7.1 `attached.not_connected` (§13n): an attached claim connects
+   * **before any row is written**, so this is the answer when the open —
+   * connect page, bounded wait — reaches its bound. Retryable: the call
+   * succeeds the next time the extension arrives. It is *not* the
+   * queue-or-grant answer, because an extension that has not connected
+   * has promised no capacity that will free.
+   */
+  attached_not_connected: {
+    rule: 'attached.not_connected',
+    summary: 'The attached browser is reachable: its extension reached the relay.',
+    retryable: true,
+  },
+
+  /**
+   * §7.1 `attached.no_binary` (§13n): an attached browser is configured,
+   * but nothing can show its extension the relay's per-lease address,
+   * because the binary that would open the connect page is not configured.
+   * Not retryable: the identical call fails identically until the operator
+   * sets the path or turns the capability off.
+   */
+  attached_no_binary: {
+    rule: 'attached.no_binary',
+    summary: 'The attached browser has a configured binary to open its connect page with.',
+    retryable: false,
+  },
+
+  /**
    * §7.1 `tab.owned` **and** `tab.open` produce this one code, and the
    * sharing is the point rather than an economy: §7.1 says outright that an
    * unowned tab gets "the same refusal as an unknown tab, so probing cannot

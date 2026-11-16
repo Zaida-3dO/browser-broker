@@ -46,7 +46,16 @@ export interface BrokerFixture {
 
 export async function withBroker(
   fn: (fixture: BrokerFixture) => Promise<void> | void,
-  options: TempStoreOptions & { readonly adapter?: BrokerOptions['adapter'] } = {},
+  options: TempStoreOptions & {
+    readonly adapter?: BrokerOptions['adapter'];
+    /**
+     * The broker-level session source (§6.4). Present, attached claims reach
+     * it **before arbitration opens** — the `attached.not_connected` gate —
+     * so a test can watch what the claim asked of the browser, and how many
+     * times, exactly as the per-call `session:` input does on a page verb.
+     */
+    readonly session?: BrokerOptions['session'];
+  } = {},
 ): Promise<void> {
   const temp = makeTempStore(options);
   try {
@@ -78,6 +87,7 @@ export async function withBroker(
           closeTab: (tab) => {
             closed.push(tab);
           },
+          ...(options.session === undefined ? {} : { session: options.session }),
         }),
         readCommitted: <T>(sql: string, parameters: Record<string, unknown> = {}): T[] =>
           reader.prepare(sql).all(parameters) as T[],

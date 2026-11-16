@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { AttachedError } from '../../src/attach/errors.ts';
+import type { BrowserSession } from '../../src/browser/driver.ts';
+import { CallRefusal } from '../../src/service/refusals.ts';
 import { withBroker } from '../helpers/broker.ts';
 
 /**
@@ -429,6 +432,186 @@ test('the cap does not touch a different browser sharing the store', async () =>
       attachedBrowsers: ['desktop'],
       attachedExtensionId: 'abcdefghijklmnopabcdefghijklmnop',
       attachedTabs: 1,
+    },
+  );
+});
+
+// ── Not connected: refused at the claim, before any row ──────────────────
+
+/**
+ * A session the **claim** must never drive. The gate asks whether the
+ * browser can be reached, not for its work; every verb throwing is the
+ * assertion itself, not a placeholder.
+ */
+function neverDriven(): BrowserSession {
+  const refusal = (): never => {
+    throw new Error('the claim gate drove the browser');
+  };
+  return {
+    describe: refusal,
+    openTab: refusal,
+    listTabs: refusal,
+    ensureKeeperTab: refusal,
+    isConnected: refusal,
+    detach: refusal,
+    closeTab: refusal,
+    navigate: refusal,
+    seedStorage: refusal,
+    act: refusal,
+    read: refusal,
+    cookies: refusal,
+    evaluate: refusal,
+    settlePage: refusal,
+    capture: refusal,
+  } satisfies BrowserSession;
+}
+
+const ATTACHED = {
+  attachedBrowsers: ['desktop'],
+  attachedExtensionId: 'abcdefghijklmnopabcdefghijklmnop',
+};
+
+function refusedAs(code: string, rule: string, retryable: boolean) {
+  return (error: unknown) =>
+    error instanceof CallRefusal &&
+    error.code === code &&
+    error.rule === rule &&
+    error.retryable === retryable;
+}
+
+/** Every `claim_requested` deny row, with the guard that wrote it. */
+function claimDenials(
+  readCommitted: <T>(sql: string, parameters?: Record<string, unknown>) => T[],
+): { guard: string; session_id: string | null; browser_id: string | null }[] {
+  return readCommitted(
+    'SELECT guard, session_id, browser_id FROM events WHERE kind = @kind AND outcome = @outcome ORDER BY id',
+    { kind: 'claim_requested', outcome: 'deny' },
+  );
+}
+
+test('an attached browser whose extension never connects is refused at the claim, and takes no budget, no cap slot, no row', async () => {
+  // §7.1 `attached.not_connected`, and MILESTONES row #74's promise in
+  // its physical form: the open runs **before** arbitration, so the
+  // refusal cannot have consumed what it refused for. Two claims, twice
+  // over: a first refusal that queued or wrote anything would make the
+  // second one `attached.tab_cap` rather than `attached.not_connected`,
+  // and the guard list pins the difference.
+  let asked = 0;
+  await withBroker(
+    async ({ broker, readCommitted }) => {
+      for (const sessionId of ['session-a', 'session-b']) {
+        await assert.rejects(
+          broker.claim({
+            sessionId,
+            browser: 'attached',
+            purpose: 'a lease on a browser that cannot be reached',
+          }),
+          refusedAs('attached_not_connected', 'attached.not_connected', true),
+        );
+      }
+      assert.equal(asked, 2, 'the claim did not reach the provider before deciding');
+
+      // The physical half: capacity is the claim row, and nothing grew.
+      assert.deepEqual(readCommitted<{ n: number }>('SELECT count(*) AS n FROM claims'), [
+        { n: 0 },
+      ]);
+      assert.deepEqual(readCommitted<{ n: number }>('SELECT count(*) AS n FROM tabs'), [{ n: 0 }]);
+
+      // The ledger agrees with the wire: both refusals are on the books,
+      // under the rule that refused, and `attached.tab_cap` never fired —
+      // the refusals did not queue themselves into the cap.
+      // `browser_id` is null on these rows by construction: the column's
+      // foreign key points at a `browsers` row that this gate deliberately
+      // refuses **before it exists** — the browser is in `detail`.
+      assert.deepEqual(claimDenials(readCommitted), [
+        { guard: 'attached.not_connected', session_id: 'session-a', browser_id: null },
+        { guard: 'attached.not_connected', session_id: 'session-b', browser_id: null },
+      ]);
+      assert.deepEqual(
+        readCommitted<{ detail: string }>(
+          "SELECT detail FROM events WHERE kind = 'claim_requested' AND outcome = 'deny' ORDER BY id",
+        ).map((row) => (JSON.parse(row.detail) as { browser: string }).browser),
+        ['desktop', 'desktop'],
+      );
+    },
+    {
+      ...ATTACHED,
+      attachedTabs: 1,
+      session: (browser) => {
+        asked += 1;
+        throw new AttachedError(
+          'attached.not_connected',
+          `the extension for "${browser}" never reached the relay`,
+        );
+      },
+    },
+  );
+});
+
+test('an attached browser with no configured binary is refused at the claim with its own rule, not the connect timeout', async () => {
+  // The two ways the open can fail are different refusals a caller acts
+  // on differently: one says "the extension has not arrived, try again",
+  // the other says "nothing can show it the address, fix the
+  // configuration". Collapsing them teaches retries that change nothing.
+  await withBroker(
+    async ({ broker, readCommitted }) => {
+      await assert.rejects(
+        broker.claim({
+          sessionId: 'session-a',
+          browser: 'desktop',
+          purpose: 'a browser with no binary to open its connect page',
+        }),
+        refusedAs('attached_no_binary', 'attached.no_binary', false),
+      );
+
+      assert.deepEqual(claimDenials(readCommitted), [
+        { guard: 'attached.no_binary', session_id: 'session-a', browser_id: null },
+      ]);
+      assert.deepEqual(readCommitted<{ n: number }>('SELECT count(*) AS n FROM claims'), [
+        { n: 0 },
+      ]);
+    },
+    {
+      ...ATTACHED,
+      session: (browser) => {
+        throw new AttachedError(
+          'attached.no_binary',
+          `no binary is configured for "${browser}" to open its connect page`,
+        );
+      },
+    },
+  );
+});
+
+test('a reachable attached browser is asked exactly once by the claim, and grants normally', async () => {
+  // The gate's other half: it checks, it does not interfere. The provider
+  // is reached **once** — the claim's own handler never touches it — and
+  // the grant lands with its row as it did before the gate existed.
+  let asked = 0;
+  await withBroker(
+    async ({ broker, readCommitted }) => {
+      const result = await broker.claim({
+        sessionId: 'session-a',
+        browser: 'attached',
+        purpose: 'a lease on a browser that is connected',
+      });
+      assert.equal(result.outcome, 'granted');
+      assert.equal(asked, 1, 'the claim reached the provider more than once');
+      assert.deepEqual(
+        readCommitted<{ browser_id: string }>('SELECT browser_id FROM claims WHERE id = @id', {
+          id: result.claimId,
+        }),
+        [{ browser_id: 'desktop' }],
+      );
+      assert.deepEqual(claimDenials(readCommitted), []);
+    },
+    {
+      ...ATTACHED,
+      session: (browser) => {
+        asked += 1;
+        assert.equal(browser, 'desktop');
+        return neverDriven();
+      },
     },
   );
 });

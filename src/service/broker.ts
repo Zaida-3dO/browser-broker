@@ -3,10 +3,17 @@ import { readDiffSettings, type DiffSettings } from '../diff/settings.ts';
 import type { StoreHandle } from '../store/open.ts';
 import { runArbitration, type CloseOrphanedTab } from './arbitration.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
-import type { EventAdapter } from './events.ts';
+import { append, type EventAdapter } from './events.ts';
 import { createPendingSeeds } from './pending-seeds.ts';
 import { commandSecretResolver } from '../secrets/resolver.ts';
-import type { ArbitrationSettings, ClaimInput, ClaimResult } from './operations/claim.ts';
+import {
+  resolveBrowser,
+  type ArbitrationSettings,
+  type ClaimInput,
+  type ClaimResult,
+} from './operations/claim.ts';
+import { CallRefusal, type RefusalCode } from './refusals.ts';
+import { BrokerError, StartupRefusal } from '../errors.ts';
 import type { ReleaseInput, ReleaseResult } from './operations/give-back.ts';
 import type {
   ActInput,
@@ -192,6 +199,62 @@ export interface BrokerOptions {
 }
 
 /**
+ * Turn a failed attached open into the §7.1 refusal it is, with the ledger
+ * row to match.
+ *
+ * **Why the row is written here rather than by `recordRefusal`.** The open
+ * happens before arbitration opens, so there is no transaction, no scope and
+ * no handler to record through — and a refusal with no ledger row is the
+ * other half of the defect this gate removes: the caller told "not
+ * connected", the operator's `broker events` showing nothing. `append` on
+ * the store's own connection is the same call the runner's finally block
+ * makes after a rollback, so the row lands exactly as it would have from a
+ * handler's `recordRefusal`.
+ *
+ * **A `StartupRefusal` is rethrown untouched.** A missing extension id is
+ * §7.2's kind of problem — this installation should not be offering the
+ * attached capability at all — and downgrading it to a per-call refusal
+ * would tell the caller to retry a call no retry can fix.
+ */
+function refuseAttachedClaim(
+  options: BrokerOptions,
+  sessionId: string,
+  browser: string,
+  error: unknown,
+): never {
+  if (error instanceof StartupRefusal) throw error;
+
+  const rule =
+    error instanceof BrokerError && error.rule === 'attached.no_binary'
+      ? 'attached.no_binary'
+      : 'attached.not_connected';
+  const code: RefusalCode =
+    rule === 'attached.no_binary' ? 'attached_no_binary' : 'attached_not_connected';
+
+  // The same shape the claim handler's own pre-lease refusals take: the
+  // `browser_id` column has a foreign key into `browsers`, and this row is
+  // deliberately written **before that row exists** — which is the whole
+  // point of the gate. The browser the refusal is about travels in
+  // `detail`, exactly as `claim.browser_kind_agrees` carries it.
+  append(options.store.db, {
+    kind: 'claim_requested',
+    outcome: 'deny',
+    guard: rule,
+    adapter: options.adapter,
+    sessionId,
+    detail: { browser, reason: error instanceof Error ? error.message : String(error) },
+  });
+
+  throw new CallRefusal(
+    code,
+    rule === 'attached.no_binary'
+      ? `The attached browser "${browser}" cannot be reached: nothing is configured to open its connect page with, so its extension would never learn the relay's address. Set BROKER_BROWSER_<NAME>_PATH for it, or empty BROKER_ATTACHED_BROWSERS to leave the capability off — retrying changes nothing either way.`
+      : `The attached browser "${browser}" is not connected: its extension did not reach the relay, so it cannot be shown the connect page or asked to attach. No lease was taken and no place was queued — waiting would hold capacity against a browser that has promised none. Try again once the extension is connected.`,
+    { detail: { browser }, cause: error },
+  );
+}
+
+/**
  * Bind a service to one store, one environment snapshot and one adapter.
  *
  * The settings are read from the environment **here, once**, and handed to
@@ -297,8 +360,47 @@ export function createBroker(options: BrokerOptions): Broker {
     diffSettings,
   });
 
+  /**
+   * **An attached claim connects before it writes a row** (§7.1
+   * `attached.not_connected`, MILESTONES #74's "refuse before any row is
+   * written, never queue").
+   *
+   * A lease granted against an unreachable extension holds shared budget
+   * and an attached cap slot, and every page verb on it answers `accepted`
+   * with `pageDriven: false` — capacity pinned by a lease that can never
+   * do its work, until release or TTL frees it. So the open — connect
+   * page, bounded wait — runs **before** arbitration opens: the browser is
+   * resolved with the claim's own resolution rule (`resolveBrowser`, the
+   * function the handler itself uses, so the two can never disagree about
+   * which browser a claim means), and an attached browser first reaches
+   * the provider.
+   *
+   * The provider is the memoised one the page verbs use, so this opens at
+   * most one bridge per process, and the later verbs inherit it. The check
+   * sits outside every transaction and writes no lease, so a not-connected
+   * refusal takes no claim, no queue place, and no cap slot — the counts
+   * it refused against stay exactly where they were.
+   *
+   * **No session source means no check**, the same documented consequence
+   * {@link BrokerOptions.closeTab} and {@link BrokerOptions.session}
+   * carry: a build that cannot reach a browser also cannot drive the lease,
+   * and it must not claim to have checked.
+   */
+  const ensureAttachedConnection = async (input: ClaimInput): Promise<void> => {
+    const source = options.session;
+    if (source === undefined) return;
+    const browser = resolveBrowser(input.browser, settings);
+    if (browser === undefined || !(settings.attachedBrowsers ?? []).includes(browser)) return;
+    try {
+      await source(browser);
+    } catch (error) {
+      refuseAttachedClaim(options, input.sessionId, browser, error);
+    }
+  };
+
   return {
     claim: async (input) => {
+      await ensureAttachedConnection(input);
       const result = await run<ClaimInput & { settings: ArbitrationSettings }, ClaimResult>(
         'claim',
         { ...input, settings },
