@@ -255,6 +255,109 @@ test(
 );
 
 test(
+  'A v11 STORE WITH BROWSERS, CLAIMS AND TABS STEPS TO TWELVE WITH EVERY VALUE INTACT',
+  withStore(async (store) => {
+    // Step twelve rebuilds `browsers` to widen one check, and schema.test.ts
+    // pins the rebuilt table's **shape** on an empty store. Shape surviving
+    // is not rows surviving: a rebuild copying the wrong column list, or
+    // dropping a row through a constraint the copy trips, leaves a table
+    // that passes a column-list assertion and loses an installation's
+    // history. This is the populated case, at the version the step exists
+    // to be added to — v11, with both step ten's sign-in columns actually
+    // **set**, because the whole reason they appear in the copy list is
+    // that the service reads them on every arbitration pass.
+    await stepTo(store, 11);
+
+    store.db
+      .prepare(
+        `UPDATE browsers
+            SET state = 'running', pid = 4321, launched_at = '2026-11-01T00:00:00.000Z',
+                endpoint = 'http://127.0.0.1:1', browser_uuid = 'uuid-regular',
+                restart_count = 2
+          WHERE id = 'regular'`,
+      )
+      .run();
+    store.db
+      .prepare(
+        `UPDATE browsers
+            SET state = 'signing-in', signin_owner_pid = 99,
+                signin_claim_id = 'claim-signin',
+                signin_deadline = '2026-11-01T00:05:00.000Z'
+          WHERE id = 'private'`,
+      )
+      .run();
+
+    store.db
+      .prepare(
+        `INSERT INTO claims
+           (id, key_hash, session_id, browser_id, state, purpose,
+            expires_at, ttl_seconds, activated_at, ended_at, revoke_reason)
+         VALUES
+           ('claim-1', 'hash-1', 'session-1', 'regular', 'active', 'reading a page',
+            '2026-11-01T00:10:00.000Z', 600, '2026-11-01T00:00:00.000Z', NULL, NULL),
+           ('claim-2', 'hash-2', 'session-2', 'private', 'active', 'reading another page',
+            '2026-11-01T00:12:00.000Z', 600, '2026-11-01T00:01:00.000Z', NULL, NULL)`,
+      )
+      .run();
+    store.db
+      .prepare(
+        `INSERT INTO tabs (id, claim_id, browser_id, driver_tab_id, state)
+         VALUES ('tab-1', 'claim-1', 'regular', 'driver-1', 'open'),
+                ('tab-2', 'claim-2', 'private', 'driver-2', 'open')`,
+      )
+      .run();
+
+    const before = {
+      browsers: store.db.prepare('SELECT * FROM browsers ORDER BY id').all(),
+      claims: store.db.prepare('SELECT * FROM claims ORDER BY id').all(),
+      tabs: store.db.prepare('SELECT * FROM tabs ORDER BY id').all(),
+    };
+
+    await stepSchema(store.db);
+    assert.equal(readStoreVersion(store.db), EXPECTED_VERSION);
+
+    // Every row, every column, byte for byte — the copy list names all
+    // thirteen, and this is the assertion that fails if it ever names
+    // twelve.
+    assert.deepEqual(store.db.prepare('SELECT * FROM browsers ORDER BY id').all(), before.browsers);
+    assert.deepEqual(store.db.prepare('SELECT * FROM claims ORDER BY id').all(), before.claims);
+    assert.deepEqual(store.db.prepare('SELECT * FROM tabs ORDER BY id').all(), before.tabs);
+
+    // Named once more for the pair the rebuild exists to lose: sign-in
+    // state on an in-flight sign-in, the step ten columns the copy list
+    // added.
+    const privateRow = store.db
+      .prepare<{ id: string }, { signinClaimId: string | null; signinDeadline: string | null }>(
+        `SELECT signin_claim_id AS signinClaimId, signin_deadline AS signinDeadline
+           FROM browsers WHERE id = @id`,
+      )
+      .get({ id: 'private' });
+    assert.deepEqual(privateRow, {
+      signinClaimId: 'claim-signin',
+      signinDeadline: '2026-11-01T00:05:00.000Z',
+    });
+
+    // The rows the rebuilt table must still serve: lease and tab references
+    // resolve into it exactly as before the copy.
+    assert.deepEqual(store.db.pragma('foreign_key_check'), []);
+
+    // And the widened check arrived with the rebuild, on a store that had
+    // the narrow one: the shape step twelve is *for*.
+    store.db
+      .prepare("INSERT INTO browsers (id, kind, state) VALUES ('desktop', 'attached', 'stopped')")
+      .run();
+    assert.throws(
+      () => {
+        store.db
+          .prepare("INSERT INTO browsers (id, kind, state) VALUES ('odd', 'ephemeral', 'stopped')")
+          .run();
+      },
+      /CHECK constraint failed/,
+    );
+  }),
+);
+
+test(
   'stepping LEAVES REFERENCES ENFORCED, so a later write is still checked',
   withStore(async (store) => {
     // The pragma is suspended for the rebuild. If it were left off, the
