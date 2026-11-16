@@ -226,6 +226,16 @@ export class AttachedRelay {
       profileDirectory: request.profileDirectory,
       background: this._background,
       token: this._token,
+      // The spawn failure is an event that lands after this call returns;
+      // a bridge held by a session has its own wait to answer (the open
+      // path wires that), but a bare launch through the bridge has no wait,
+      // and a connect page that silently never opened must at least be
+      // visible in the log. The error's code, never the configured path.
+      onSpawnError: (error: Error) => {
+        const code =
+          'code' in error && typeof error.code === 'string' ? error.code : 'unknown reason';
+        this._log(`connect page binary could not be started (${code})`);
+      },
     });
   }
 

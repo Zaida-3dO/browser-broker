@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { buildConnectArgs, buildConnectUrl } from '../../src/attach/connect-launcher.ts';
@@ -77,5 +81,61 @@ test('a missing browser binary is refused, never guessed at', () => {
       },
       `path ${JSON.stringify(browserPath)}`,
     );
+  }
+});
+
+test('a configured binary that cannot spawn reports through the listener, not through the process', async () => {
+  // The seeded violation for the launcher's own gate: a path that exists
+  // (or at least names a plausible binary) but **will not start** fails
+  // **after** `openConnectPage` has returned — `spawn` hands back a child,
+  // the failure arrives moments later as an `error` event on it, and with
+  // no listener that event ends the process. Every lease the service holds
+  // would go down with one stale configured path, and no `catch` anywhere
+  // upstream would see it. So the launcher listens, and the caller's
+  // listener is what turns the event into a refusal the wait can answer.
+  const deadFile = path.join(
+    await mkdtemp(path.join(os.tmpdir(), 'broker-launcher-')),
+    'not-a-binary.txt',
+  );
+  writeFileSync(deadFile, 'this file is not a program');
+  for (const [label, browserPath] of [
+    ['a configured path that does not exist', 'broker-no-such-binary-anywhere'],
+    ['a configured path that is not executable', deadFile],
+  ] as const) {
+    const failures: { via: 'thrown' | 'event'; code?: string }[] = [];
+    try {
+      openConnectPage({
+        browserPath,
+        connectUrl: CONNECT_URL,
+        onSpawnError: (error) => {
+          failures.push({
+            via: 'event',
+            code: 'code' in error ? String(error.code) : undefined,
+          });
+        },
+      });
+    } catch (error) {
+      // Platforms disagree on the *timing*: some fail a wrong-type spawn
+      // synchronously, in the call itself. The launcher's job is to make
+      // that its own named refusal too, not a raw spawn error on the
+      // caller's hands.
+      assert.ok(
+        error instanceof AttachedError && error.rule === 'attached.no_binary',
+        `${label}: the launcher threw a raw error instead of its own refusal`,
+      );
+      const cause = (error as { cause?: unknown }).cause;
+      failures.push({
+        via: 'thrown',
+        code: cause instanceof Error && 'code' in cause ? String(cause.code) : undefined,
+      });
+    }
+    // The event path lands a turn or several after the call returns — that
+    // delay is the entire reason the open path's synchronous `catch` cannot
+    // see it, and why this test waits rather than asserts immediately.
+    for (let attempt = 0; attempt < 40 && failures.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(failures.length, 1, `${label}: the spawn failure never reached the caller`);
+    assert.ok(failures[0]?.code, `${label}: the failure carried no error code`);
   }
 });

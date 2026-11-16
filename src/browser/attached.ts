@@ -288,6 +288,40 @@ export async function openAttachedSession(
     ...(options.token === undefined ? {} : { token: options.token }),
     ...(options.log === undefined ? {} : { log: options.log }),
   });
+  // ── A configured path that will not spawn is `no_binary`, not a long wait ──
+  //
+  // The before-bind check only knows a path is **absent**. A path that names
+  // a deleted, non-executable or wrong-type file passes it, spawns a child
+  // that is already doomed, and fails **after** this call returns — as an
+  // `error` event the launcher's own listener catches so the process
+  // survives. Routed here, that reason joins the wait: whoever is waiting
+  // stops the moment the spawn is known to be impossible, and the refusal
+  // is `attached.no_binary` — the configuration family, not the retryable
+  // `not_connected` whose advice ("try again once the extension is
+  // connected") is exactly wrong for a broken path. The message carries the
+  // error **code**, never the path: the configured path is a machine fact,
+  // and a refusal's reason travels into the claim's ledger row.
+  let rejectSpawnFailure: ((error: Error) => void) | undefined;
+  const spawnFailure = new Promise<never>((_resolve, reject) => {
+    rejectSpawnFailure = reject;
+  });
+  // If the extension arrives first this promise never settles, and if the
+  // spawn fails after the race is decided the rejection would be unobserved
+  // — itself a process-level problem. Handled either way, as `launch.ts` does.
+  spawnFailure.catch(() => undefined);
+  const onSpawnError = (error: Error): void => {
+    const code = 'code' in error && typeof error.code === 'string' ? error.code : 'unknown reason';
+    // The bridge log's rule is the same as everywhere else in this layer:
+    // the reason yes, the configured path and the token never.
+    options.log?.(`the connect-page binary could not be started (${code})`);
+    rejectSpawnFailure?.(
+      new AttachedError(
+        'attached.no_binary',
+        `the configured binary for "${options.browser}" could not be started for the connect page (${code}). Nothing launched and waiting changes nothing: check its configured path.`,
+        { cause: error },
+      ),
+    );
+  };
   try {
     // The URL is the bridge's own — token and background flags included as
     // configured — so this call cannot disagree with what the extension is
@@ -298,12 +332,13 @@ export async function openAttachedSession(
       browserPath: options.browserPath,
       connectUrl: bridge.connectUrl(),
       ...(options.token === undefined ? {} : { token: options.token, background: true }),
+      onSpawnError,
     });
   } catch (error) {
     bridge.close('connect page could not be opened');
     throw error;
   }
-  return await attachOverBridge(bridge, options);
+  return await attachOverBridge(bridge, options, spawnFailure);
 }
 
 /**
@@ -312,20 +347,29 @@ export async function openAttachedSession(
  * Split out because the bridge and the session have different lifetimes and
  * different owners: whoever opens a bridge owns its listener, and every path
  * out of this function — including its refusals — closes it again.
+ *
+ * `spawnFailure`, when the caller has one, joins the bounded wait: a connect
+ * page whose binary could not start is knowable before the extension was
+ * ever going to arrive, and the wait must end for that reason rather than
+ * sitting out its bound and calling it the extension's absence.
  */
 export async function attachOverBridge(
   bridge: AttachedBridge,
   options: AttachedSessionOptions,
+  spawnFailure?: Promise<never>,
 ): Promise<AttachedBrowserSession> {
   try {
     // A token means the extension skips its approval click and answers in
     // seconds; without one the wait is for a person, and the bound widens to
     // the relay's interactive default — still a refusal at the bound, never
     // a queue.
-    await bridge.waitForExtension(
-      options.connectTimeoutMs ??
-        (options.token === undefined ? TOKENLESS_CONNECT_WAIT_MS : CONNECT_WAIT_MS),
-    );
+    await Promise.race([
+      bridge.waitForExtension(
+        options.connectTimeoutMs ??
+          (options.token === undefined ? TOKENLESS_CONNECT_WAIT_MS : CONNECT_WAIT_MS),
+      ),
+      ...(spawnFailure === undefined ? [] : [spawnFailure]),
+    ]);
     const connection = await chromium.connectOverCDP(bridge.cdpEndpoint, {
       timeout: CDP_CONNECT_TIMEOUT_MS,
     });

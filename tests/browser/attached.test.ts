@@ -214,6 +214,44 @@ test('an attached open without a configured binary refuses by name and binds no 
   assert.equal(launched, 0, 'the launcher ran for an open that could not name a browser');
 });
 
+test('a configured binary that will not spawn refuses as attached.no_binary at once — and the process is still alive to say so', async () => {
+  // The rest of this file injects the launcher; this test must not, because
+  // the defect is in the real spawn: a *configured* path — present to the
+  // before-bind check — that names a deleted or non-executable file. The
+  // spawn returns a child and fails later, as an `error` event; unhandled,
+  // that event ends this process with every lease in it, which a test
+  // cannot come back from — the run dying is itself the failure signal.
+  // Handled, it is a clean refusal, and it must be the **right** refusal:
+  // `attached.no_binary`, the configuration family — not the retryable
+  // `not_connected` advice — and it must arrive in the moment the spawn is
+  // known impossible, not after the whole tokenless bound is spent waiting
+  // for a person whose browser cannot start.
+  const log: string[] = [];
+  const started = Date.now();
+  const error = await openAttachedSession({
+    browser: BROWSER,
+    clientName: 'attached test',
+    extensionId: EXTENSION_ID,
+    browserPath: 'broker-no-such-binary-anywhere',
+    log: (line) => log.push(line),
+    connectTimeoutMs: 30_000,
+  }).then(
+    () => undefined,
+    (thrown: unknown) => thrown,
+  );
+  assert.ok(error instanceof AttachedError);
+  assert.equal(error.rule, 'attached.no_binary');
+  assert.match(error.message, /could not be started/);
+  assert.ok(
+    Date.now() - started < 5_000,
+    'the unusable binary sat out the full wait and was attributed to the extension',
+  );
+  assert.ok(
+    log.some((line) => line.includes('could not be started')),
+    'the spawn reason never reached the bridge log',
+  );
+});
+
 test('the not-connected wait is seconds with a token and the relay default without one', async () => {
   // The widened bound, pinned at the number: the token does the clicking, so
   // the wait covers a launch; without it the wait covers a person, and five

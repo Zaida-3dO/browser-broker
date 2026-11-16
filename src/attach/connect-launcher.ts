@@ -27,6 +27,14 @@ export interface ConnectPageRequest {
    * it only through this field.
    */
   token?: string;
+  /**
+   * Notified when the configured path names no process. A spawn that fails
+   * does so **asynchronously** — after `openConnectPage` has already
+   * returned — by emitting `error` on the child, so nothing between here and
+   * the caller can see it in a `catch`. Without a listener that event is an
+   * uncaught exception; see the comment in {@link openConnectPage}.
+   */
+  onSpawnError?: (error: Error) => void;
 }
 
 /**
@@ -63,6 +71,23 @@ export function buildConnectArgs(request: ConnectPageRequest): string[] {
 }
 
 /**
+ * The one refusal shape both spawn-failure timings take — the synchronous
+ * throw and the asynchronous event are the same fact reported at different
+ * moments: the configured path names no process. The reason is the error's
+ * code; the configured path itself is a machine fact and never travels.
+ */
+function spawnRefusal(error: unknown): AttachedError {
+  const maybeCode =
+    error instanceof Error ? (error as unknown as { code?: unknown }).code : undefined;
+  const code = typeof maybeCode === 'string' ? maybeCode : 'unknown reason';
+  return new AttachedError(
+    'attached.no_binary',
+    `the configured binary could not be started for the connect page (${code}). Nothing launched and waiting changes nothing: check its configured path.`,
+    { cause: error },
+  );
+}
+
+/**
  * Run the browser on the connect URL. A browser already running on that
  * profile just gains a tab — which is the ordinary case, not a fallback.
  * The child is detached on purpose: this process is not its parent and must
@@ -76,11 +101,38 @@ export function openConnectPage(request: ConnectPageRequest): void {
     );
   }
   const args = buildConnectArgs(request);
-  const child = spawn(request.browserPath, args, {
-    windowsHide: true,
-    detached: true,
-    shell: false,
-    stdio: 'ignore',
+  // Platforms disagree on *when* an unusable path reports: some fail a
+  // wrong-type file **here**, synchronously, while the same path on another
+  // platform — and a missing path everywhere — reports as the event below.
+  // Either way it is the same family of fact: the configured path names no
+  // process, and the refusal is `attached.no_binary` either way. The reason
+  // stays the error's **code**; the configured path never travels.
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(request.browserPath, args, {
+      windowsHide: true,
+      detached: true,
+      shell: false,
+      stdio: 'ignore',
+    });
+  } catch (error) {
+    throw spawnRefusal(error);
+  }
+  // ── A spawn that fails does so ASYNCHRONOUSLY, and unhandled it is fatal ──
+  //
+  // Spawning a path that cannot start — deleted, non-executable, the wrong
+  // type — **still returns a child and still assigns a process identifier**,
+  // and reports the failure moments later by emitting `error` on it. With
+  // nothing listening that is an unhandled error event, which escapes every
+  // `catch` between here and the caller and **ends the process**: at this
+  // call site the whole service would go down, every lease in it, for one
+  // claim against one stale configured path. `launch.ts` measured this and
+  // its own detached launch handles it the same way; so does the secret
+  // resolver. The listener attaches before anything else. Here it does one
+  // thing: hand the reason back to the caller, which owns the bounded wait
+  // that is supposed to report it.
+  child.once('error', (error: Error) => {
+    request.onSpawnError?.(error);
   });
   child.unref();
 }
