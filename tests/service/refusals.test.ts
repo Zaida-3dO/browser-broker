@@ -83,14 +83,19 @@ test('every code names a rule, a summary and a retry answer', () => {
   // shipped a check that iterated a list rather than naming its entries, so
   // deleting an entry stayed green. The count is asserted first, so removing
   // a code fails here even though the loop below would happily skip it.
-  assert.equal(REFUSAL_CODES.length, 15, 'a refusal code was added or removed without a test');
+  assert.equal(REFUSAL_CODES.length, 17, 'a refusal code was added or removed without a test');
   assert.deepEqual([...REFUSAL_CODES].sort(), [
     // Added with the attached kind (`DECISIONS.md` §13n), as a pair: the
     // seed guard at the claim, and the per-browser tab cap the shared
     // budget cannot express. The pair shows the §13n boundary — reads only,
     // and never more of a person's tabs at once than the cap allows.
     'attached_full',
+    // Added with the claim-time connect gate: the two ways the attached
+    // open can fail, kept apart because the caller's actions differ —
+    // one retries after a person connects, the other edits configuration.
+    'attached_no_binary',
     'attached_no_seed',
+    'attached_not_connected',
     // Added for the one disagreement `INSERT OR IGNORE` cannot itself detect
     // (`DECISIONS.md` §13i): two processes on one machine may configure the
     // same name under different kinds, and the insert is a no-op once
