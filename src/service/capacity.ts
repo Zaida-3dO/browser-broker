@@ -50,18 +50,29 @@ export function countActiveClaims(db: Database): number {
 }
 
 /**
- * Count the claims holding a tab **on one named browser**.
+ * Count the claims **on one named browser**, waiting places included.
  *
  * The count above answers *is the pool full*; this answers *is this browser
  * full* — the question the attached kind asks and no other kind has
  * (`DECISIONS.md` §13n): its pages sit inside a person's own browsing, and
  * how many of them may be out at once is a per-browser cap that the shared
- * budget does not see. Everything else is as above: live claims only, read
- * inside the arbitration transaction, against the same reconciled state.
+ * budget does not see.
+ *
+ * **A queue place counts, and that is the whole of how the cap holds through
+ * the queue.** Promotion weighs the shared budget alone and never a browser,
+ * so an attached place that reached the queue — under cap, but with the pool
+ * full — is promoted whenever capacity frees *anywhere*. If the place did not
+ * already hold its slot, two attached claims queued behind a full pool would
+ * both be promoted and the cap would exist on the request and not on the
+ * outcome. Counting `queued` with `active` makes the sum the invariant: the
+ * claim-time check bounds it, promotion moves a row between the two states
+ * without changing it, and expiry or release lowers it.
  */
-export function countActiveClaimsForBrowser(db: Database, browserId: string): number {
+export function countLiveOrQueuedClaimsForBrowser(db: Database, browserId: string): number {
   const row = db
-    .prepare("SELECT count(*) AS n FROM claims WHERE state = 'active' AND browser_id = @browserId")
+    .prepare(
+      "SELECT count(*) AS n FROM claims WHERE state IN ('active', 'queued') AND browser_id = @browserId",
+    )
     .get({ browserId }) as { n: number };
   return row.n;
 }

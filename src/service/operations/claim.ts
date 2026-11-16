@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
 import { BROWSER_CHOICE_GUIDANCE, type BrowserId } from '../../browser/driver.ts';
-import { admits, countActiveClaims, countActiveClaimsForBrowser } from '../capacity.ts';
+import { admits, countActiveClaims, countLiveOrQueuedClaimsForBrowser } from '../capacity.ts';
 import { append, type EventAdapter } from '../events.ts';
 import { hashKey, mintKey } from '../keys.ts';
 import { nudgeIfOwnObstacle, type OwnObstacleNudge } from '../nudge.ts';
@@ -765,21 +765,29 @@ export function decideClaim(
   // one that protects a person: their own tabs, visible in their own window,
   // held by somebody else's leases.
   //
-  // Refused rather than queued, and that is a difference in kind from the
-  // budget's queue-or-grant, not a shortcut past it: **the queue's promotion
-  // arithmetic weighs the shared budget alone**, so a place held against a
-  // per-browser cap would be promoted the moment capacity freed *anywhere* —
-  // the cap would exist on the request and not on the outcome. A refusal
-  // here says what a queue place could not: nothing you are waiting for will
-  // change this answer, because the thing that has to change is a lease on
-  // this browser ending.
+  // Refused rather than queued for the claim that breaches it, and that is a
+  // difference in kind from the budget's queue-or-grant, not a shortcut past
+  // it: **the queue's promotion arithmetic weighs the shared budget alone**,
+  // so nothing the queue waits on can be trusted to keep a per-browser cap
+  // whole. A refusal says what a queue place could not: nothing you are
+  // waiting for will change this answer, because the thing that has to
+  // change is a lease on **this browser** ending.
+  //
+  // And the count itself includes `queued`, which is what makes the cap hold
+  // through the queue rather than only at the request: a claim that is under
+  // cap and queued for the *budget's* reason already holds its attached
+  // slot, because promotion moves it active the moment capacity frees
+  // anywhere at all. With waiting places counted, live-plus-queued against
+  // one attached browser is the invariant — bounded at the claim, unchanged
+  // by promotion (a row moving between the two states moves nothing),
+  // lowered by release and by expiry.
   //
   // The position is the refusals' position — before the arrival counter and
   // before any row is written, so the claim count, the queue length and the
   // tab count all stay exactly where they were.
   if (configuredKind === 'attached') {
     const cap = settings.attachedTabs ?? 3;
-    const held = countActiveClaimsForBrowser(db, browserId);
+    const held = countLiveOrQueuedClaimsForBrowser(db, browserId);
     if (held >= cap) {
       scope.recordRefusal({
         kind: 'claim_requested',
@@ -791,7 +799,7 @@ export function decideClaim(
       });
       throw new CallRefusal(
         'attached_full',
-        `The ${browserId} browser is an attached one, and it is holding ${String(held)} of the ${String(cap)} tabs it allows at once — so this claim is refused rather than queued. Queuing would promise that capacity frees up somewhere, and nothing out there answers this: what has to end is a lease on this browser. Try again when one has ended, or use another browser if this work does not need someone's signed-in identity.`,
+        `The ${browserId} browser is an attached one, and it is holding ${String(held)} of the ${String(cap)} tabs it allows at once — places waiting for the shared pool count among them, because a waiting attached lease already holds its slot on this browser — so this claim is refused rather than queued. Queuing would promise that capacity frees up somewhere, and nothing out there answers this: what has to end is a lease on this browser. Try again when one has ended, or use another browser if this work does not need someone's signed-in identity.`,
         { detail: { browser: browserId, held, cap } },
       );
     }

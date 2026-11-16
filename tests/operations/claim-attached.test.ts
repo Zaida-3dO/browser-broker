@@ -315,6 +315,97 @@ test('tabs held against an attached browser still count against the shared budge
   );
 });
 
+test('a queued attached place already holds its cap slot, so the cap holds through promotion', async () => {
+  // The breach this pins out: the cap used to count only `active` rows,
+  // while **promotion weighs the shared budget alone**. At cap 1 / budget 2
+  // the sequence went: two regular leases fill the pool; an attached claim
+  // passes the cap (nothing attached is live) and queues; a second attached
+  // claim passes the cap too — still nothing *active* — and queues; release
+  // the regulars and **both promote**, leaving two active tabs against a
+  // browser that allows one. Refusal and count did not move; the cap existed
+  // on the request and not on the outcome. With waiting places counted, the
+  // second attached claim is refused at the request, and the one queued
+  // place is the only attached row that ever reaches `active`.
+  await withBroker(
+    async ({ broker, readCommitted }) => {
+      const first = await broker.claim({
+        sessionId: 'session-a',
+        browser: 'regular',
+        purpose: 'first lease filling the shared pool',
+      });
+      const second = await broker.claim({
+        sessionId: 'session-b',
+        browser: 'regular',
+        purpose: 'second lease filling the shared pool',
+      });
+      assert.equal(first.outcome, 'granted');
+      assert.equal(second.outcome, 'granted');
+
+      const waiting = await broker.claim({
+        sessionId: 'session-c',
+        browser: 'desktop',
+        purpose: 'the attached claim the full pool queues',
+      });
+      assert.equal(
+        waiting.outcome,
+        'queued',
+        'the budget queues it: the cap is not what stops this one',
+      );
+
+      // The second attached arrival must be refused **against the queued
+      // place**: one waiting attached lease is already the whole cap.
+      const message = await messageOf(() =>
+        broker.claim({
+          sessionId: 'session-d',
+          browser: 'desktop',
+          purpose: 'the attached claim the queued place already blocks',
+        }),
+      );
+      assert.match(message, /holding 1 of the 1 tabs/);
+      assert.match(message, /refused rather than queued/);
+
+      // The physical half: the refusal left no row of any kind behind. One
+      // attached claim exists, and it is the place that was already waiting.
+      const attached = rows<{ state: string; session_id: string }>(
+        readCommitted,
+        "SELECT state, session_id FROM claims WHERE browser_id = 'desktop' ORDER BY arrival",
+      );
+      assert.equal(attached.length, 1, 'the refused claim wrote no row, queued included');
+      assert.equal(attached[0]?.state, 'queued');
+      assert.equal(attached[0]?.session_id, 'session-c');
+
+      // Release the regulars — the release's own promotion then moves the
+      // queue head active. Exactly one attached row crosses, because exactly
+      // one exists.
+      await broker.release({ key: first.key });
+      await broker.release({ key: second.key });
+
+      assert.deepEqual(
+        rows<{ state: string }>(
+          readCommitted,
+          "SELECT state FROM claims WHERE browser_id = 'desktop' ORDER BY arrival",
+        ).map((row) => row.state),
+        ['active'],
+        'the queued place promoted, and nothing else did',
+      );
+      assert.equal(
+        rows<{ n: number }>(
+          readCommitted,
+          "SELECT count(*) AS n FROM claims WHERE browser_id = 'desktop' AND state = 'active'",
+        ).at(-1)?.n,
+        1,
+        'the attached active count never moved past the cap',
+      );
+    },
+    {
+      tabBudget: 2,
+      attachedBrowsers: ['desktop'],
+      attachedExtensionId: 'abcdefghijklmnopabcdefghijklmnop',
+      attachedTabs: 1,
+    },
+  );
+});
+
 test('the cap does not touch a different browser sharing the store', async () => {
   // The cap is per attached browser, not a global tightening: `regular` with
   // a pool that has room is granted while `desktop` is at its cap.

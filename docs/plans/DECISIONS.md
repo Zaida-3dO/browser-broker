@@ -2515,11 +2515,14 @@ only one of the three lists — a name is what a caller claims by, and one name 
 `BROKER_ATTACHED_TABS` (default 3) answers a question the shared budget cannot see: *how much of a
 person's visible browsing may be held at once?* Those pages still count against `BROKER_TAB_BUDGET`
 exactly as any other page does — capacity stays one pool; this is the one per-kind cap, and it is a
-cap on *whose pages*, not on cost. It is enforced by refusing the claim **before any row is written**,
-never by queueing it: the queue's promotion arithmetic weighs the shared budget alone, so a per-kind
-cap held through the queue would be breached the moment capacity freed. The refusal is
-`attached.tab_cap`, and the tests pin the side effect — the tab count did not move — not just the
-answer.
+cap on *whose pages*, not on cost. It is enforced by refusing an over-cap claim **before any row is
+written**, never by queueing it, and a claim that is under cap but queued for the *budget's* reason
+counts against the cap from the moment it arrives — the queue's promotion arithmetic weighs the
+shared budget alone, so a waiting place that did not hold its slot would be promoted the moment
+capacity freed anywhere and the cap would exist on the request and not on the outcome. Live-plus-
+waiting against one attached browser is therefore the invariant: bounded at the claim, unchanged by
+promotion, lowered by release and expiry. The refusal is `attached.tab_cap`, and the tests pin the
+side effect — the tab count did not move — not just the answer.
 
 ### Why not-connected refuses too, and why the wait is bounded
 
