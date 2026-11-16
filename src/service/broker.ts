@@ -398,6 +398,23 @@ export function createBroker(options: BrokerOptions): Broker {
    * {@link BrokerOptions.closeTab} and {@link BrokerOptions.session}
    * carry: a build that cannot reach a browser also cannot drive the lease,
    * and it must not claim to have checked.
+   *
+   * **It runs ahead of the claim's own argument and cap refusals, and that
+   * ordering is accepted rather than accidental.** A claim arbitration
+   * would refuse for a seed on the attached browser, or for the per-browser
+   * cap, still reaches the provider first — and with no bridge up yet, that
+   * means a connect page pops in the person's window for a claim that was
+   * always going to be refused. Reordering the probe behind those refusals
+   * would mean re-deciding the seed rule and the cap's live-plus-queued
+   * arithmetic **outside** the transaction, in a second place, where they
+   * could drift from the arbitration that decides for real. One outward
+   * launch on a refused claim is the cheaper of the two mistakes: the
+   * refusal keeps its own side-effect discipline (no row, no queue place,
+   * no cap slot — the probe consumed none of them), and the provider is
+   * memoised, so once the extension is connected the probe launches nothing
+   * at all. `tests/operations/claim-attached.test.ts` pins the accepted
+   * shape: provider reached, then the ordinary refusal with its rows still
+   * absent.
    */
   const ensureAttachedConnection = async (input: ClaimInput): Promise<void> => {
     const source = options.session;

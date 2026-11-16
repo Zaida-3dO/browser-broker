@@ -615,3 +615,82 @@ test('a reachable attached browser is asked exactly once by the claim, and grant
     },
   );
 });
+
+test('the probe runs ahead of the seed refusal and changes nothing about it: reached once, then the same denial with no rows', async () => {
+  // Pins the accepted residual (§13n, `ensureAttachedConnection`): every
+  // attached claim reaches the provider before arbitration, so a claim
+  // that will be refused for its seed still opens the connect page first.
+  // Moving the probe behind that refusal would mean re-deciding the seed
+  // rule in a second place where it could drift — so the ordering is
+  // documented, and what must hold under it is the refusal itself: the
+  // provider is reached exactly once, and the denial stays as physical as
+  // it was with no session wired at all.
+  let asked = 0;
+  await withBroker(
+    async ({ broker, readCommitted }) => {
+      await assert.rejects(
+        broker.claim({
+          sessionId: 'session-a',
+          browser: 'desktop',
+          purpose: 'a seed the claim layer will refuse, over a live connection',
+          storageSeed: SEED,
+        }),
+        (error: unknown) => error instanceof CallRefusal && error.code === 'attached_no_seed',
+      );
+      assert.equal(asked, 1, 'the claim gate reached the provider more than once');
+      assert.deepEqual(rows<{ id: string }>(readCommitted, 'SELECT id FROM claims'), []);
+      assert.deepEqual(rows<{ id: string }>(readCommitted, 'SELECT id FROM tabs'), []);
+    },
+    {
+      ...ATTACHED,
+      session: () => {
+        asked += 1;
+        return neverDriven();
+      },
+    },
+  );
+});
+
+test('the probe runs ahead of the cap refusal too: the second claim is refused on the cap with its counts unmoved', async () => {
+  // The other accepted ordering case: the first claim is granted (the probe
+  // found the browser connected), and the probe for the second — the one
+  // arbitration will refuse on the per-browser cap — still runs first. The
+  // physical half is the cap test's, re-asserted with a session wired: the
+  // probe consumed no row, no slot, and the refusal names the cap.
+  let asked = 0;
+  await withBroker(
+    async ({ broker, readCommitted }) => {
+      const first = await broker.claim({
+        sessionId: 'session-a',
+        browser: 'desktop',
+        purpose: 'the one tab the cap allows',
+      });
+      assert.equal(first.outcome, 'granted');
+      await assert.rejects(
+        broker.claim({
+          sessionId: 'session-b',
+          browser: 'desktop',
+          purpose: 'over the cap, over a live connection',
+        }),
+        (error: unknown) => error instanceof CallRefusal && error.code === 'attached_full',
+      );
+      assert.equal(asked, 2, 'the claim gate reached the provider once per claim');
+      assert.equal(
+        rows<{ n: number }>(
+          readCommitted,
+          "SELECT count(*) AS n FROM claims WHERE state = 'active'",
+        ).at(-1)?.n,
+        1,
+        'the refused claim took a slot the cap said it could not have',
+      );
+    },
+    {
+      ...ATTACHED,
+      attachedTabs: 1,
+      session: () => {
+        asked += 1;
+        return neverDriven();
+      },
+    },
+  );
+});
