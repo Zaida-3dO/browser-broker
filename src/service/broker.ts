@@ -59,6 +59,19 @@ import type { BrowserId } from '../browser/driver.ts';
  * did anything before or after the runner would be doing it outside the
  * transaction, which is where the read-then-write window §1.0a measures as
  * failing gets reopened.
+ *
+ * **The one method that does something before the runner is `claim`**, and
+ * the sentence keeps its reason by saying so: it probes an attached
+ * browser's connection ahead of arbitration, and that refusal's ledger row
+ * is appended outside every transaction — see the `claim` implementation and
+ * its `ensureAttachedConnection` docstring. The window this contract guards
+ * is the *transaction's* read-then-write gap, and the probe does not reopen
+ * it: it reads no lease state and writes no lease, and its row belongs to a
+ * refusal that is a refusal precisely because it lands **before** the
+ * transaction exists (§7.1 `attached.not_connected`: refuse ahead of every
+ * row, never queue). The browser touch it asks for is the one thing
+ * arbitration itself must never make (§2.4b). `poolStatus` remains the only
+ * method that is not a `runArbitration` call at all.
  */
 export interface Broker {
   claim: (input: ClaimInput) => Promise<ClaimResult>;
