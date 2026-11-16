@@ -2538,6 +2538,18 @@ wait holds no claim, no queue position and no cap slot — the refusal leaves ev
 and writes only its ledger row. `attached.no_binary` refuses at the same place as its own rule rather
 than as a connect timeout, because its bound is the opposite kind: waiting changes nothing.
 
+**One residual, owned rather than glossed.** Opening the connect page hands that URL to the
+configured binary as an **argument**, and on platforms where one process can read another's
+arguments, the URL — the per-lease extension path, and the token when one is set — is visible to anything
+already on the machine for as long as that launcher lives (a browser already running takes the
+request and its launcher exits quickly), just as it sits in that browser's own address bar for a
+person looking at it. It is stated rather than engineered away because nothing behind the URL
+changes: the door past it is still the loopback Host, the extension's exact Origin, the CDP path's
+no-Origin rule and unguessable per-lease paths, and the token's whole power is to spare a person the
+approval page. A process that can enumerate other processes' arguments is already at the machine's
+own threshold — and one machine is where this kind has always drawn its boundary: the relay listens
+on loopback only, for the life of one lease.
+
 ### Why read-only is enforced at the seam, with the call log as the proof
 
 Every verb that would write to the page — a seed, an expression, a click, a typed value, an injected
