@@ -325,14 +325,15 @@ interface ResolvedTab {
 /**
  * The attached kind's service-layer door (§13n, §7.1).
  *
- * Every attached rule except the claim's seed used to live only in the
- * session, which fires **inside the after-commit closure**. By then the
+ * Every attached rule except the claim's seed also has a door in the
+ * session, and the session's refusals fire **inside the after-commit
+ * closure** — a placement that decides what they can be. By then the
  * operation has been decided and appended to the ledger as `allow`, and
  * `pageFor` may already have opened a tab in a person's window before the
- * session refuses — so `browser_act click` on an attached lease came back
- * `accepted` with `pageDriven: false`, `broker events` showed the click as
- * allowed, and the refusal itself survived only as text in
- * `notDrivenReason`. A rule that decides an operation lives in the service
+ * session refuses — so a `browser_act click` on an attached lease answers
+ * `accepted` with `pageDriven: false`, `broker events` shows the click as
+ * allowed, and the refusal survives only as text in `notDrivenReason`.
+ * A rule that decides an operation lives in the service
  * layer (CLAUDE.md; and §3.4/S1 mean a refusal **on the wire**), so the
  * breach is refused here: ledger `deny`, no `allow` row, no work scheduled,
  * no tab opened. The session keeps its own door — the seam's rule is that
