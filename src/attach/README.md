@@ -23,7 +23,10 @@ const bridge = await connect({
   // Shown in the tab group's title; comes from the claim's purpose.
   clientName: 'read the dashboard',
   // The extension's store id — checked as the Origin of its connection.
-  extensionId: 'mmlmfjhmonkocbjadbfplnigmagldckm',
+  // Set it from configuration (`BROKER_ATTACHED_EXTENSION_ID`) to the id
+  // Chrome shows for the attach extension; the value below is a
+  // placeholder of that shape, not anybody's installation.
+  extensionId: 'abcdefghijklmnopabcdefghijklmnop',
   // From BROKER_ATTACHED_TOKEN. Optional; skips the connect page once trusted.
   // Never logged, never echoed in an error.
   token: process.env.BROKER_ATTACHED_TOKEN,
