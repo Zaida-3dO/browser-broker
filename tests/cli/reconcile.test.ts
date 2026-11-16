@@ -284,6 +284,44 @@ describe('broker reconcile', () => {
     }
   });
 
+  it('refuses an attached browser by name — configured, and still never reached through a session', async () => {
+    // The guard this pins is `src/cli/index.ts` passing only the regular and
+    // private names to the reconcile command: the attached kind is a
+    // person's own window, and reconcile's act — closing pages no lease
+    // owns — is precisely the write §13n forbids there. So an attached name
+    // is refused as the unknown browser it is **for this command**, with a
+    // session source installed that would record any reach: the refusal
+    // must not have touched the browser.
+    const temp = makeTempStore({
+      attachedBrowsers: ['desktop'],
+      attachedExtensionId: 'abcdefghijklmnopabcdefghijklmnop',
+    });
+    try {
+      const store = await prepareStore(temp.environment);
+      store.close();
+
+      let asked = 0;
+      const reached = capture();
+      const code = await run(['reconcile', 'desktop'], {
+        streams: reached.streams,
+        env: {
+          ...envFor(temp.directory),
+          BROKER_ATTACHED_BROWSERS: 'desktop',
+          BROKER_ATTACHED_EXTENSION_ID: 'abcdefghijklmnopabcdefghijklmnop',
+        },
+        session: () => {
+          asked += 1;
+          return Promise.reject(new Error('reconcile must not reach an attached browser'));
+        },
+      });
+      assert.equal(code, COMMAND_EXIT.malformed);
+      assert.match(reached.captured.err.join('\n'), /no browser named/i);
+      assert.equal(asked, 0, "the refusal reached for a session on the person's browser");
+    } finally {
+      temp.remove();
+    }
+  });
+
   it('reports a page that would not close as a leaked page, and still succeeds', async () => {
     const temp = makeTempStore();
     try {

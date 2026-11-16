@@ -1027,6 +1027,11 @@ async function runOperationsCommand(
         ...(context.options.session === undefined ? {} : { session: context.options.session }),
         streams,
         json,
+        // The two browsers this service starts, **and deliberately not the
+        // attached one** (§13n): reconcile's whole act is closing pages no
+        // lease owns, which is exactly the write the attached kind's rules
+        // forbid. An attached name reaching this command is answered as the
+        // unknown browser it is here, before a session could be reached.
         browsers: [...environment.regularBrowsers, ...environment.privateBrowsers],
       });
     }
