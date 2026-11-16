@@ -69,7 +69,10 @@ async function withStore(fn: (store: StoreHandle) => Promise<void> | void): Prom
 }
 
 /** The environment a provider is built against, with this store's paths. */
-function environmentFor(store: StoreHandle): Parameters<typeof browserSessionProvider>[0] {
+function environmentFor(
+  store: StoreHandle,
+  lists?: { readonly regular?: readonly string[]; readonly private?: readonly string[] },
+): Parameters<typeof browserSessionProvider>[0] {
   return {
     store,
     environment: {
@@ -88,8 +91,8 @@ function environmentFor(store: StoreHandle): Parameters<typeof browserSessionPro
       // rather than this field, which mirrors how `tabBudget` above is a
       // provider-level default that individual tests already override.
       launchReadinessTimeoutSeconds: 30,
-      regularBrowsers: ['regular'],
-      privateBrowsers: ['private'],
+      regularBrowsers: lists?.regular ?? ['regular'],
+      privateBrowsers: lists?.private ?? ['private'],
       attachedBrowsers: [],
       attachedTabs: 3,
       attachedExtensionId: undefined,
@@ -117,6 +120,42 @@ test('nothing reaches a browser until a session is actually asked for', async ()
     // a runtime that built one of these, and none of them may depend on a
     // browser being installed.
     assert.deepEqual(driver.calls, []);
+  });
+});
+
+test('a signed-in browser configured under another name is cold-started headed, from the kind not the name', async () => {
+  // THE MUTATION THIS CATCHES: the provider computing the launch mode from
+  // the browser's **name** — `modeFor('work')` — so `BROKER_REGULAR_BROWSERS=work`
+  // starts headless, without the keeper the headed rule exists for (§3.15),
+  // and a sign-in dies the moment the last lease releases. The fake's call
+  // log carries the mode the provider asked for: that is the request, and
+  // the request is the thing the configured lists must decide.
+  await withStore(async (store) => {
+    // A configured name is a browser the claim path would insert; the
+    // adoption arbitration reads the row before deciding, so the fixture
+    // puts it there first — the way a first claim against `work` would.
+    store.db
+      .prepare("INSERT INTO browsers (id, kind, state) VALUES ('work', 'regular', 'stopped')")
+      .run();
+    const driver = new FakeBrowserDriver();
+    const provider = browserSessionProvider({
+      ...environmentFor(store, { regular: ['work'] }),
+      driver,
+      isRunning: () => Promise.resolve(undefined),
+    });
+
+    await provider.session('work');
+
+    const starts = driver.callsOf('coldStart');
+    assert.equal(starts.length, 1);
+    assert.equal(
+      starts[0]?.detail?.mode,
+      'headed',
+      'a configured signed-in browser started headless',
+    );
+    // The control, in the same fixture: the ephemeral kind stays headless.
+    await provider.session('private');
+    assert.equal(driver.callsOf('coldStart')[1]?.detail?.mode, 'headless');
   });
 });
 

@@ -9,7 +9,7 @@ import {
 } from '../browser/adoption.ts';
 import { openAttachedSession, type AttachedSessionOptions } from '../browser/attached.ts';
 import type { BrowserDriver, BrowserId, BrowserSession } from '../browser/driver.ts';
-import { browserIsRunning, modeFor, RealBrowserDriver } from '../browser/real.ts';
+import { browserIsRunning, kindOfConfigured, modeFor, RealBrowserDriver } from '../browser/real.ts';
 import type { ArtifactStore } from '../artifacts/store.ts';
 import type { Environment } from '../config/environment.ts';
 import { StartupRefusal } from '../errors.ts';
@@ -263,6 +263,13 @@ export function browserSessionProvider(options: BrowserSessionProviderOptions): 
       // `config/environment.ts` — so what arrives here is either a binary or
       // nothing, and nothing means the bundled Chromium.
       executablePathFor: (browser) => options.environment.browserPaths.get(browser),
+      // The driver adopts as well as launches, and an adopted session's
+      // mode label decides the keeper rule (§3.15) — so the lists that say
+      // which name is which kind travel to the driver too.
+      configuredBrowsers: {
+        regular: options.environment.regularBrowsers,
+        private: options.environment.privateBrowsers,
+      },
       ...(options.artifacts === undefined
         ? {}
         : // The driver names a file; the store decided the directory. See
@@ -613,7 +620,18 @@ async function performDecision(
     const started = await driver.coldStart({
       browser,
       profileDirectory: profileDir,
-      mode: modeFor(browser),
+      // The kind, not the name: `BROKER_REGULAR_BROWSERS=work` is a legal
+      // configuration, and the name fallback would launch a signed-in
+      // browser headless — without the keeper the headed rule exists for
+      // (§3.15). The environment lists are the one place that knows which
+      // list this name sits in.
+      mode: modeFor(
+        browser,
+        kindOfConfigured(browser, {
+          regular: options.environment.regularBrowsers,
+          private: options.environment.privateBrowsers,
+        }),
+      ),
     });
     const described = started.describe();
     await recordLaunched(options.store, browser, {

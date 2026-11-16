@@ -2389,6 +2389,23 @@ export interface RealDriverOptions {
    * this row exists to avoid.
    */
   readonly executablePathFor?: (browser: BrowserId) => string | undefined;
+  /**
+   * The names this installation configures as its signed-in and ephemeral
+   * browsers, so an **adopted** session is labelled by the kind its
+   * configuration says rather than by what its name suggests.
+   *
+   * `BROKER_REGULAR_BROWSERS=work` is a legal configuration, and the
+   * name-only fallback in {@link modeFor} would label `work` headless —
+   * skipping the keeper rule (§3.15) that keeps a last release from
+   * killing the headed browser holding the shared sign-in. The
+   * environment knows which list every name sits in; a driver built
+   * without this falls back to the name, which is right for a default
+   * installation and wrong for any other one.
+   */
+  readonly configuredBrowsers?: {
+    readonly regular: readonly string[];
+    readonly private: readonly string[];
+  };
   readonly launch?: LaunchOptions;
   readonly fetchImpl?: typeof fetch;
   /**
@@ -2446,6 +2463,31 @@ export function modeFor(browser: BrowserId, kind?: BrowserKind): BrowserMode {
 }
 
 /**
+ * The kind this installation configures a name as, or `undefined` when the
+ * name is in none of the lists.
+ *
+ * It exists so callers can hand {@link modeFor} a kind rather than a bare
+ * name. A signed-in browser may be configured under **any** name —
+ * `BROKER_REGULAR_BROWSERS=work` is legal and encouraged — and the name
+ * fallback in `modeFor` reads `work` as headless. That is not cosmetic: the
+ * mode label decides the keeper-tab rule (§3.15), and the keeper exists so
+ * the last lease releasing does not kill a headed browser holding a shared
+ * sign-in. The environment knows which list every name sits in; a call site
+ * that has the environment has the truth and should pass it.
+ */
+export function kindOfConfigured(
+  browser: BrowserId,
+  lists: {
+    readonly regular: readonly string[];
+    readonly private: readonly string[];
+  },
+): BrowserKind | undefined {
+  if (lists.regular.includes(browser)) return 'regular';
+  if (lists.private.includes(browser)) return 'private';
+  return undefined;
+}
+
+/**
  * Connect to a browser whose endpoint has already been verified, and wrap it.
  *
  * Split out because both halves of the driver end here: a cold start verifies
@@ -2454,6 +2496,18 @@ export function modeFor(browser: BrowserId, kind?: BrowserKind): BrowserMode {
  */
 async function connect(options: {
   browser: BrowserId;
+  /**
+   * The session's mode, **supplied rather than re-derived from the name**.
+   *
+   * A cold start passes the mode it just launched with — the label then
+   * states what the browser *is* rather than what its name hints at — and
+   * an adoption passes what the driver's {@link
+   * RealDriverOptions.configuredBrowsers} says the name is configured as.
+   * Deriving it from the name here is the inert-argument defect: the label
+   * decides the keeper rule (§3.15), and a configured regular browser under
+   * any other name would skip it.
+   */
+  mode: BrowserMode;
   record: DiscoveryRecord;
   pid: number;
   outputDirectory?: string;
@@ -2470,7 +2524,7 @@ async function connect(options: {
 
   const session = new RealBrowserSession({
     browser: options.browser,
-    mode: modeFor(options.browser),
+    mode: options.mode,
     pid: options.pid,
     record: options.record,
     connection,
@@ -2556,6 +2610,17 @@ export class RealBrowserDriver implements BrowserDriver {
 
     return connect({
       browser,
+      // The browser already exists, so the only evidence of what it is is
+      // what this installation configured the name as — which is exactly
+      // why the driver carries {@link
+      // RealDriverOptions.configuredBrowsers} rather than leaving this to
+      // the name.
+      mode: modeFor(
+        browser,
+        this.#options.configuredBrowsers === undefined
+          ? undefined
+          : kindOfConfigured(browser, this.#options.configuredBrowsers),
+      ),
       record: outcome.record,
       ...(this.#options.outputDirectory === undefined
         ? {}
@@ -2605,6 +2670,10 @@ export class RealBrowserDriver implements BrowserDriver {
 
     return connect({
       browser: request.browser,
+      // The label states the mode this call **launched with**, decided once
+      // by the caller who knows the configured kind — not re-derived from
+      // the name a second time down here.
+      mode: request.mode,
       record: outcome.record,
       pid: outcome.pid,
       ...(this.#options.outputDirectory === undefined

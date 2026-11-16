@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-import { browserIsRunning, RealBrowserDriver, modeFor } from '../browser/real.ts';
+import { browserIsRunning, kindOfConfigured, RealBrowserDriver, modeFor } from '../browser/real.ts';
 import { DEFAULT_BROWSER_IDS, type BrowserId, type BrowserSession } from '../browser/driver.ts';
 import type { Environment } from '../config/environment.ts';
 import { BrokerError } from '../errors.ts';
@@ -239,6 +239,22 @@ export interface SignInWindow {
 }
 
 /**
+ * The mode a sign-in window must open in: the configured kind of the
+ * browser when the caller has the lists, the name fallback otherwise.
+ *
+ * A sign-in is only ever wanted in a browser whose profile persists, and
+ * that browser may be configured under any name — a headless window would
+ * be one the person cannot type into at all, so the lists decide and the
+ * name is only the default installation's shortcut.
+ */
+function signInMode(
+  browser: Parameters<typeof modeFor>[0],
+  lists: { readonly regular: readonly string[]; readonly private: readonly string[] } | undefined,
+): ReturnType<typeof modeFor> {
+  return modeFor(browser, lists === undefined ? undefined : kindOfConfigured(browser, lists));
+}
+
+/**
  * The real window: a headed browser against the configured profile.
  *
  * It attaches to one that is already running and starts one otherwise, which
@@ -262,6 +278,15 @@ export function realSignInWindow(
      * browser is, or the guard turns into an obstacle.
      */
     readonly browserPaths?: ReadonlyMap<string, string>;
+    /**
+     * The installation's browser lists, so a sign-in window for a named
+     * signed-in browser (`BROKER_REGULAR_BROWSERS=work`) opens **headed**
+     * like the browser it is, rather than headless like its name.
+     */
+    readonly configuredBrowsers?: {
+      readonly regular: readonly string[];
+      readonly private: readonly string[];
+    };
   } = {},
 ): SignInWindow {
   const driver = new RealBrowserDriver({
@@ -269,6 +294,9 @@ export function realSignInWindow(
     ...(options.browserPaths === undefined
       ? {}
       : { executablePathFor: (browser) => options.browserPaths?.get(browser) }),
+    ...(options.configuredBrowsers === undefined
+      ? {}
+      : { configuredBrowsers: options.configuredBrowsers }),
   });
 
   return {
@@ -282,7 +310,7 @@ export function realSignInWindow(
           const session = await driver.coldStart({
             browser: request.browser,
             profileDirectory: request.profileDirectory,
-            mode: modeFor(request.browser),
+            mode: signInMode(request.browser, options.configuredBrowsers),
           });
           return finishOpen(session, true);
         }
@@ -295,7 +323,7 @@ export function realSignInWindow(
       const session = await driver.coldStart({
         browser: request.browser,
         profileDirectory: request.profileDirectory,
-        mode: modeFor(request.browser),
+        mode: signInMode(request.browser, options.configuredBrowsers),
       });
       return finishOpen(session, true);
     },
@@ -431,7 +459,15 @@ export async function runLoginCommand(options: LoginOptions): Promise<number> {
 
   let opened: { pid: number; startedIt: boolean } | undefined;
   try {
-    const window = options.window ?? realSignInWindow({ browserPaths: environment.browserPaths });
+    const window =
+      options.window ??
+      realSignInWindow({
+        browserPaths: environment.browserPaths,
+        configuredBrowsers: {
+          regular: environment.regularBrowsers,
+          private: environment.privateBrowsers,
+        },
+      });
 
     // Asked positively, and the answer is used only in the direction where it
     // is meaningful: a verified record means a browser is there to attach to.

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { LAST_BROWSER_FILE } from '../../src/browser/profile-marker.ts';
-import { RealBrowserDriver } from '../../src/browser/real.ts';
+import { RealBrowserDriver, kindOfConfigured, modeFor } from '../../src/browser/real.ts';
 import { absolutePath } from '../helpers/paths.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 
@@ -37,19 +37,21 @@ import { StartupRefusal } from '../../src/errors.ts';
 
 interface Spawned {
   readonly executablePath: string;
+  readonly args: readonly string[];
 }
 
 /**
- * A spawn seam that records what it was asked to start and then behaves as a
- * browser that never opens an endpoint.
+ * A spawn seam that records what it was asked to start — binary **and
+ * command line** — and then behaves as a browser that never opens an
+ * endpoint.
  *
  * The launch therefore always fails, and that is deliberate: the assertion is
  * on **what was asked for**, which is recorded before the failure, so the test
  * needs no browser and no endpoint. The refusal is expected and swallowed.
  */
 function recordingSpawn(record: Spawned[]): typeof spawn {
-  return ((executablePath: string) => {
-    record.push({ executablePath });
+  return ((executablePath: string, args?: readonly string[]) => {
+    record.push({ executablePath, args: args ?? [] });
     return { pid: 4242, once: () => undefined, unref: () => undefined };
   }) as unknown as typeof spawn;
 }
@@ -65,9 +67,10 @@ async function attemptColdStart(
   driver: RealBrowserDriver,
   browser: string,
   profileDirectory: string,
+  mode: 'headed' | 'headless' = 'headless',
 ): Promise<unknown> {
   try {
-    await driver.coldStart({ browser, profileDirectory, mode: 'headless' });
+    await driver.coldStart({ browser, profileDirectory, mode });
     return undefined;
   } catch (error) {
     // Every launch here fails, because the fake browser opens no endpoint.
@@ -129,6 +132,60 @@ test('a browser with no configured binary falls back to the flat injected one', 
   await attemptColdStart(driver, 'regular', temporaryProfile());
 
   assert.equal(spawned[0]?.executablePath, fallback);
+});
+
+// ── The configured kind decides the mode; the name is only a default ─────
+
+// THE MUTATION THIS CATCHES: a call site computing `mode` from the browser's
+// **name** — `modeFor('work')` with no kind — so `BROKER_REGULAR_BROWSERS=work`
+// cold-starts headless, skipping the keeper rule (§3.15) that keeps a last
+// release from killing the headed browser holding the shared sign-in. The
+// flag on the recorded command line is the physical fact: a headless label
+// with a headed launch, or the other way round, is the drift this asserts
+// against.
+test('a named signed-in browser launches headed: the configured kind decides, not the name', async () => {
+  const spawned: Spawned[] = [];
+  const lists = { regular: ['work'], private: ['clean'] };
+  const driver = new RealBrowserDriver({
+    configuredBrowsers: lists,
+    launch: { ...FAST, spawnImpl: recordingSpawn(spawned) },
+  });
+
+  // The mode the service computes for a launch it is about to make.
+  await attemptColdStart(
+    driver,
+    'work',
+    temporaryProfile(),
+    modeFor('work', kindOfConfigured('work', lists)),
+  );
+
+  assert.equal(spawned.length, 1);
+  assert.ok(
+    !spawned[0]?.args.includes('--headless=new'),
+    'a configured signed-in browser was asked to start headless',
+  );
+});
+
+test('the named ephemeral browser still launches headless — the lists decide both ways', async () => {
+  const spawned: Spawned[] = [];
+  const lists = { regular: ['work'], private: ['clean'] };
+  const driver = new RealBrowserDriver({
+    configuredBrowsers: lists,
+    launch: { ...FAST, spawnImpl: recordingSpawn(spawned) },
+  });
+
+  await attemptColdStart(
+    driver,
+    'clean',
+    temporaryProfile(),
+    modeFor('clean', kindOfConfigured('clean', lists)),
+  );
+
+  assert.equal(spawned.length, 1);
+  assert.ok(
+    spawned[0]?.args.includes('--headless=new'),
+    'the ephemeral kind must stay headless: the fix is about the kind, not about heading everything',
+  );
 });
 
 // ── The profile guard refuses BEFORE the spawn (the item's AC4 and AC6) ──
