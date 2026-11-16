@@ -697,8 +697,8 @@ export class AttachedBrowserSession implements BrowserSession {
   }
 
   /**
-   * Whether the page currently holds a form control focused — one fixed
-   * read, written here, of the browser's own focus fact.
+   * Whether the page holds a form control focused at the moment of the press
+   * — one fixed read, written here, of the browser's own focus fact.
    *
    * This is a **fixed expression of this file**, in the same standing as the
    * scroll instruction above: {@link evaluate} refuses the caller's program,
