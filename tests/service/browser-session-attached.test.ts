@@ -105,6 +105,10 @@ async function withAttachedStore(
     // here or could.
     attachedExtensionId: 'abcdefghijklmnopqrstuvwxyz012345',
     attachedToken: 'a-token-never-logged',
+    // A configured binary for the attached name — the open path needs it to
+    // run the connect page. It is never executed here: the opener is always
+    // injected, so no spawn happens and no file has to exist.
+    browserPaths: new Map([['chrome', 'the-configured-binary']]),
   });
   const store = await prepareStore(temp.environment);
   try {
@@ -142,6 +146,11 @@ test('an attached browser is opened by the opener, and the driver is never asked
     // The group title is the configured name: true of every lease against
     // this browser, and carrying nothing any caller sent.
     assert.equal(options.clientName, 'chrome');
+    // The configured binary rides through to the opener — it is what the
+    // open path runs on the connect URL, the only thing that can carry the
+    // relay's random endpoint to the extension. Without this line the
+    // doctor's binary check checks a value nothing uses.
+    assert.equal(options.browserPath, 'the-configured-binary');
 
     // **The physical half: adoption never ran.** No launch, no attach, and
     // nothing recorded in the store about a process this service does not

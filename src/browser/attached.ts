@@ -56,6 +56,8 @@ import {
 import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
 import { connect } from '../attach/session.ts';
 import type { AttachedBridge } from '../attach/session.ts';
+import { openConnectPage } from '../attach/connect-launcher.ts';
+import type { ConnectPageRequest } from '../attach/connect-launcher.ts';
 import { AttachedError } from '../attach/errors.ts';
 import { looksLikeSentinel } from '../secrets/sentinel.ts';
 import { annotateRefless, filterSnapshot, REFERENCE_RESOLUTION_MS } from './real.ts';
@@ -81,17 +83,29 @@ import type {
 import { readPngDimensions, renderNetworkLog, type NetworkEntry } from './render.ts';
 
 /**
- * How long the open path waits for the extension to arrive before it refuses.
+ * How long the open path waits for the extension when a token is configured.
  *
- * The relay's own default is thirty seconds, which is right for a person
- * finishing with the connect page and wrong for a service spawned per
- * command: a claim against an offline browser would hold a process, a port
- * and a queue position for half a minute before saying so. The refusal this
- * bound produces is `attached.not_connected` — **refuse, not queue**, because
- * the queue's promise is that capacity frees up, and an extension that is not
- * connected has promised nothing of the kind.
+ * With a token the connect page skips its approval click and the extension
+ * arrives on its own, so the wait covers only the connect-page launch and the
+ * extension's own start — seconds. The refusal this bound produces is
+ * `attached.not_connected` — **refuse, not queue**, because the queue's
+ * promise is that capacity frees up, and an extension that is not connected
+ * has promised nothing of the kind.
  */
 const CONNECT_WAIT_MS = 5_000;
+
+/**
+ * How long the open path waits when **no** token is configured.
+ *
+ * Without a token the connect page waits for a person to click Allow in it,
+ * and five seconds is the wrong order of magnitude for a human decision: the
+ * first approval cannot complete inside it, which is the state the widened
+ * bound exists for. The bound is the relay's own interactive default (thirty
+ * seconds) — "a few seconds, well under the relay's default" is right only
+ * when the token does the clicking. The widened wait still ends in the same
+ * refusal; it is longer, not queued.
+ */
+const TOKENLESS_CONNECT_WAIT_MS = 30_000;
 
 /** Bound on the Playwright handshake once the extension is through. */
 const CDP_CONNECT_TIMEOUT_MS = 15_000;
@@ -172,30 +186,82 @@ export interface AttachedSessionOptions {
   readonly token?: string;
   /** Where {@link act} and {@link read} write their artefacts, as in `real.ts`. */
   readonly outputDirectory?: string;
-  /** Over the default {@link CONNECT_WAIT_MS}. */
+  /**
+   * The binary whose window shows the connect page, from
+   * `BROKER_BROWSER_<NAME>_PATH`. **Required for an open**: the relay's
+   * endpoint is random per lease, so the connect page is the only thing
+   * that can carry it to the extension, and without the binary there is no
+   * page and nothing reaches the relay. Absent, the open refuses
+   * `attached.no_binary` before it binds a port.
+   */
+  readonly browserPath?: string;
+  /** Over the default {@link CONNECT_WAIT_MS} / {@link TOKENLESS_CONNECT_WAIT_MS}. */
   readonly connectTimeoutMs?: number;
   /** Bridge log sink; nothing written there carries the token. */
   readonly log?: (message: string) => void;
+  /**
+   * How the connect page is opened — injected on the seam's own convention
+   * (`spawnImpl` in `launch.ts`) so a test can watch the open without a
+   * person's browser. Defaults to `connect-launcher`'s `openConnectPage`.
+   */
+  readonly launchConnectPage?: (request: ConnectPageRequest) => void;
 }
 
 /**
- * Open a bridge to the person's browser, wait for his extension, and attach.
+ * Open a bridge to the person's browser, show his extension the connect page,
+ * wait for it, and attach.
+ *
+ * ── Why the connect page is part of the open and not an option ───────────
+ *
+ * The relay binds a **random port under a random uuid every lease**; nothing
+ * else prints or logs it. The connect page — the extension's own
+ * `connect.html` carrying `mcpRelayUrl` — is the only route by which the
+ * extension learns that endpoint. An open that skipped it would listen on a
+ * port nobody can be told about, and `attached.not_connected` would be a
+ * permanent answer rather than a moment. So the open runs the configured
+ * binary on the URL first, and only then starts the bounded wait — with no
+ * token the page is where a person clicks Allow; with one, the token on the
+ * URL is what lets the extension skip the click.
  *
  * The whole open is one bounded refusal: if the extension does not arrive
- * within the connect wait, **nothing was connected, no tab was opened, and the
- * listener is closed again** before the rejection reaches the caller —
- * `attached.not_connected`, retryable in the sense that he can connect, never
- * a queue entry.
+ * within the connect wait, **nothing was connected, no tab was opened, and
+ * the listener is closed again** before the rejection reaches the caller —
+ * `attached.not_connected`, retryable in the sense that he can connect,
+ * never a queue entry.
  */
 export async function openAttachedSession(
   options: AttachedSessionOptions,
 ): Promise<AttachedBrowserSession> {
+  // Refused **before the port is bound**: a listener nobody can be pointed
+  // at is the open door this layer's whole close-the-port discipline is
+  // built to avoid, and the binary's absence is knowable here.
+  if (options.browserPath === undefined || options.browserPath.trim() === '') {
+    throw new AttachedError(
+      'attached.no_binary',
+      `The attached browser "${options.browser}" has no configured binary to open its connect page with, so nothing could learn this relay's address. Set BROKER_BROWSER_<NAME>_PATH for it, or empty BROKER_ATTACHED_BROWSERS to leave the capability off.`,
+    );
+  }
   const bridge = await connect({
     clientName: options.clientName,
     extensionId: options.extensionId,
     ...(options.token === undefined ? {} : { token: options.token }),
     ...(options.log === undefined ? {} : { log: options.log }),
   });
+  try {
+    // The URL is the bridge's own — token and background flags included as
+    // configured — so this call cannot disagree with what the extension is
+    // expected to present. The token travels to the launcher only for the
+    // `--open-in-background` pairing (`buildConnectArgs` carries it with a
+    // token and never alone), never as a second copy in the URL.
+    (options.launchConnectPage ?? openConnectPage)({
+      browserPath: options.browserPath,
+      connectUrl: bridge.connectUrl(),
+      ...(options.token === undefined ? {} : { token: options.token, background: true }),
+    });
+  } catch (error) {
+    bridge.close('connect page could not be opened');
+    throw error;
+  }
   return await attachOverBridge(bridge, options);
 }
 
@@ -211,7 +277,14 @@ export async function attachOverBridge(
   options: AttachedSessionOptions,
 ): Promise<AttachedBrowserSession> {
   try {
-    await bridge.waitForExtension(options.connectTimeoutMs ?? CONNECT_WAIT_MS);
+    // A token means the extension skips its approval click and answers in
+    // seconds; without one the wait is for a person, and the bound widens to
+    // the relay's interactive default — still a refusal at the bound, never
+    // a queue.
+    await bridge.waitForExtension(
+      options.connectTimeoutMs ??
+        (options.token === undefined ? TOKENLESS_CONNECT_WAIT_MS : CONNECT_WAIT_MS),
+    );
     const connection = await chromium.connectOverCDP(bridge.cdpEndpoint, {
       timeout: CDP_CONNECT_TIMEOUT_MS,
     });

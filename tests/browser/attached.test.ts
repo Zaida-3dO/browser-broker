@@ -97,19 +97,176 @@ test('a session against an extension that never connects is refused, not queued,
 });
 
 test('the one-shot open path refuses an extension that never arrives', async () => {
-  // `openAttachedSession` is the production entry: bind, wait, attach. With no
-  // extension on the other end it must say so — and the relay contract's rule
-  // is that a failed open closes the bridge again (asserted concretely in the
-  // test below it, where the bridge handle is in reach).
+  // `openAttachedSession` is the production entry: bind, open the connect
+  // page, wait, attach. With no extension on the other end it must say so —
+  // and the relay contract's rule is that a failed open closes the bridge
+  // again (asserted concretely in the test below it, where the bridge handle
+  // is in reach).
   await assert.rejects(
     openAttachedSession({
       browser: BROWSER,
       clientName: 'attached test',
       extensionId: EXTENSION_ID,
+      browserPath: 'the-configured-binary',
+      launchConnectPage: () => undefined,
       connectTimeoutMs: 400,
     }),
     (error: unknown) => error instanceof AttachedError && error.rule === 'attached.not_connected',
   );
+});
+
+test('the open shows the connect page exactly once before it waits, and the URL carries the relay endpoint', async () => {
+  // The defect this pins: nothing ever opened the connect page, so the
+  // extension could never learn the relay's random per-lease endpoint and
+  // `attached.not_connected` was a permanent answer. The page is the wire
+  // that carries the endpoint; an open that refused had to have opened it
+  // first, or the refusal would be a promise nobody could keep.
+  const launched: { connectUrl: string; browserPath: string; token?: string }[] = [];
+  const error = await openAttachedSession({
+    browser: BROWSER,
+    clientName: 'read the dashboard',
+    extensionId: EXTENSION_ID,
+    browserPath: 'the-configured-binary',
+    launchConnectPage: (request) => {
+      launched.push(request);
+    },
+    connectTimeoutMs: 300,
+  }).then(
+    () => undefined,
+    (thrown: unknown) => thrown,
+  );
+  assert.ok(error instanceof AttachedError);
+  assert.equal(error.rule, 'attached.not_connected');
+
+  assert.equal(launched.length, 1, 'the connect page opened exactly once');
+  const request = launched[0];
+  assert.ok(request !== undefined);
+  assert.equal(request.browserPath, 'the-configured-binary');
+  const url = new URL(request.connectUrl);
+  assert.equal(url.protocol, 'chrome-extension:');
+  assert.equal(url.host, EXTENSION_ID);
+  assert.equal(url.pathname, '/connect.html');
+  const relay = url.searchParams.get('mcpRelayUrl') ?? '';
+  assert.match(relay, /^ws:\/\/(127\.0\.0\.1|localhost):\d+\/extension\/.+$/, 'the endpoint rides');
+  const client = JSON.parse(url.searchParams.get('client') ?? '{}') as { name?: string };
+  assert.equal(client.name, 'read the dashboard');
+  assert.equal(url.searchParams.get('protocolVersion'), '2');
+  // No token configured: no token on the URL, and the approval page stays a
+  // page — no background flag, because a background page nobody approved is
+  // a connect that happened without consent.
+  assert.equal(url.searchParams.has('token'), false);
+  assert.equal(request.token, undefined);
+});
+
+test('a configured token rides the connect URL, permits the background open, and never reaches the log', async () => {
+  const log: string[] = [];
+  const launched: { connectUrl: string; token?: string; background?: boolean }[] = [];
+  const token = 'a-token-never-quoted';
+  const error = await openAttachedSession({
+    browser: BROWSER,
+    clientName: 'attached test',
+    extensionId: EXTENSION_ID,
+    token,
+    browserPath: 'the-configured-binary',
+    launchConnectPage: (request) => {
+      launched.push(request);
+    },
+    log: (line) => log.push(line),
+    connectTimeoutMs: 300,
+  }).then(
+    () => undefined,
+    (thrown: unknown) => thrown,
+  );
+  assert.ok(error instanceof AttachedError);
+  assert.equal(error.rule, 'attached.not_connected');
+  assert.equal(launched.length, 1);
+  const request = launched[0];
+  assert.ok(request !== undefined);
+  const url = new URL(request.connectUrl);
+  assert.equal(url.searchParams.get('token'), token, 'the extension needs it to skip the click');
+  assert.equal(url.searchParams.get('background'), 'true');
+  // The token also travels to the launcher — as the partner of the
+  // background flag in `buildConnectArgs` — but the URL is its only wire.
+  assert.equal(request.token, token);
+  assert.ok(
+    log.every((line) => !line.includes(token)),
+    'a log line carried the token',
+  );
+});
+
+test('an attached open without a configured binary refuses by name and binds no port', async () => {
+  // Without the binary the connect page cannot open, the extension can
+  // never learn the endpoint, and the open would be a listener nobody can
+  // point a browser at. The refusal sits before the bind.
+  let launched = 0;
+  await assert.rejects(
+    openAttachedSession({
+      browser: BROWSER,
+      clientName: 'attached test',
+      extensionId: EXTENSION_ID,
+      launchConnectPage: () => {
+        launched += 1;
+      },
+      connectTimeoutMs: 100,
+    }),
+    (error: unknown) => error instanceof AttachedError && error.rule === 'attached.no_binary',
+  );
+  assert.equal(launched, 0, 'the launcher ran for an open that could not name a browser');
+});
+
+test('the not-connected wait is seconds with a token and the relay default without one', async () => {
+  // The widened bound, pinned at the number: the token does the clicking, so
+  // the wait covers a launch; without it the wait covers a person, and five
+  // seconds could never fit one. An explicit `connectTimeoutMs` still wins.
+  const bounds: (number | undefined)[] = [];
+  const waitsForNothingBridge = (): AttachedBridge => {
+    const bridge: AttachedBridge = {
+      cdpEndpoint: 'ws://127.0.0.1:1/cdp/x',
+      extensionEndpoint: 'ws://127.0.0.1:1/extension/x',
+      connectUrl: () => 'chrome-extension://x/connect.html',
+      extensionConnected: () => false,
+      extensionProtocolVersion: () => undefined,
+      waitForExtension: (timeoutMs?: number) => {
+        bounds.push(timeoutMs);
+        return Promise.reject(new AttachedError('attached.not_connected', 'never arrives'));
+      },
+      openConnectPage: () => undefined,
+      tabs: () => [],
+      isOurs: () => false,
+      isOursByTargetId: () => false,
+      on: () => () => undefined,
+      close: () => undefined,
+    };
+    return bridge;
+  };
+
+  for (const [options, expected] of [
+    // No token: a person is the thing being waited for — the widened bound.
+    [{ browser: BROWSER, clientName: 'attached test', extensionId: EXTENSION_ID }, 30_000],
+    // Token: the extension skips the click — seconds.
+    [
+      { browser: BROWSER, clientName: 'attached test', extensionId: EXTENSION_ID, token: 't' },
+      5_000,
+    ],
+    // An override outranks both.
+    [
+      {
+        browser: BROWSER,
+        clientName: 'attached test',
+        extensionId: EXTENSION_ID,
+        connectTimeoutMs: 10,
+      },
+      10,
+    ],
+  ] as const) {
+    await assert.rejects(
+      attachOverBridge(waitsForNothingBridge(), options),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.not_connected',
+    );
+    // Asserted row by row, so a failing case names itself rather than
+    // pointing at whichever index first differed.
+    assert.equal(bounds[bounds.length - 1], expected);
+  }
 });
 
 test('a refused open does not reach the browser at all: the extension never connected, and no client did either', async () => {

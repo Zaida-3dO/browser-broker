@@ -565,12 +565,20 @@ async function acquireAttached(
     );
   }
   const token = options.environment.attachedToken;
+  // The binary `BROKER_BROWSER_<NAME>_PATH` names for this attached browser.
+  // The doctor has always checked it exists; this is where it is *used*: the
+  // open path runs it on the connect URL, which is the only way the
+  // extension learns the relay's per-lease endpoint. Absent, the opener
+  // refuses `attached.no_binary` — the doctor's row stops being a note and
+  // becomes a requirement.
+  const browserPath = options.environment.browserPaths.get(browser);
   const open = options.attachedOpener ?? openAttachedSession;
   return open({
     browser,
     clientName: browser,
     extensionId,
     ...(token === undefined ? {} : { token }),
+    ...(browserPath === undefined ? {} : { browserPath }),
     ...(options.artifacts === undefined
       ? {}
       : { outputDirectory: path.join(options.artifacts.root, 'snapshots') }),
