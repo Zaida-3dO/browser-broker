@@ -87,6 +87,16 @@ export interface WindowedText {
   readonly nextOffset: number;
 }
 
+/** First half of a surrogate pair — the only code units that start a non-BMP character. */
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+
+/** Second half of a surrogate pair — meaningless on its own, by construction. */
+function isLowSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
+
 /**
  * Cut the window out of the artefact's text.
  *
@@ -104,8 +114,43 @@ export interface WindowedText {
  */
 export function applyReadWindow(text: string, window: ReadWindow): WindowedText {
   const total = text.length;
-  const start = Math.min(window.offset, total);
-  const end = Math.min(start + window.limit, total);
+  let start = Math.min(window.offset, total);
+  // **UTF-16 code units are not characters, and a slice boundary that falls
+  // inside a surrogate pair corrupts the character on both sides of the
+  // cut:** each half alone is a lone surrogate, which every renderer downstream
+  // turns into the replacement character, and a caller stitching pages back
+  // together at `nextOffset` receives `??` characters where an emoji, a
+  // CJK-extension ideograph or a math symbol should be. So both edges back
+  // off to the
+  // character boundary:
+  //
+  // - An `end` that would fall between the halves moves back over the pair;
+  //   the character arrives whole in the next window, one unit of slack
+  //   against the limit — which the cap's bound on *source* text affords.
+  // - An `offset` that lands on a pair's second half moves back over it,
+  //   **overlapping one code unit** with the previous window. Overlap is
+  //   recoverable by anyone stitching; a silently dropped character is not.
+  //
+  // The rule cannot hold where the window is too small to fit a whole pair
+  // (a limit of one against non-BMP text); then the pair is cut, which is
+  // the caller's degenerate configuration talking, not the reader's data.
+  if (
+    start > 0 &&
+    start < total &&
+    isLowSurrogate(text.charCodeAt(start)) &&
+    isHighSurrogate(text.charCodeAt(start - 1))
+  ) {
+    start -= 1;
+  }
+  let end = Math.min(start + window.limit, total);
+  if (
+    end > start + 1 &&
+    end < total &&
+    isHighSurrogate(text.charCodeAt(end - 1)) &&
+    isLowSurrogate(text.charCodeAt(end))
+  ) {
+    end -= 1;
+  }
   return {
     text: text.slice(start, end),
     start,

@@ -152,6 +152,58 @@ const APPLY_ROWS: readonly ApplyRow[] = [
       nextOffset: 3,
     },
   },
+  {
+    // The row the é rows cannot express: a character **outside** the Basic
+    // Multilingual Plane is two UTF-16 code units, and a cut between them
+    // leaves two lone surrogates — each one renders as `?`, and a caller
+    // stitching pages at `nextOffset` gets corruption it cannot detect.
+    // `😀` occupies indices 1 and 2 here; a limit of 2 lands exactly in
+    // the middle, and the end must back off over the pair.
+    name: 'a cut landing inside a surrogate pair backs up over the whole pair',
+    text: 'a😀b',
+    window: { offset: 0, limit: 2 },
+    expect: {
+      text: 'a',
+      start: 0,
+      end: 1,
+      total: 4,
+      hasMore: true,
+      nextOffset: 1,
+    },
+  },
+  {
+    // The other edge: an offset that lands on the pair's **second** half.
+    // Backing up overlaps one code unit with the previous window — a
+    // stitcher can see and drop an overlap; nobody can recover a silently
+    // dropped character.
+    name: 'an offset landing on a pair half takes the whole character',
+    text: 'a😀b',
+    window: { offset: 2, limit: 5 },
+    expect: {
+      text: '😀b',
+      start: 1,
+      end: 4,
+      total: 4,
+      hasMore: false,
+      nextOffset: 4,
+    },
+  },
+  {
+    // Paging consequence of the row above: a caller that pages by
+    // `nextOffset` never sees a lone half — the pair arrives whole, exactly
+    // once, on the second page.
+    name: 'paging by nextOffset delivers the pair whole on the next window',
+    text: 'a😀b',
+    window: { offset: 1, limit: 5 },
+    expect: {
+      text: '😀b',
+      start: 1,
+      end: 4,
+      total: 4,
+      hasMore: false,
+      nextOffset: 4,
+    },
+  },
 ];
 
 test('applyReadWindow pages an artefact exactly as the window says', async (t) => {
