@@ -4,6 +4,7 @@ import test from 'node:test';
 import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 
 import { decide } from '../../src/attach/gate.ts';
+import { releaseHeldModifiers } from '../../src/browser/attached.ts';
 import {
   SECRET_FIELD_SELECTOR,
   controlFacts,
@@ -569,3 +570,25 @@ test('M3: the scan names every secret token with the list-token operator', () =>
     'an exact-match autocomplete selector misses every list',
   );
 });
+
+test(
+  'F2: a press that fails part-way through the key string leaves no modifier held on the page',
+  { skip: available ? false : skipReason() },
+  async () => {
+    await withPage(`<input id="i">`, async (page) => {
+      const field = page.locator(`#i`);
+      await field.click();
+      // The library's press holds each modifier down before it tries the
+      // next token, and releases nothing when the base fails: without the
+      // session-side release, Shift and Control would stay held on the page
+      // for every later key. This drives the release the session's catch
+      // runs, against a real keyboard.
+      await assert.rejects(page.keyboard.press('Shift+Control+é'));
+      await releaseHeldModifiers(page, 'Shift+Control+é');
+      await page.keyboard.press('d');
+      // A held Shift would have typed `D`; a held Control would have made
+      // the letter a chord. What crosses is the plain key, alone.
+      assert.equal(await field.inputValue(), 'd');
+    });
+  },
+);

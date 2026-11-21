@@ -1714,6 +1714,44 @@ test('L2: one spelling of the movement keys — a lower-cased name is no movemen
   }
 });
 
+test('F2: keys the library cannot press and wrong-case modifiers refuse at the grammar — the page is never half-pressed', async () => {
+  // The library's `press` holds each modifier of a combination down before
+  // it tries the next token, releases nothing on a throw, and knows a
+  // single character only inside printable ASCII. So `é` after a modifier,
+  // or a wrong-case `control`, is not a spelling to canonicalise — it is a
+  // chord that would arrive modified with a stuck Shift or Control behind
+  // it. Every one of these refuses as **not a key**, on a listed site,
+  // before a single `Input.*` crosses.
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    for (const key of [
+      'Shift+é',
+      'Control+é',
+      'é',
+      '\u0000',
+      '\u007f',
+      'shift+a',
+      'Shift+control+a',
+    ]) {
+      const before = inputCountOf(ext);
+      await assert.rejects(
+        session.act(tab, { action: 'press', value: key }, undefined, CALLER),
+        (error: unknown) =>
+          error instanceof AttachedError && error.rule === 'attached.key_unparseable',
+        `${JSON.stringify(key)} is not a key the grammar admits`,
+      );
+      assert.equal(inputCountOf(ext), before, `${JSON.stringify(key)} never reached the page`);
+    }
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
 test('the focus decision is table-driven: only plain page focus passes — controls, editables, frames, shadow hosts, role widgets, aria values and custom elements all hold focus', () => {
   // The predicate half of the gate, with no page anywhere: what the read
   // learns is data, and this is where the answer is decided. The shape is

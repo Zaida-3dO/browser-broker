@@ -63,6 +63,7 @@ import {
   decide,
   grantValueDigest,
   isConsequentialText,
+  modifierTokensOf,
   verifyOwnerGrant,
   type ActTarget,
   type GateDecision,
@@ -631,6 +632,28 @@ export async function attachOverBridge(
 }
 
 /**
+ * Release every modifier a **failed** press may have left held down.
+ *
+ * The library's `press` walks the key string's tokens in order, holding
+ * each modifier down before it tries the next, and on a throw it releases
+ * nothing — the keyboard state belongs to the page and survives the call.
+ * The gate's grammar keeps this rare (an unpressable base or a wrong-case
+ * modifier refuses before the page), but if a press ever fails part-way —
+ * a bridge error between two tokens, a name the gate and the library
+ * disagree about — a Shift left on the page modifies **every later key**
+ * for the rest of the session, approved or not. So the catch that
+ * rethrows the failure first lifts each modifier the library would have
+ * pressed down (`modifierTokensOf` reads the same grammar); an up on a
+ * modifier that was never down is a no-op, so running it after a throw
+ * that preceded any key costs nothing.
+ */
+export async function releaseHeldModifiers(page: Page, value: string): Promise<void> {
+  for (const modifier of modifierTokensOf(value)) {
+    await page.keyboard.up(modifier).catch(() => undefined);
+  }
+}
+
+/**
  * The attached session.
  *
  * Reads and scrolls, and refuses everything else — see the header for the
@@ -1071,7 +1094,12 @@ export class AttachedBrowserSession implements BrowserSession {
             `press of "${request.value}" is refused while a form control holds the page's focus: over a focused select, radio group, range input or field the movement keys change that control's value, not the view, and Escape clears a focused search field. What his page holds focused is not reported.`,
           );
         }
-        await page.keyboard.press(request.value);
+        try {
+          await page.keyboard.press(request.value);
+        } catch (error) {
+          await releaseHeldModifiers(page, request.value);
+          throw error;
+        }
         break;
       }
     }
@@ -1588,12 +1616,26 @@ export class AttachedBrowserSession implements BrowserSession {
         break;
       }
       case 'press': {
+        // A throw part-way through the key string can leave modifiers held
+        // on the page (the library releases nothing on error), so both
+        // branches clear them before the failure is rethrown — see
+        // {@link releaseHeldModifiers}.
         if (request.ref === undefined) {
-          await page.keyboard.press(request.value);
+          try {
+            await page.keyboard.press(request.value);
+          } catch (error) {
+            await releaseHeldModifiers(page, request.value);
+            throw error;
+          }
         } else {
           const pressed = await this.#locate(page, request.ref);
           await this.#holdFocused(pressed, request.action);
-          await pressed.press(request.value);
+          try {
+            await pressed.press(request.value);
+          } catch (error) {
+            await releaseHeldModifiers(page, request.value);
+            throw error;
+          }
         }
         break;
       }

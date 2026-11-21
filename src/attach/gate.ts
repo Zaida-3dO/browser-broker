@@ -862,10 +862,17 @@ const BASE_KEY_NAMES: readonly string[] = [
 /** The canonical spelling of a base key, or `undefined` if it is not one. */
 function canonicalBase(token: string): string | undefined {
   if (token.length === 1) {
-    // The line terminators are the library's aliases for Enter — a
-    // `Shift+\r` really does press Enter — but they are not spellings a
-    // caller may use: the grammar refuses them, before the page.
-    if (token === '\n' || token === '\r' || token === '\t') return undefined;
+    // The library's US layout knows a single character only inside the
+    // printable ASCII band, `' '` to `'~'`. Anything outside it — `é`, a
+    // control character, a DEL — is a key it cannot press, and its `press`
+    // holds every **earlier** token of the combination down before it fails
+    // on the base, never releasing on the error: a base it cannot press
+    // would leave the page's Shift or Control stuck down for the rest of
+    // the session, and every later key would arrive modified. The line
+    // terminators are the library's aliases for Enter — a `Shift+\r` really
+    // does press Enter — but they sit below the printable band and so are
+    // refused here, before the page.
+    if (token < ' ' || token > '~') return undefined;
     return token;
   }
   if (token === '+') return '+';
@@ -873,16 +880,12 @@ function canonicalBase(token: string): string | undefined {
 }
 
 /**
- * Parse the key string a `press` carries, or `undefined` when it is not a
- * key. The split follows the library's own: a `+` separates only **after a
- * non-empty token**, so the plus key spells `"+"`, `"Control++"` is the
- * plus with Control held, and a trailing `+` is a dangling empty segment —
- * not a key. Modifier names are matched case-insensitively (a wrong case
- * is a library error at the performer, never a key that slips through
- * unclassified); base names are matched exactly, so there stays **one
- * spelling, one list** between this gate and the performer's allow-list.
+ * The library's token split, shared with {@link parseKey}: a `+` separates
+ * only **after a non-empty token**, so the plus key spells `"+"`,
+ * `"Control++"` is the plus with Control held, and a trailing `+` is a
+ * dangling empty segment.
  */
-export function parseKey(value: string): ParsedKey | undefined {
+function keyTokens(value: string): string[] {
   const tokens: string[] = [];
   let building = '';
   for (const char of value) {
@@ -894,13 +897,43 @@ export function parseKey(value: string): ParsedKey | undefined {
     }
   }
   tokens.push(building);
+  return tokens;
+}
+
+/**
+ * The modifier tokens a key string carries, in order — matched **exactly**
+ * against {@link KEY_MODIFIERS}, so these are exactly the tokens the
+ * library would press down. The performer's defensive release
+ * (`releaseHeldModifiers` in the attached session) asks this of a string
+ * whose press **threw**, where asking {@link parseKey} would answer nothing
+ * (the throw is often the grammar's reason: a base the library cannot
+ * press). The last token is never a modifier: it is the base the split
+ * reserves.
+ */
+export function modifierTokensOf(value: string): string[] {
+  return keyTokens(value)
+    .slice(0, -1)
+    .filter((token) => KEY_MODIFIERS.includes(token));
+}
+
+/**
+ * Parse the key string a `press` carries, or `undefined` when it is not a
+ * key. The split follows the library's own (see {@link keyTokens}).
+ * Modifier names and base names are matched **exactly**, so there stays
+ * **one spelling, one list** between this gate, the library, and the
+ * performer's allow-list. A wrong-case modifier is refused here, before
+ * the page: the library would hold the correctly spelled tokens before it
+ * fails on the wrong-case one, and a case-insensitive gate would send
+ * exactly that half-pressed chord to it.
+ */
+export function parseKey(value: string): ParsedKey | undefined {
+  const tokens = keyTokens(value);
   const base = canonicalBase(tokens[tokens.length - 1] as string);
   if (base === undefined) return undefined;
   const modifiers: string[] = [];
   for (const token of tokens.slice(0, -1)) {
-    const modifier = KEY_MODIFIERS.find((m) => m.toLowerCase() === token.toLowerCase());
-    if (modifier === undefined) return undefined;
-    modifiers.push(modifier);
+    if (!KEY_MODIFIERS.includes(token)) return undefined;
+    modifiers.push(token);
   }
   return { modifiers, base };
 }

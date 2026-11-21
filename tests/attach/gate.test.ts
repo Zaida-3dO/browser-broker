@@ -14,6 +14,7 @@ import {
   decide,
   grantValueDigest,
   isConsequentialText,
+  modifierTokensOf,
   parseKey,
   verifyOwnerGrant,
   type ActTarget,
@@ -489,6 +490,17 @@ const rows: Row[] = [
       ['ctrl+a', 'the ctrl alias'],
       ['ArrowDown+Enter', 'ArrowDown+Enter'],
       ['Shift+', 'Shift, then a dangling plus'],
+      // A wrong-case modifier is not a spelling: the library would hold the
+      // tokens before it and fail on the wrong-case one. And a base outside
+      // the printable ASCII band is one the library cannot press at all —
+      // holding the modifiers, failing on the base, releasing neither.
+      ['shift+a', 'a lower-cased Shift'],
+      ['Shift+control+a', 'a lower-cased Control after a real Shift'],
+      ['é', 'a single character outside the printable ASCII band'],
+      ['Control+é', 'a chord on a character outside the printable ASCII band'],
+      ['Shift+é', 'a Shift over a character outside the printable ASCII band'],
+      ['\u0000', 'the NUL character'],
+      ['\u007f', 'the DEL character'],
     ] as const
   ).map(([key, label]): Row => ({
     name: `a press of "${label}" is refused as not a key`,
@@ -1407,7 +1419,7 @@ test('the key grammar: what parses, and to what', () => {
   assert.deepEqual(parseKey('Control+a'), { modifiers: ['Control'], base: 'a' });
   assert.deepEqual(parseKey('Shift+A'), { modifiers: ['Shift'], base: 'A' });
   assert.deepEqual(parseKey('Shift+Tab'), { modifiers: ['Shift'], base: 'Tab' });
-  assert.deepEqual(parseKey('control+Enter'), { modifiers: ['Control'], base: 'Enter' });
+  assert.deepEqual(parseKey('Control+Enter'), { modifiers: ['Control'], base: 'Enter' });
   assert.deepEqual(parseKey('ControlOrMeta+s'), { modifiers: ['ControlOrMeta'], base: 's' });
   // The plus key, with and without a modifier.
   assert.deepEqual(parseKey('+'), { modifiers: [], base: '+' });
@@ -1433,9 +1445,29 @@ test('the key grammar: what parses, and to what', () => {
     'a++b',
     '',
     'Control+',
+    // A wrong-case modifier is refused as a spelling, not canonicalised:
+    // the library holds the tokens before it, then fails on the wrong-case
+    // one and releases neither.
+    'control+Enter',
+    'shift+a',
+    'Shift+control+a',
+    // A base outside the printable ASCII band is a key the library cannot
+    // press — with modifiers held down by the time it fails.
+    'é',
+    'Control+é',
+    'Shift+é',
+    '\u0000',
+    '\u007f',
   ]) {
     assert.equal(parseKey(bad), undefined, JSON.stringify(bad));
   }
+  // The defensive release asks the same grammar of a string whose press
+  // **threw**, where parseKey answers nothing: exactly the modifier tokens
+  // the library would have pressed down, in order, the base never one.
+  assert.deepEqual(modifierTokensOf('Shift+Control+é'), ['Shift', 'Control']);
+  assert.deepEqual(modifierTokensOf('Shift+control+a'), ['Shift']);
+  assert.deepEqual(modifierTokensOf('a'), []);
+  assert.deepEqual(modifierTokensOf(''), []);
 });
 
 test('free text goes through the same table: a dialog message, an option label', () => {
