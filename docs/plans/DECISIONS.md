@@ -2558,14 +2558,18 @@ the absence of the side effect are one fact rather than two promises that can dr
 an allow-list, not a deny-list: scroll, hover, and key presses restricted to the keys a person
 watching a page would press (`PageUp`, `PageDown`, the arrows, `Escape`). Whether *this* press may
 go out is the page's fact, not the key name's: over a focused select, radio group or range input the
-same arrows move a value and fire its change — so before every movement key the session asks the
+same arrows move a value and fire its change — so before every press the session asks the
 browser what holds focus, refuses while a form control holds it, and refuses just as hard when the
 answer does not arrive: a key whose focus cannot be seen is a key that could reach his field, and
 this kind does not press on trust. A frame or a shadow tree the read cannot see **through** counts
 as focused-control state rather than as a pass — the alternative is pressing a key blind — and a
 press refused on the page's answer writes its own `deny` row for the verb **after** its `allow`
 row: the decision was true and stays committed, but the ledger still shows that the page refused.
-`Escape` is exempt, because dismissing is not editing. Navigate is allowed but
+`Escape` runs through the same read rather than standing exempt: over a focused
+search field it is not only a dismissal — the field's own behaviour clears the text
+and fires the events live-search pages act on — so dismissing over a focused control
+is editing, and over plain focus it is still the dismissal the allow-list carries it
+for. Navigate is allowed but
 waits only for the commit — arrival-with-network-idle over a page this service does not own can never
 be guaranteed — and the snapshot render is bounded, because an unbounded wait over somebody else's
 page holds a lease on his browser indefinitely; the bound fails the read and leaves the browser

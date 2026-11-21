@@ -579,8 +579,10 @@ test('scroll reaches the bridge; a movement key refuses when the focus read cann
     // not "not available", which is the allow-list's words. The call-log half
     // is the one the rejection rule demands: the value never moved because no
     // key event ever crossed.
+    // Escape included: it clears a focused search field, so it asks the
+    // same read, and an unread focus refuses it the same way.
     const keysBeforePress = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
-    for (const key of ['ArrowDown', 'PageDown']) {
+    for (const key of ['ArrowDown', 'PageDown', 'Escape']) {
       await assert.rejects(
         session.act(tab, { action: 'press', value: key }),
         (error: unknown) =>
@@ -607,32 +609,43 @@ test('scroll reaches the bridge; a movement key refuses when the focus read cann
   }
 });
 
-test('Escape never waits for the focus read: dismissing is not editing', async () => {
-  // Escape is on the allow-list precisely because it cannot edit a value, so
-  // it is exempt from the focus read — and the crossing proves the exemption:
-  // had the read run first, the fixture could not complete it and no key
-  // would ever have gone out. The act then settles on the fake's inability to
-  // render the follow-on snapshot, exactly as the other allowed verbs do.
-  const { bridge, ext, session } = await live();
+test('Escape is refused while a focused field could clear, and the key never crosses', async () => {
+  // Escape is on the allow-list because it dismisses overlays, but
+  // dismissing is not always harmless: over a focused search input,
+  // Escape clears the field and fires the input and search events that
+  // live-search pages act on, so the dismissal is an edit. Escape runs
+  // through the same focus read as the arrows for exactly that reason.
+  // The answer arrives through the injected seam (the fake cannot
+  // complete the page's own read), and the refusal carries its call-log
+  // half: no key event crossed, so no field's text changed.
+  const probe = (): Promise<readonly FocusChainElement[]> =>
+    Promise.resolve([
+      {
+        tagName: 'INPUT',
+        isContentEditable: false,
+        hasShadowRoot: false,
+        role: null,
+        hasAriaValue: false,
+      },
+    ]);
+  const { bridge, ext, session } = await live(probe);
   try {
     const tab = await openedTab({ bridge, ext, session });
     const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
-    const failures: unknown[] = [];
-    void session
-      .act(tab, { action: 'press', value: 'Escape' })
-      .catch((error: unknown) => failures.push(error));
-    await waitFor(
-      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
-      'the Escape key events crossing',
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Escape' }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.read_only' &&
+        error.message.includes("a form control holds the page's focus") &&
+        !error.message.includes('could not be asked'),
+      'Escape over a focused input must refuse with the focused-control refusal',
     );
-    // The crossing itself is the proof the read was skipped: had the read run,
-    // this fixture could not complete it and no key would have been dispatched.
-    for (const failure of failures) {
-      assert.ok(
-        !(failure instanceof AttachedError && failure.message.includes('could not be asked')),
-        'Escape was never refused for an unread focus',
-      );
-    }
+    assert.equal(
+      cdpCalls(ext, 'Input.dispatchKeyEvent').length,
+      keysBefore,
+      'the Escape key crossed into the focused field: the refusal is a sentence, not a fact',
+    );
   } finally {
     session.detach().catch(() => undefined);
   }
@@ -693,13 +706,13 @@ test('the focus decision is table-driven: only plain page focus passes — contr
   }
 });
 
-test('the press gate, answered: a focused control refuses and the key never crosses; plain focus lets it through, and Escape never asks', async () => {
+test('the press gate, answered: a focused control refuses and the key never crosses; plain focus lets it through, and Escape asks the same read', async () => {
   // The true branch the unread fixture can never show. The fake relay
   // cannot complete the page's own evaluate — the same isolated-world
   // limit the scroll row above pins — so the read is answered through the
   // seam's own injection and both branches become provable: the refusal
   // **and its call-log half**, the key crossing when there is nothing to
-  // reach, and Escape skipping the read outright. The real read's answer
+  // reach, and Escape asking the same read before it dismisses. The real read's answer
   // over the bridge stays what the bounded-wait row pins: unfinished, and
   // unfinished is refused, not pressed.
   {
@@ -764,8 +777,10 @@ test('the press gate, answered: a focused control refuses and the key never cros
         'the answered press crossing',
       );
       assert.equal(probed, 1, 'the gate did not ask the page before pressing');
-      // The other half of the Escape exemption, told directly: had the read
-      // run, the counter would have moved.
+      // Escape over plain focus: the moving counter is one half of the
+      // proof that it asked the same read, and the crossing is the other —
+      // with nothing focused it goes out as the dismissal it is allowed
+      // for.
       const escapeKeys = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
       void session
         .act(tab, { action: 'press', value: 'Escape' })
@@ -774,7 +789,7 @@ test('the press gate, answered: a focused control refuses and the key never cros
         () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > escapeKeys,
         'the Escape key crossing',
       );
-      assert.equal(probed, 1, 'Escape waited on the focus read');
+      assert.equal(probed, 2, 'Escape did not ask the page before dismissing over it');
       for (const failure of failures) {
         assert.ok(
           !(failure instanceof AttachedError && failure.rule === 'attached.read_only'),

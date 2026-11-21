@@ -821,28 +821,28 @@ export class AttachedBrowserSession implements BrowserSession {
         // is gated on one fixed read this file owns, asking Chrome itself what
         // holds focus (see {@link #focusedFormControl} — and its fail-safe
         // halves: a frame or shadow tree the read cannot enter is refused, not
-        // guessed through), and it refuses while a form control holds it. `Escape` is
-        // exempt: dismissing an overlay or blurring never edits a value, and
-        // that is the whole reason it is on the allow-list. And when the read
-        // cannot answer, the press does not happen either: a key whose focus
-        // cannot be seen is a key that could reach his field, and guessing is
-        // what the rule exists to stop.
-        if (request.value !== 'Escape') {
-          let formControlHoldsFocus: boolean;
-          try {
-            formControlHoldsFocus = await this.#focusedFormControl(page);
-          } catch {
-            throw new AttachedError(
-              'attached.read_only',
-              `press of "${request.value}" is refused because the page could not be asked what holds its focus, and a key that could reach a field is not pressed on trust.`,
-            );
-          }
-          if (formControlHoldsFocus) {
-            throw new AttachedError(
-              'attached.read_only',
-              `press of "${request.value}" is refused while a form control holds the page's focus: over a focused select, radio group, range input or field the movement keys change that control's value, not the view. What his page holds focused is not reported.`,
-            );
-          }
+        // guessed through), and it refuses while a form control holds it. That
+        // includes `Escape`: over a focused search field it is not only a
+        // dismissal — the field's own behaviour clears the text and fires the
+        // events live-search pages act on — so dismissal is gated too, and
+        // still dismisses wherever the page holds no form control. And when
+        // the read cannot answer, the press does not happen either: a key
+        // whose focus cannot be seen is a key that could reach his field, and
+        // guessing is what the rule exists to stop.
+        let formControlHoldsFocus: boolean;
+        try {
+          formControlHoldsFocus = await this.#focusedFormControl(page);
+        } catch {
+          throw new AttachedError(
+            'attached.read_only',
+            `press of "${request.value}" is refused because the page could not be asked what holds its focus, and a key that could reach a field is not pressed on trust.`,
+          );
+        }
+        if (formControlHoldsFocus) {
+          throw new AttachedError(
+            'attached.read_only',
+            `press of "${request.value}" is refused while a form control holds the page's focus: over a focused select, radio group, range input or field the movement keys change that control's value, not the view, and Escape clears a focused search field. What his page holds focused is not reported.`,
+          );
         }
         await page.keyboard.press(request.value);
         break;
