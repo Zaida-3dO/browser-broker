@@ -638,16 +638,21 @@ test('Escape never waits for the focus read: dismissing is not editing', async (
   }
 });
 
-test('the focus decision is table-driven: controls, editables, frames and shadow hosts hold focus; plain page focus does not', () => {
+test('the focus decision is table-driven: only plain page focus passes — controls, editables, frames, shadow hosts, role widgets, aria values and custom elements all hold focus', () => {
   // The predicate half of the gate, with no page anywhere: what the read
-  // learns is data, and this is where the answer is decided. The two rows
-  // that are not controls are the fail-safe halves — focus the top-document
-  // read cannot see *through* (a frame's interior, a shadow tree's) counts
-  // as a focused control, because the alternative is pressing a key blind.
+  // learns is data, and this is where the answer is decided. The shape is
+  // an allow-list: a row passes only when every fact that could hide a
+  // value is proved absent. The rows that are not plain controls are the
+  // fail-safe halves — focus the top-document read cannot see *through*
+  // (a frame's interior, a shadow tree's, a closed custom element's)
+  // counts as a focused control, because the alternative is pressing a
+  // key blind.
   const element = (tagName: string, extra: Partial<FocusChainElement> = {}): FocusChainElement => ({
     tagName,
     isContentEditable: false,
     hasShadowRoot: false,
+    role: null,
+    hasAriaValue: false,
     ...extra,
   });
   const rows: [readonly FocusChainElement[], boolean][] = [
@@ -655,12 +660,27 @@ test('the focus decision is table-driven: controls, editables, frames and shadow
     [[element('BODY')], false],
     [[element('DIV')], false],
     [[element('A')], false],
+    // A non-widget role is still plain focus: the arrows move the view,
+    // not a value, over a plain link.
+    [[element('A', { role: 'link' })], false],
     [[element('INPUT')], true],
     [[element('SELECT')], true],
     [[element('TEXTAREA')], true],
     [[element('DIV', { isContentEditable: true })], true],
     [[element('IFRAME')], true],
     [[element('DIV', { hasShadowRoot: true })], true],
+    // ARIA value widgets move their own value under the arrows even when
+    // the tag is a plain div — the role is the fact, not the tag.
+    [[element('DIV', { role: 'spinbutton' })], true],
+    [[element('DIV', { role: 'slider' })], true],
+    [[element('DIV', { role: 'listbox' })], true],
+    [[element('DIV', { role: 'combobox' })], true],
+    // A value named by `aria-valuenow` is refused even without a role.
+    [[element('DIV', { hasAriaValue: true })], true],
+    // A custom element's controls live in a shadow root, and a **closed**
+    // one reports nothing to anyone outside it — the host is refused
+    // rather than read blind.
+    [[element('QTY-PICK')], true],
     // A chain where any one element holds a control holds the answer.
     [[element('BODY'), element('SELECT')], true],
   ];
@@ -686,7 +706,15 @@ test('the press gate, answered: a focused control refuses and the key never cros
     // Plain promise returns, not async bodies: an `async` with no `await`
     // is this repository's lint error, as in the service fixtures.
     const probe = (): Promise<readonly FocusChainElement[]> =>
-      Promise.resolve([{ tagName: 'SELECT', isContentEditable: false, hasShadowRoot: false }]);
+      Promise.resolve([
+        {
+          tagName: 'SELECT',
+          isContentEditable: false,
+          hasShadowRoot: false,
+          role: null,
+          hasAriaValue: false,
+        },
+      ]);
     const { bridge, ext, session } = await live(probe);
     try {
       const tab = await openedTab({ bridge, ext, session });
@@ -713,7 +741,15 @@ test('the press gate, answered: a focused control refuses and the key never cros
     let probed = 0;
     const probe = (): Promise<readonly FocusChainElement[]> => {
       probed += 1;
-      return Promise.resolve([{ tagName: 'BODY', isContentEditable: false, hasShadowRoot: false }]);
+      return Promise.resolve([
+        {
+          tagName: 'BODY',
+          isContentEditable: false,
+          hasShadowRoot: false,
+          role: null,
+          hasAriaValue: false,
+        },
+      ]);
     };
     const { bridge, ext, session } = await live(probe);
     try {
@@ -745,6 +781,54 @@ test('the press gate, answered: a focused control refuses and the key never cros
           'a press with nothing focused was refused',
         );
       }
+    } finally {
+      session.detach().catch(() => undefined);
+    }
+  }
+});
+
+test('the press gate refuses an ARIA value widget and a custom element, and the key never crosses either', async () => {
+  // The two states whose value lives where a **tag** cannot name it: an
+  // ARIA value widget — a div whose `role` says `spinbutton` and whose own
+  // keydown moves its value under the arrows, the shape of a quantity
+  // stepper that saves on change — and a custom element whose focused
+  // control sits in a **closed** shadow root the top-document read cannot
+  // see into at all. The focus answer arrives through the same injected
+  // seam as the select row above (the fake cannot complete the page's own
+  // read), and each refusal is pinned by its call-log half: no key event
+  // crossed, so no value moved.
+  for (const row of [
+    { tagName: 'DIV', role: 'spinbutton' },
+    { tagName: 'QTY-PICK', role: null },
+  ] as const) {
+    const probe = (): Promise<readonly FocusChainElement[]> =>
+      Promise.resolve([
+        {
+          tagName: row.tagName,
+          isContentEditable: false,
+          hasShadowRoot: false,
+          role: row.role,
+          hasAriaValue: false,
+        },
+      ]);
+    const { bridge, ext, session } = await live(probe);
+    try {
+      const tab = await openedTab({ bridge, ext, session });
+      const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+      await assert.rejects(
+        session.act(tab, { action: 'press', value: 'ArrowDown' }),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.read_only' &&
+          error.message.includes("a form control holds the page's focus") &&
+          !error.message.includes('could not be asked'),
+        `focus on ${row.tagName}${row.role === null ? '' : ` role=${row.role}`} must refuse the arrow`,
+      );
+      assert.equal(
+        cdpCalls(ext, 'Input.dispatchKeyEvent').length,
+        keysBefore,
+        `an arrow crossed while ${row.tagName} held focus: the refusal is a sentence, not a fact`,
+      );
     } finally {
       session.detach().catch(() => undefined);
     }

@@ -196,7 +196,8 @@ export function isViewMovingAction(request: ActionRequest): boolean {
 
 /**
  * What the focus read learns about one element of the page's focus chain:
- * the tag, whether it is editable, and whether it opens a shadow tree.
+ * the tag, whether it is editable, whether it opens a shadow tree, its
+ * literal `role` attribute, and whether it carries `aria-valuenow`.
  * JSON's shape on purpose — the read crosses the bridge as **data**, and
  * the decision stays on this side of it, where a table of rows can test it
  * without a browser.
@@ -205,33 +206,85 @@ export interface FocusChainElement {
   tagName: string;
   isContentEditable: boolean;
   hasShadowRoot: boolean;
+  /** The `role` attribute as written, lower-cased; null when absent. */
+  role: string | null;
+  /** Whether the element carries `aria-valuenow` — a value by name. */
+  hasAriaValue: boolean;
 }
 
 /**
- * The decision half of the press gate: does this focus chain hold anything
- * a movement key could move a **value** on?
+ * ARIA roles whose own default behaviour under the movement keys **moves a
+ * value**: an arrow changes a slider or spinbutton, a selection in a listbox
+ * or radio group, the caret in a textbox. The set is fixed here rather than
+ * derived — it is the list of widgets the keys on the allow-list act on, and
+ * an unlisted role is only refused when it names a value through
+ * `aria-valuenow`.
+ */
+const WIDGET_ROLES = new Set([
+  'checkbox',
+  'combobox',
+  'grid',
+  'listbox',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'radio',
+  'radiogroup',
+  'searchbox',
+  'slider',
+  'spinbutton',
+  'switch',
+  'textbox',
+  'tree',
+  'treegrid',
+]);
+
+/**
+ * Tags that either move or edit their own value under the movement keys,
+ * or hide their focus from the top-document read: a `SELECT`, a
+ * `TEXTAREA`, any `INPUT` (radio and range groups move under arrows; a
+ * text field takes carets), and an `<IFRAME>` — a key event routes to the
+ * focused element of the focused frame, so focus reported as an
+ * `<IFRAME>` is focus inside a frame the read cannot enter.
+ */
+const OPAQUE_FOCUS_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'IFRAME']);
+
+/**
+ * The decision half of the press gate: could a movement key move a
+ * **value** anywhere on this focus chain?
  *
- * The rows come in two families. The direct ones are the controls
- * themselves — a `SELECT`, a `TEXTAREA`, any `INPUT` (radio and range
- * groups move under arrows; a text field takes carets), and a
- * contenteditable region. The fail-safe ones are the places a tag-level
- * read **cannot see through**, and they refuse anyway rather than let a
- * key press blind: a key event routes to the focused element of the
- * focused frame, so focus reported as an `<IFRAME>` is focus inside a
- * frame the top-document read cannot enter; and focus inside an open
- * shadow tree reports at the **host** element, so a host is treated as
- * holding whatever control hides beneath it. An empty chain — no element
- * focused at all — answers false: there is nothing to reach.
+ * The answer is an **allow-list, not a deny-list**: a key passes only when
+ * every element of the chain is proved to be plain focus — an element that
+ * can hold no value a key could move. Every fact that could hide one must
+ * be proved absent: the tag is not one that moves or edits its own value
+ * under the arrows, or hides its focus from the top-document read
+ * ({@link OPAQUE_FOCUS_TAGS}); the element is not contenteditable; it
+ * opens no shadow tree — focus inside an open tree reports at the **host**,
+ * so a host is treated as holding whatever control hides beneath it; it is
+ * not a **custom element**, whose name carries a hyphen and whose controls
+ * live in a shadow root, a **closed** one reporting nothing to anyone
+ * outside it; it names no ARIA value widget through `role`
+ * ({@link WIDGET_ROLES}) and carries no `aria-valuenow`. Everything else —
+ * the page body, a link, a plain `div` — is plain focus, and an empty
+ * chain (nothing focused) answers false: there is nothing to reach. The
+ * point of inverting it is that a deny-list refuses only the shapes its
+ * author thought of, while the allow-list refuses everything the read
+ * cannot positively clear — the fail-safe direction the gate is meant to
+ * lean.
  */
 export function focusChainHoldsFormControl(chain: readonly FocusChainElement[]): boolean {
-  return chain.some(
-    (element) =>
-      element.isContentEditable ||
-      element.hasShadowRoot ||
-      element.tagName === 'SELECT' ||
-      element.tagName === 'TEXTAREA' ||
-      element.tagName === 'INPUT' ||
-      element.tagName === 'IFRAME',
+  return !chain.every(holdsNoValue);
+}
+
+/** Whether this one element is proved plain: nothing it holds moves under a key. */
+function holdsNoValue(element: FocusChainElement): boolean {
+  return (
+    !element.isContentEditable &&
+    !element.hasShadowRoot &&
+    !element.tagName.includes('-') && // a custom element's controls live in a shadow root
+    !OPAQUE_FOCUS_TAGS.has(element.tagName) &&
+    !element.hasAriaValue &&
+    (element.role === null || !WIDGET_ROLES.has(element.role))
   );
 }
 
@@ -810,8 +863,9 @@ export class AttachedBrowserSession implements BrowserSession {
    * `chrome.debugger` is per-tab, so a fresh protocol session cannot be
    * opened over it. The expression route is the one that reaches focus.)
    * The read answers with the focused element's *facts* — tag, editability,
-   * shadow root — and {@link focusChainHoldsFormControl} makes the decision
-   * on this side of the bridge, where a table can prove it either way.
+   * shadow root, `role`, `aria-valuenow` — and {@link focusChainHoldsFormControl}
+   * makes the decision on this side of the bridge, where a table can prove
+   * it either way.
    *
    * **What the read cannot see, it refuses.** A key event routes to the
    * focused element of the *focused frame*, and the top document's
@@ -819,11 +873,16 @@ export class AttachedBrowserSession implements BrowserSession {
    * the `<IFRAME>` element, and focus inside an open shadow tree reports
    * the **host**. Both are counted as focused-control state — the press
    * refuses rather than dispatching into a frame or tree the read cannot
-   * enter. The honest limits of a tag-level read stay: custom widgets built
-   * on other tags with `role` attributes answer through their tag, and a
-   * **closed** shadow root reports nothing to anyone outside it — its host
-   * is indistinguishable from any other element. Those states are why this
-   * is a fail-safe gate, not a complete model of focus. If the read itself
+   * enter. The read also answers with the `role` attribute and whether
+   * `aria-valuenow` is present, so the predicate can refuse an ARIA value
+   * widget and a custom element by those facts rather than by the tag: the
+   * value of a widget built on other tags moves under the same arrows, and
+   * a **closed** shadow root reports nothing to anyone outside it, so its
+   * host element is refused rather than cleared. What stays outside the
+   * gate is the page's own code: a script on the page can bind any allowed
+   * key to an action of its choosing, and the gate covers the **default**
+   * actions of the keys, not the page's handlers. That is why this is a
+   * fail-safe gate, not a complete model of focus. If the read itself
    * fails, this **throws**: an unread focus is refused upstream, never
    * assumed safe.
    */
@@ -856,16 +915,21 @@ export class AttachedBrowserSession implements BrowserSession {
             tagName: string;
             isContentEditable?: boolean;
             shadowRoot?: unknown;
+            getAttribute: (name: string) => string | null;
+            hasAttribute: (name: string) => boolean;
           } | null;
         };
       };
       const element = scope.document.activeElement;
       if (element === null) return [];
+      const role = element.getAttribute('role');
       return [
         {
           tagName: element.tagName,
           isContentEditable: element.isContentEditable === true,
           hasShadowRoot: element.shadowRoot !== null && element.shadowRoot !== undefined,
+          role: role === null ? null : role.trim().toLowerCase(),
+          hasAriaValue: element.hasAttribute('aria-valuenow'),
         },
       ];
     });
