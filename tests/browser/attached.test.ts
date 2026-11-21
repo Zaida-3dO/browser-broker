@@ -726,7 +726,7 @@ test('Escape is refused while a focused field could clear, and the key never cro
         hasAriaValue: false,
       },
     ]);
-  const { bridge, ext, session } = await live(probe);
+  const { bridge, ext, session } = await live({ focusProbe: probe });
   try {
     const tab = await openedTab({ bridge, ext, session });
     const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
@@ -1889,7 +1889,7 @@ test('the press gate refuses an ARIA value widget and a custom element, and the 
           hasAriaValue: false,
         },
       ]);
-    const { bridge, ext, session } = await live(probe);
+    const { bridge, ext, session } = await live({ focusProbe: probe });
     try {
       const tab = await openedTab({ bridge, ext, session });
       const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
