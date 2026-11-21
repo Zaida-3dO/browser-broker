@@ -109,8 +109,10 @@ test('the matrix is not empty — a green run over nothing is the failure this s
  * loaded weapon: every skip subtracts from the matrix, so an unlisted skip
  * is the suite quietly proving less. This test fixes the exact set — the
  * four keeper properties (the kind refuses `ensureKeeperTab` by
- * construction) and the cookie-shape property (the fake extension answers no
- * jar) — and refuses both a sixth skip and a reason-less one. The properties
+ * construction), the cookie-shape property (the fake extension answers no
+ * jar) and the download property (its fetch is page code the fake extension
+ * never completes) — and refuses both an unlisted skip and a reason-less
+ * one. The properties
  * the attached session *does* run are the rest of the table, computed here
  * rather than asserted as a magic number.
  */
@@ -124,6 +126,7 @@ test('the attached subject’s inapplicable set is pinned by name, argued, and e
       'establishing the keeper twice yields one keeper, not two',
       'a keeper handle names the browser it belongs to',
       'a cookie summary carries no value, on any implementation',
+      'a download counts the bytes, not the encoding they travel in',
     ],
     'the attached subject declares a different set of inapplicable properties than this suite records',
   );

@@ -901,6 +901,73 @@ export interface EvaluationResult {
 }
 
 /**
+ * A file the service has asked the page to fetch (`SCHEMA.md` §3.18).
+ *
+ * **The url is absolute, and making it absolute is not the driver's job.**
+ * A relative href is resolved against the tab's last url in the service
+ * layer, because the host it resolves to is gate input: deciding it after
+ * the driver had already chased the redirect would ask the fence about a
+ * site it never saw. The scheme fence lives at that same point — the
+ * refusal is pinned as a *driver-never-asked* rejection in the operations
+ * tests, not as validation each driver redoes — so the only addresses that
+ * reach an implementation here are ones the fence let through. (The seam
+ * conformance suite hands one implementation a `data:` address on purpose,
+ * to ask about result arithmetic without a server; that question belongs to
+ * the seam, and it says so at the call.)
+ *
+ * **`maxBytes` travels with the request rather than being configured on
+ * the session**, so the cap the service enforces before writing and the
+ * cap the in-page fetch enforces while reading the body are the same
+ * number by construction, not two settings that can drift apart.
+ */
+export interface DownloadRequest {
+  /** An absolute `http(s)` address, already fenced by the service. */
+  readonly url: string;
+  /** Refuse above this many bytes, before the bytes are kept. */
+  readonly maxBytes: number;
+  /**
+   * How long the fetch may take, in milliseconds, when the caller wants a
+   * bound other than the driver's own. A server that never answers, or
+   * drips bytes under the ceiling, would otherwise hold the call — and the
+   * lease's after-commit work — open indefinitely; the ceiling bounds the
+   * bytes, and this bounds the clock.
+   */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * What fetching a file produced (`SCHEMA.md` §3.18).
+ *
+ * **Base64, not bytes, and that is a seam constraint rather than a
+ * preference.** The fetch runs inside the page, and a page hands
+ * `page.evaluate` only what survives a JSON round-trip — raw bytes do not.
+ * Base64 costs about a third, which is why the size cap is enforced twice:
+ * in the fixed in-page expression while the body streams in, and again in
+ * the service before anything is written.
+ *
+ * **`bytes` is the decoded count, computed by the driver**, not the length
+ * of the base64 text — the service re-checks it against `maxBytes` and
+ * must be comparing the same quantity the cap was set in.
+ */
+export interface DownloadResult {
+  /** The file's contents, base64-encoded. */
+  readonly base64: string;
+  /** What the server said the file is, when it said. */
+  readonly mime?: string;
+  /**
+   * Where the fetch ended, after any redirects. **Not decoration**: on an
+   * attached lease the site fence is asked of this host before a single byte
+   * is written, because the address that was allowed is not always the host
+   * the bytes arrived on (`DECISIONS.md` §13p). A driver that echoed the
+   * request URL back instead of reporting the response's would quietly take
+   * the fence down.
+   */
+  readonly finalUrl: string;
+  /** Decoded byte count. */
+  readonly bytes: number;
+}
+
+/**
  * The tab-scoped operations. **Every one of them is singular in its tab.**
  *
  * Split out from {@link BrowserSession} rather than inlined so that the
@@ -1192,6 +1259,27 @@ export interface TabOperations {
    * call never happens.
    */
   readonly capture: (tab: TabHandle, request: CaptureRequest) => Promise<RawCapture>;
+
+  /**
+   * Fetch a file the page links, with the page's own credentials, and hand
+   * the bytes back across the seam (`SCHEMA.md` §3.18).
+   *
+   * **A fetch in the page, not a browser download.** The browser's own
+   * download machinery writes where the *browser* chooses, outside the
+   * artifact tree, invisible to the store and uncountable by it — see
+   * `DECISIONS.md` §13p for why the fetch route won and what it gives up.
+   * The fetch runs as a fixed, service-owned expression (the same standing
+   * that lets the attached driver run its own scroll and measurement code
+   * while caller `evaluate` stays refused), so the caller never supplies
+   * code and the url is the only variable.
+   *
+   * **The cap is requested, not assumed.** {@link DownloadRequest.maxBytes}
+   * must be honoured *while the body is read*, not after: holding a
+   * two-gigabyte response in memory to discover it was over the cap is a
+   * machine-wide outage with extra steps, which is the same reason the
+   * upload caps live where they do.
+   */
+  readonly download: (tab: TabHandle, request: DownloadRequest) => Promise<DownloadResult>;
 }
 
 /**

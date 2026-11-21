@@ -228,6 +228,32 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
   },
 
   {
+    name: 'a download counts the bytes, not the encoding they travel in',
+    rule: 'download.size_bounded',
+    why: 'The service compares the reported `bytes` against the configured cap before it writes anything (SCHEMA.md §3.18), and the cap is set in bytes — an implementation reporting the length of the base64 text instead counts a quantity about a third larger than the file, so the check passes or refuses the wrong files, and the number handed back to the caller is not the size of what was saved.',
+    check: async ({ session }) => {
+      const tab = await session.openTab();
+
+      // A `data:` address, because what is under test is the arithmetic
+      // between the two fields of the result, and it is the only kind of
+      // address every subject can be pointed at without a server. The fence
+      // that keeps `data:` out of real downloads lives in the service *above*
+      // the seam, and is pinned there by the refusal rows — this property
+      // deliberately bypasses it because the seam does not own it.
+      const result = await session.download(tab, {
+        url: 'data:application/octet-stream;base64,QUJDREVGd29ya2VyZmlsZQ==',
+        maxBytes: 1024,
+      });
+
+      const decoded = Buffer.from(result.base64, 'base64');
+      if (decoded.length !== result.bytes) {
+        return `the download result reported ${String(result.bytes)} bytes but its base64 decodes to ${String(decoded.length)} — the cap in the service is compared against a quantity that is not the file`;
+      }
+      return undefined;
+    },
+  },
+
+  {
     name: 'a cookie summary carries no value, on any implementation',
     rule: 'read.cookies_no_values',
     why: 'SCHEMA.md §7.1 makes this a shape rather than a refusal: the value field is absent, not masked. The service writes this structure straight to a file (real.ts read()), with no redaction step in between — so an implementation that added a value field would put cookie values on disk with no line of code anywhere saying so.',

@@ -11,6 +11,8 @@ import type {
   BrowserSession,
   ColdStartRequest,
   DiscoveryRecord,
+  DownloadRequest,
+  DownloadResult,
   EvaluationResult,
   NavigationResult,
   RawCapture,
@@ -84,6 +86,7 @@ export type DriverCallName =
   | 'evaluate'
   | 'settlePage'
   | 'capture'
+  | 'download'
   | 'detach';
 
 /**
@@ -197,6 +200,42 @@ export interface FakeNavigationOptions {
   readonly status?: number | null;
 }
 
+/**
+ * What a fake download hands back, when a test needs a particular file.
+ *
+ * **Canned, never fetched** — the fake does not run the fetch any more than
+ * it runs an evaluation. And note what the fake deliberately does *not* do:
+ * **it does not enforce `maxBytes`.** A real driver honours the cap while
+ * the body streams in, and that is a real-browser fact with a real-browser
+ * test; what the fake is for is the other half of the pair — it can hand
+ * back a body over the cap so the service's own check before the write is
+ * testable at all. A fake that refused what it was configured to carry
+ * would make the cap check untestable, which is precisely the assertion
+ * the oversized fixture row exists to make.
+ */
+export interface FakeDownloadOptions {
+  /** The contents, base64 — as {@link DownloadResult.base64} spells them. */
+  readonly base64?: string;
+  /**
+   * The byte count to report. Defaults to the decoded length of `base64`,
+   * so leaving it unset keeps the fake honest about its own arithmetic;
+   * set it only to make the fake report a count that disagrees with the
+   * bytes, which is the mutation the seam property in the conformance
+   * suite exists to catch.
+   */
+  readonly bytes?: number;
+  /** What the page is treated as being told the file is, when anything. */
+  readonly mime?: string;
+  /**
+   * Where the fetch ended after redirects, as a function of the requested
+   * address — the download peer of {@link FakeNavigationOptions.arriveAt},
+   * and the reason it is also a function: `sourceHost` is read from this,
+   * and a case where they differ is the case that proves the service
+   * reports the arrived host rather than the asked-for one.
+   */
+  readonly finalUrl?: (requested: string) => string;
+}
+
 /** Where the fake's canned answers come from, when a test needs a particular one. */
 export interface FakeDriverOptions {
   readonly regular?: FakeBrowserOptions;
@@ -204,7 +243,22 @@ export interface FakeDriverOptions {
   readonly capture?: FakeCaptureOptions;
   readonly evaluate?: FakeEvaluationOptions;
   readonly navigate?: FakeNavigationOptions;
+  readonly download?: FakeDownloadOptions;
 }
+
+/**
+ * The file the fake hands out when a test did not configure one.
+ *
+ * A real decodeable payload rather than an empty string, on the same
+ * argument as {@link FakeCaptureOptions.image}: a pipeline that hashes and
+ * writes what it was given has to be given something a hash and a write
+ * mean something about — and an empty file would make "the bytes on disk
+ * hash to the returned sha256" true of nothing.
+ */
+const DEFAULT_DOWNLOAD_BASE64 = Buffer.from(
+  'a file the fake was never asked to fetch',
+  'utf8',
+).toString('base64');
 
 /**
  * The one expression shape {@link FakeBrowserDriver} answers from storage.
@@ -941,6 +995,34 @@ export class FakeBrowserDriver implements BrowserDriver {
           height,
           viewportWidth: canned?.viewportWidth ?? width,
           url: canned?.url ?? 'https://example.com/',
+        });
+      },
+
+      download: (tab: TabHandle, request: DownloadRequest): Promise<DownloadResult> => {
+        // The url and the cap are both recorded. The cap because a rejection
+        // test asserts *which ceiling the service asked for* — a handler that
+        // forgot to thread the configured number through would otherwise be
+        // invisible in the log — and the url because the address the driver
+        // was handed is the address the fence approved, so "asked for a
+        // different one" is a bug the log can show.
+        const failure = this.#enter({
+          name: 'download',
+          browser,
+          tab,
+          detail: { url: request.url, maxBytes: request.maxBytes },
+        });
+        if (failure) return Promise.reject(failure);
+        const canned = this.#options.download;
+        const base64 = canned?.base64 ?? DEFAULT_DOWNLOAD_BASE64;
+        return Promise.resolve({
+          base64,
+          // Reported, not invented: no mime by default, because a test that
+          // wants one said so, and a result that silently carried
+          // `application/octet-stream` would make "the server said nothing"
+          // and "the server said the default" the same answer.
+          mime: canned?.mime,
+          finalUrl: canned?.finalUrl ? canned.finalUrl(request.url) : request.url,
+          bytes: canned?.bytes ?? Buffer.from(base64, 'base64').length,
         });
       },
 

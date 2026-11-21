@@ -54,6 +54,18 @@ const NO_KEEPER_BY_CONSTRUCTION = new Set([
  */
 const COOKIE_JAR_UNANSWERABLE = 'a cookie summary carries no value, on any implementation';
 
+/**
+ * The download property. The fetch is fixed **page code**, and the fake
+ * extension creates an isolated world with no execution context, so the
+ * expression starts and never finishes — the same fixture-side limit the
+ * focus read hits, and the reason `attached.test.ts` proves the download's
+ * gate and the *absence of the crossing* rather than a fetched file. The
+ * arithmetic this property asks about is only observable through a page that
+ * can run the fetch, which is the gated browser job's ground, not a story to
+ * tell the suite here.
+ */
+const PAGE_CODE_UNANSWERABLE = 'a download counts the bytes, not the encoding they travel in';
+
 export const attachedSubject: SeamSubject = {
   name: 'attached',
   // The relay binds a loopback port and the fake extension is code, not
@@ -73,6 +85,14 @@ export const attachedSubject: SeamSubject = {
         'the fake extension answers no cookie jar — the client fails on the empty reply before any summary exists — ' +
         'so the shape cannot be reached over this fixture. The attached mapping builds each summary field by field, ' +
         'and its runtime half belongs to the gated browser job.'
+      );
+    }
+    if (property.name === PAGE_CODE_UNANSWERABLE) {
+      return (
+        'the fetch is fixed page code, and the fake extension creates an isolated world with no execution ' +
+        'context — the expression starts and never finishes — so the byte count is never observable over this ' +
+        'fixture. What this fixture can prove, the gate refusing and no evaluate crossing, is pinned in ' +
+        'tests/browser/attached.test.ts; the fetched half belongs to the gated browser job.'
       );
     }
     return undefined;

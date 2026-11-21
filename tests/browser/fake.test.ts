@@ -422,3 +422,88 @@ test('a fake navigation with no redirect configured arrives where it was sent', 
   assert.equal(result.url, 'https://example.com/start');
   assert.equal(result.status, 200);
 });
+
+// ── The download operation ────────────────────────────────────────────────
+//
+// The fake is the only way the service's cap check can be tested at all: it
+// is the one driver that will hand back a body **over** the cap it was given,
+// because enforcing the cap is the in-page fetch's job and a fake that
+// enforced it would make the service's own check before the write
+// untestable. That asymmetry is deliberate and it belongs in the test file,
+// not only in the fake.
+
+test('a download records the address it was handed and the cap it was asked to respect', async () => {
+  const driver = new FakeBrowserDriver();
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  await session.download(tab, { url: 'https://example.com/spec.pdf', maxBytes: 1024 });
+
+  const calls = driver.callsOf('download');
+  assert.equal(calls.length, 1);
+  // Both halves in the log: the address the fence approved is the address the
+  // driver was asked for, and *which ceiling* the service threaded through is
+  // a thing a test has to be able to see rather than infer.
+  assert.deepEqual(calls[0]?.detail, {
+    url: 'https://example.com/spec.pdf',
+    maxBytes: 1024,
+  });
+});
+
+test('the default download answer is a real file whose reported size matches its own bytes', async () => {
+  const driver = new FakeBrowserDriver();
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  const result = await session.download(tab, {
+    url: 'https://example.com/spec.pdf',
+    maxBytes: 1024,
+  });
+
+  assert.ok(result.bytes > 0, 'an empty default would make every size assertion pass over nothing');
+  assert.equal(Buffer.from(result.base64, 'base64').length, result.bytes);
+  assert.equal(result.finalUrl, 'https://example.com/spec.pdf');
+  // No mime it was not given: a default here would blur "the server said
+  // nothing" with "the server said the usual thing".
+  assert.equal(result.mime, undefined);
+});
+
+test('the fake will hand back a body over the cap, because the cap check under test is the service one', async () => {
+  const driver = new FakeBrowserDriver({
+    download: {
+      bytes: 2048,
+      mime: 'application/pdf',
+      finalUrl: () => 'https://example.com/big.pdf',
+    },
+  });
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  const result = await session.download(tab, {
+    url: 'https://example.com/big.pdf',
+    maxBytes: 1024,
+  });
+
+  // Asked for a 1 KiB ceiling, carrying 2 KiB, and nothing here refuses —
+  // the refusal under test is the service's, and it can only be tested
+  // against a driver that behaves like one that ignored the ceiling.
+  assert.equal(result.bytes, 2048);
+  assert.equal(result.mime, 'application/pdf');
+  assert.equal(result.finalUrl, 'https://example.com/big.pdf');
+});
+
+test('a download that fails is still recorded — "asked and refused" is not "never asked"', async () => {
+  const driver = new FakeBrowserDriver();
+  const session = await driver.attach('regular', RECORD);
+  const tab = await session.openTab();
+
+  driver.failNext('download', new Error('the page would not fetch'));
+  await assert.rejects(
+    session.download(tab, { url: 'https://example.com/spec.pdf', maxBytes: 1024 }),
+    /would not fetch/,
+  );
+
+  const calls = driver.callsOf('download');
+  assert.equal(calls.length, 1, 'the attempted fetch must appear in the log');
+  assert.equal(calls[0]?.failed, true);
+});
