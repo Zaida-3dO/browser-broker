@@ -570,6 +570,12 @@ const rows: Row[] = [
     ['Confirm password', 'password'],
     ['PIN', 'password'],
     ['OTP', 'one-time-code'],
+    // The names sign-in pages use when they do not say "password".
+    ['Passphrase', 'password'],
+    ['Memorable word', 'password'],
+    ['Memorable information', 'password'],
+    ['Security answer', 'password'],
+    ['Secret', 'password'],
   ].map(([name, kind]): Row => ({
     name: `type into a field named "${name}" with no autocomplete`,
     verb: 'type',
@@ -582,6 +588,8 @@ const rows: Row[] = [
     ['fill', 'user_password'],
     ['fill_form', 'otp-1'],
     ['press', 'cvc'],
+    ['type', 'user_secret'],
+    ['type', 'security_answer'],
   ].map(([verb, attr]): Row => ({
     name: `${verb} into a field whose name attribute is "${attr}"`,
     verb: verb as PageAction,
@@ -599,6 +607,24 @@ const rows: Row[] = [
     name: 'a search box named "Pinterest" is not a PIN box (whole words only)',
     verb: 'type',
     target: { accessibleName: 'Pinterest', tag: 'input', inputType: 'search', editable: true },
+    expect: 'allow',
+  },
+  {
+    name: 'a "Secretary name" box is not a secret box (whole words only)',
+    verb: 'type',
+    target: { accessibleName: 'Secretary name', tag: 'input', inputType: 'text', editable: true },
+    expect: 'allow',
+  },
+  {
+    name: 'a "Security centre" heading is not a security-answer box (the pair needs both words)',
+    verb: 'type',
+    target: { accessibleName: 'Security centre', tag: 'input', inputType: 'text', editable: true },
+    expect: 'allow',
+  },
+  {
+    name: 'an "Answer" box alone does not name the pair either',
+    verb: 'type',
+    target: { accessibleName: 'Answer', tag: 'input', inputType: 'text', editable: true },
     expect: 'allow',
   },
 
@@ -747,14 +773,12 @@ const rows: Row[] = [
     'Check in',
     'Top shelf',
     'Mark',
-  ].map(
-    (label): Row => ({
-      name: `a click named "${label}" is a near-miss, not a consequence word`,
-      verb: 'click',
-      target: { accessibleName: label, role: 'link', tag: 'a' },
-      expect: 'allow',
-    }),
-  ),
+  ].map((label): Row => ({
+    name: `a click named "${label}" is a near-miss, not a consequence word`,
+    verb: 'click',
+    target: { accessibleName: label, role: 'link', tag: 'a' },
+    expect: 'allow',
+  })),
   {
     name: 'select: the option chosen names the consequence, not the control',
     verb: 'select',

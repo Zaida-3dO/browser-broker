@@ -718,14 +718,26 @@ function fieldKindByName(control: ActTarget | undefined): FieldKind | undefined 
   }
   if (squashed.some((s) => SECRET_NAME_CARD.some((part) => s.includes(part)))) return 'card';
   for (const word of SECRET_NAME_WORDS) {
-    if (words.has(word)) return word === 'pin' || word === 'pwd' ? 'password' : 'one-time-code';
+    if (words.has(word)) return PASSWORD_WORDS.includes(word) ? 'password' : 'one-time-code';
+  }
+  // Pairs of whole words that name a secret jointly but not singly: a
+  // single "Security" heading is ordinary, a single "Answer" is ordinary,
+  // the two together name the thing a bank signs in with.
+  for (const [a, b] of SECRET_NAME_WORD_PAIRS) {
+    if (words.has(a) && words.has(b)) return 'password';
   }
   return undefined;
 }
 
 // Matched inside the squashed name ("Card number" → `cardnumber`), so the
 // separator a site uses makes no difference.
-const SECRET_NAME_PASSWORD: readonly string[] = ['password', 'passwd', 'passcode'];
+const SECRET_NAME_PASSWORD: readonly string[] = [
+  'password',
+  'passwd',
+  'passcode',
+  'passphrase',
+  'memorable',
+];
 const SECRET_NAME_CARD: readonly string[] = [
   'cardnumber',
   'ccnumber',
@@ -740,7 +752,13 @@ const SECRET_NAME_CARD: readonly string[] = [
 ];
 // Matched as whole words, because they are short enough to sit inside
 // ordinary ones.
-const SECRET_NAME_WORDS: readonly string[] = ['pin', 'pwd', 'otp', 'csc', 'mfa', '2fa'];
+const SECRET_NAME_WORDS: readonly string[] = ['pin', 'pwd', 'otp', 'csc', 'mfa', '2fa', 'secret'];
+
+/** Of the whole words, the ones that name a secret to type, not a code sent to someone. */
+const PASSWORD_WORDS: readonly string[] = ['pin', 'pwd', 'secret'];
+
+/** Whole-word pairs that name a secret only together (words has each). */
+const SECRET_NAME_WORD_PAIRS: readonly (readonly [string, string])[] = [['security', 'answer']];
 
 /** Whether free text names a consequence — the table over a bare string (a dialog's message, an option's label). */
 export function isConsequentialText(text: string | undefined): boolean {
