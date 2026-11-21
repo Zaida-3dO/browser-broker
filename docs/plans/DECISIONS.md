@@ -2779,6 +2779,15 @@ is consequential — `needs_owner` without a grant, an allow with a valid one. A
 text field, `Tab`, and the movement keys are not. Movement keys are one list, shared by the gate
 and by the session that performs them, so the two can never disagree about which keys scroll.
 
+A `press`'s key string is read by a **grammar** before anything classifies it: modifier names in
+exactly one spelling, base names matched exactly, and a one-character base only inside the
+printable ASCII band — outside it the library cannot press the base at all, and it holds the
+earlier modifiers down, fails on the base and releases nothing, leaving Shift or Control stuck on
+the page for every later key of the session. A string the grammar refuses is not a key: it is
+refused as `attached.key_unparseable` before the site fence and before the page, grant or no
+grant, and a press that fails part-way through a real one lifts every modifier the grammar says
+it pressed down.
+
 The facts the gate decides on come from **one real reader per fact**, and the same reader serves a
 named ref and a ref-less press: the focused control's type and `autocomplete` are read exactly as
 a named control's are, because a field that arrives without them is read as plain text. An input
