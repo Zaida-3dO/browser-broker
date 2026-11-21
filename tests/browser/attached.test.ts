@@ -1752,6 +1752,81 @@ test('F2: keys the library cannot press and wrong-case modifiers refuse at the g
   }
 });
 
+test('F3: a control that will not take focus refuses a type at its ref, and no key crosses', async () => {
+  // The gate answered from the control's facts; this is the physical half
+  // of the focus proof — before any key the session proves the named
+  // control *is* the focused element. A control the page will not let take
+  // focus
+  // (a disabled input, a hidden one, one that hands focus elsewhere on
+  // focus) gets the keys nowhere but where they were forbidden to go, so
+  // it refuses as field_forbidden and the relay was never asked for an
+  // Input command.
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: () =>
+      Promise.resolve({ tag: 'input', inputType: 'text', accessibleName: 'Notes', editable: true }),
+    pageSecretProbe: () => Promise.resolve(false),
+    focusHoldsProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = inputCountOf(ext);
+    await assert.rejects(
+      session.act(tab, { action: 'type', ref: 'e1', value: 'hello' }, undefined, CALLER),
+      (error: unknown) =>
+        error instanceof AttachedError && error.rule === 'attached.field_forbidden',
+      'a type at a control that would not take focus refuses',
+    );
+    assert.equal(inputCountOf(ext), before, 'not one key crossed');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('F3: a control that will not take focus refuses a press at its ref too — and a control that takes it receives the key', async () => {
+  const refusal = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: () =>
+      Promise.resolve({ tag: 'input', inputType: 'text', accessibleName: 'Notes', editable: true }),
+    pageSecretProbe: () => Promise.resolve(false),
+    focusHoldsProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab(refusal);
+    const before = inputCountOf(refusal.ext);
+    await assert.rejects(
+      refusal.session.act(tab, { action: 'press', ref: 'e1', value: 'h' }, undefined, CALLER),
+      (error: unknown) =>
+        error instanceof AttachedError && error.rule === 'attached.field_forbidden',
+      'a press at a control that would not take focus refuses',
+    );
+    assert.equal(inputCountOf(refusal.ext), before, 'not one key crossed');
+  } finally {
+    refusal.session.detach().catch(() => undefined);
+  }
+  // The other half: with the proof saying the control holds focus, the
+  // keys cross. The act's own snapshot step cannot complete on the fake
+  // (the same fixture limit as every other acting row), so the row reads
+  // the call log, not the response.
+  const pass = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: () =>
+      Promise.resolve({ tag: 'input', inputType: 'text', accessibleName: 'Notes', editable: true }),
+    pageSecretProbe: () => Promise.resolve(false),
+    focusHoldsProbe: () => Promise.resolve(true),
+  });
+  try {
+    const tab = await openedTab(pass);
+    const before = inputCountOf(pass.ext);
+    void pass.session
+      .act(tab, { action: 'press', ref: 'e1', value: 'h' }, undefined, CALLER)
+      .catch(() => undefined);
+    await waitFor(() => inputCountOf(pass.ext) > before, 'the proved press crossing');
+  } finally {
+    pass.session.detach().catch(() => undefined);
+  }
+});
+
 test('the focus decision is table-driven: only plain page focus passes — controls, editables, frames, shadow hosts, role widgets, aria values and custom elements all hold focus', () => {
   // The predicate half of the gate, with no page anywhere: what the read
   // learns is data, and this is where the answer is decided. The shape is

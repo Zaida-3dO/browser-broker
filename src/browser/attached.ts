@@ -423,6 +423,15 @@ export interface AttachedSessionOptions {
    * own `activeElement`; frames and shadow hosts answer `null`.
    */
   readonly focusedControlProbe?: () => Promise<ActTarget | null>;
+  /**
+   * The focus proof for a named control — did the control **take** the
+   * page's focus, so the keys land on it. Injected on the same seam
+   * convention as {@link focusProbe}: the fake relay cannot complete the
+   * focus-and-read the real path runs, and the refusal both ways must be
+   * provable anyway. Absent, the session focuses the control itself and
+   * runs {@link holdsFocus} against it.
+   */
+  readonly focusHoldsProbe?: (locator: Locator) => Promise<boolean>;
 }
 
 /**
@@ -621,6 +630,9 @@ export async function attachOverBridge(
       ...(options.focusedControlProbe === undefined
         ? {}
         : { focusedControlProbe: options.focusedControlProbe }),
+      ...(options.focusHoldsProbe === undefined
+        ? {}
+        : { focusHoldsProbe: options.focusHoldsProbe }),
     });
   } catch (error) {
     // Whatever failed, the port must not outlive the refusal: the bridge is
@@ -704,10 +716,11 @@ export class AttachedBrowserSession implements BrowserSession {
    */
   readonly #dialogs = new Map<string, DialogDisposition>();
 
-  /** The field guards' element read, and the two other injected acting answers. */
+  /** The field guards' element read, and the other injected acting answers. */
   readonly #elementFactsProbe: ((ref: string) => Promise<ActTarget | null>) | undefined;
   readonly #pageSecretProbe: (() => Promise<boolean>) | undefined;
   readonly #focusedControlProbe: (() => Promise<ActTarget | null>) | undefined;
+  readonly #focusHoldsProbe: ((locator: Locator) => Promise<boolean>) | undefined;
 
   /**
    * The handle a page answers to, and the page it names.
@@ -780,6 +793,7 @@ export class AttachedBrowserSession implements BrowserSession {
     elementFactsProbe?: (ref: string) => Promise<ActTarget | null>;
     pageSecretProbe?: () => Promise<boolean>;
     focusedControlProbe?: () => Promise<ActTarget | null>;
+    focusHoldsProbe?: (locator: Locator) => Promise<boolean>;
   }) {
     this.#browser = options.browser;
     this.#bridge = options.bridge;
@@ -792,6 +806,7 @@ export class AttachedBrowserSession implements BrowserSession {
     this.#elementFactsProbe = options.elementFactsProbe;
     this.#pageSecretProbe = options.pageSecretProbe;
     this.#focusedControlProbe = options.focusedControlProbe;
+    this.#focusHoldsProbe = options.focusHoldsProbe;
     // The same eager-name, lazy-create arrangement as `real.ts`, for the same
     // measured reason: an unwired session that never writes must not leave an
     // empty directory behind, and this module still does not know where the
@@ -1553,6 +1568,28 @@ export class AttachedBrowserSession implements BrowserSession {
    * type stays a documented residual (§13o of the design notes).
    */
   async #holdFocused(locator: Locator, action: string): Promise<void> {
+    if (this.#focusHoldsProbe !== undefined) {
+      // The injected answer stands in for both steps: on the fake relay
+      // neither a locator focus nor the in-page read completes, and the
+      // refusal both ways has to be provable. It is held to the same bar:
+      // an answer it cannot give is an answer it does not vouch for.
+      let probed: boolean;
+      try {
+        probed = await this.#focusHoldsProbe(locator);
+      } catch {
+        throw new AttachedError(
+          'attached.field_forbidden',
+          `This "${action}" is refused because the page could not be asked whether the control holds its focus; no key was sent.`,
+        );
+      }
+      if (!probed) {
+        throw new AttachedError(
+          'attached.field_forbidden',
+          `This "${action}" is refused because the control would not take focus — the keys would have landed somewhere else on the page, and a control the broker cannot put the keys into is a control it cannot clear.`,
+        );
+      }
+      return;
+    }
     try {
       await locator.focus();
     } catch {
@@ -1602,9 +1639,25 @@ export class AttachedBrowserSession implements BrowserSession {
         // As if by keyboard means the keys go to whatever holds focus, so
         // the control named has to be shown to hold it first — see
         // {@link #holdFocused}.
-        const typed = await this.#locate(page, request.ref);
+        const typed =
+          this.#focusHoldsProbe === undefined
+            ? await this.#locate(page, request.ref)
+            : page.locator(`aria-ref=${request.ref}`);
         await this.#holdFocused(typed, request.action);
-        await typed.pressSequentially(request.value);
+        if (this.#focusHoldsProbe === undefined) {
+          await typed.pressSequentially(request.value);
+        } else {
+          // With the focus proof injected there is no locator step to
+          // complete: the relay cannot finish the snapshot that mints refs
+          // or the resolution that reads them (it answers commands, not
+          // evaluates), which is why the probe exists. It answered that the
+          // control holds focus, and a focused control receives exactly the
+          // keys the page keyboard sends — one press per character, which
+          // is what `pressSequentially` carries to a resolved locator.
+          for (const character of request.value) {
+            await page.keyboard.press(character);
+          }
+        }
         break;
       }
       case 'fill': {
@@ -1628,10 +1681,20 @@ export class AttachedBrowserSession implements BrowserSession {
             throw error;
           }
         } else {
-          const pressed = await this.#locate(page, request.ref);
+          const pressed =
+            this.#focusHoldsProbe === undefined
+              ? await this.#locate(page, request.ref)
+              : page.locator(`aria-ref=${request.ref}`);
           await this.#holdFocused(pressed, request.action);
           try {
-            await pressed.press(request.value);
+            if (this.#focusHoldsProbe === undefined) {
+              await pressed.press(request.value);
+            } else {
+              // Same arrangement as `type` above: the probe stands in for
+              // the focus-and-read the relay cannot complete, and a
+              // focused control receives what the page keyboard sends.
+              await page.keyboard.press(request.value);
+            }
           } catch (error) {
             await releaseHeldModifiers(page, request.value);
             throw error;
