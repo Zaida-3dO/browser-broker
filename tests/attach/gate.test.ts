@@ -12,6 +12,7 @@ import {
   NEVER_ACTED,
   createGrantRegistry,
   decide,
+  decideDownload,
   grantValueDigest,
   isConsequentialText,
   modifierTokensOf,
@@ -1076,6 +1077,106 @@ for (const row of rows) {
     }
   });
 }
+
+// ── the download gate: two hosts, one fence ────────────────────────────
+
+interface DownloadRow {
+  readonly name: string;
+  readonly pageHost: string;
+  readonly fileHost: string;
+  readonly sites?: readonly string[];
+  readonly expect: string;
+  /** A phrase the refusal sentence must carry. */
+  readonly message?: string;
+}
+
+const downloadRows: DownloadRow[] = [
+  {
+    name: "a file on the page's own listed site",
+    pageHost: 'example.com',
+    fileHost: 'example.com',
+    expect: 'allow',
+  },
+  {
+    name: 'a file on a wildcard-listed subdomain of a different listed site',
+    pageHost: 'example.com',
+    fileHost: 'files.news.example.org',
+    expect: 'allow',
+  },
+  {
+    name: 'the act list empty — read-only, the same sentence the acting gate gives',
+    pageHost: 'example.com',
+    fileHost: 'example.com',
+    sites: [],
+    expect: 'attached.read_only',
+    message: 'BROKER_ATTACHED_ACT_SITES',
+  },
+  {
+    name: 'the page off the list — a download cannot start from an unlisted site',
+    pageHost: 'example.org',
+    fileHost: 'example.org',
+    expect: 'attached.act_site_off_list',
+    message: 'BROKER_ATTACHED_ACT_SITES',
+  },
+  {
+    name: 'the file off the list while the page is on it — the frame rule wearing a different hat',
+    pageHost: 'example.com',
+    fileHost: 'somewhere-else.test',
+    expect: 'attached.act_site_off_list',
+    message: 'not in BROKER_ATTACHED_ACT_SITES',
+  },
+  {
+    name: 'the apex of a wildcarded domain is not covered (same rule as the acting gate)',
+    pageHost: 'example.com',
+    fileHost: 'news.example.org',
+    expect: 'attached.act_site_off_list',
+  },
+  {
+    name: 'a page on about:blank (no host read) is not on any list',
+    pageHost: '',
+    fileHost: 'example.com',
+    expect: 'attached.act_site_off_list',
+  },
+  {
+    name: 'host case does not matter, as in the acting gate',
+    pageHost: 'Example.COM',
+    fileHost: 'Files.News.Example.Org',
+    expect: 'allow',
+  },
+];
+
+for (const row of downloadRows) {
+  test(`download gate: ${row.name}`, () => {
+    const decision = decideDownload({
+      pageHost: row.pageHost,
+      fileHost: row.fileHost,
+      actSites: row.sites ?? SITES,
+    });
+    assert.equal(decision.decision, row.expect);
+    if (decision.decision !== 'allow' && row.message) {
+      assert.ok(
+        decision.message.includes(row.message),
+        `refusal sentence must carry "${row.message}", got: ${decision.message}`,
+      );
+    }
+  });
+}
+
+test("the download gate refuses with the acting gate's two names and no third", () => {
+  // The capability is one list; the ledger should show one pair of rule names
+  // for it. A third synonym would mean an operator grepping for the fence
+  // misses a refusal that is the same fence.
+  const names = new Set<string>();
+  for (const [pageHost, fileHost, actSites] of [
+    ['example.org', 'example.com', SITES],
+    ['example.com', 'somewhere-else.test', SITES],
+    ['example.com', 'example.com', []],
+  ] as const) {
+    const decision = decideDownload({ pageHost, fileHost, actSites });
+    if (decision.decision !== 'allow') names.add(decision.decision);
+  }
+  assert.deepEqual([...names].sort(), ['attached.act_site_off_list', 'attached.read_only']);
+});
 
 test('the consequential table is the exported one the rows walked', () => {
   assert.ok(

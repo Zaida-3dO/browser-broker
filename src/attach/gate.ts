@@ -514,6 +514,66 @@ export function decide(input: GateInput): GateDecision {
 const TYPING_VERBS: readonly PageAction[] = ['type', 'fill', 'fill_form', 'press'];
 
 /**
+ * The download gate — the same site fence the act fence runs, asked of a
+ * different kind of step (§13p). A download is not an act verb: it touches no
+ * control, so it has no target facts, no grant path and no consequence table
+ * to run. What it does have is **two sites**, and the fence is the whole
+ * rule:
+ *
+ * 1. an empty list is the capability off — the same read-only sentence `decide`
+ *    gives, because it is the same fact about the installation;
+ * 2. the **page** host and the **file** host are both checked. A page on a
+ *    listed site linking another site's file is the frame rule above wearing a
+ *    different hat: the fetch runs in the page's context, with its cookies,
+ *    and the file that comes back can be from anywhere the page chose. A fence
+ *    that checked only the page would let any listed site hand out bytes from
+ *    an unlisted one.
+ *
+ * Only these two refusal names appear here, and deliberately so: the
+ * capability is the same one `BROKER_ATTACHED_ACT_SITES` turns on, and an
+ * operator reading a ledger should see one pair of rule names for one
+ * capability, not a third synonym for the same fence.
+ */
+export interface DownloadGateInput {
+  /** The page's host, as the last navigation reported arriving at it. */
+  readonly pageHost: string;
+  /** The file's host, as the service resolved the caller's address to one. */
+  readonly fileHost: string;
+  /** The operator's act list (`BROKER_ATTACHED_ACT_SITES`); empty is off. */
+  readonly actSites: readonly string[];
+}
+
+/**
+ * Decide one download on an attached lease. Pure like {@link decide}: it asks
+ * the page nothing and can be consulted before any browser is touched. A page
+ * on `about:blank` or an unread address answers `''` — not on any list, and
+ * the honest reason is that the site is not listed, not a guess.
+ */
+export function decideDownload(input: DownloadGateInput): GateDecision {
+  const { pageHost, fileHost, actSites } = input;
+
+  if (actSites.length === 0) {
+    return refusal(
+      'attached.read_only',
+      'This attached lease is read-only: set BROKER_ATTACHED_ACT_SITES to allow acting anywhere. "download" refused.',
+    );
+  }
+  if (!siteListed(pageHost, actSites)) {
+    return refusal(
+      'attached.act_site_off_list',
+      'This site is not in BROKER_ATTACHED_ACT_SITES, so "download" is refused here; the site stays readable.',
+    );
+  }
+  if (!siteListed(fileHost, actSites)) {
+    return refusal(
+      'attached.act_site_off_list',
+      'The file is on a site that is not in BROKER_ATTACHED_ACT_SITES, so "download" is refused; a listed page may not fetch an unlisted site\'s file with the page\'s credentials.',
+    );
+  }
+  return { decision: 'allow' };
+}
+
+/**
  * The tuple a grant signs over — the exact question it answers, and the
  * only shape that verifies against it.
  */
