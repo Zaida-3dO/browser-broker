@@ -2841,6 +2841,14 @@ and records the generation from **before** an act, so a page the act itself move
   worth granting is better named by ref.
 - **Text typed into a field is not classified.** Typing the word "send" into a search box is
   typing; the step that submits it is the one the table sees.
+- **A hostile page can move focus between characters of a sequential `type`.** The performer
+  proves the named control holds the focus before the first key crosses, so the check makes the
+  agent's **own targeting** honest, not the page's; a page that steals focus mid-string stays
+  outside what any pre-key check can see.
+
+The asking these rules do — "Sign in", "Post", "Accept cookies", modifier chords, Space on a
+focused button — over-fires **by design**: an ask costs the owner a click and a wrong act costs
+something that cannot be clicked back.
 
 ### Deliberately not here
 
