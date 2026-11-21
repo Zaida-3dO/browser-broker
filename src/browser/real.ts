@@ -46,6 +46,8 @@ import type {
   ColdStartRequest,
   CookieSummary,
   DiscoveryRecord,
+  DownloadRequest,
+  DownloadResult,
   EvaluationResult,
   NavigationResult,
   RawCapture,
@@ -514,6 +516,147 @@ export function annotateRefless(snapshot: string): string {
     `read, and check which line carries [active].`
   );
 }
+
+/**
+ * The one expression that fetches a linked file from inside a page
+ * (`SCHEMA.md` §3.18) — the download's fixed, service-owned program, shared
+ * by both drivers so the two kinds fetch the same way by construction rather
+ * than by agreement.
+ *
+ * ── Why a fetch, and not the browser's download machinery ───────────────
+ *
+ * `DECISIONS.md` §13p owns the argument; the shape it leaves here is three
+ * facts. The fetch runs **in the page**, so it carries the page's own
+ * credentials — the signed-in session is the reason a linked file is
+ * reachable at all. Its result must survive a JSON round-trip, so the bytes
+ * cross the seam base64. And it reads **a chunk at a time**, because a size
+ * cap checked after the whole body is in memory protects the ledger and not
+ * the machine: the process holding it is the one that arbitrates every lease.
+ *
+ * **This function body runs in the page.** The scope is cast rather than
+ * typed, on this file's standing convention (the settle and measurement
+ * expressions above do the same): the project compiles without the browser
+ * type library, and the compiler having no names for `fetch` and `btoa` is
+ * correct, because they are not in *this* runtime.
+ */
+export async function downloadInPage(spec: {
+  readonly url: string;
+  readonly maxBytes: number;
+  readonly timeoutMs?: number;
+}): Promise<{ base64: string; mime?: string; finalUrl: string; bytes: number }> {
+  const scope = globalThis as unknown as {
+    AbortSignal: { timeout: (milliseconds: number) => unknown };
+    fetch: (
+      url: string,
+      init?: { credentials: string; signal: unknown },
+    ) => Promise<{
+      ok: boolean;
+      status: number;
+      url: string;
+      headers: { get: (name: string) => string | null };
+      body?: {
+        getReader: () => {
+          read: () => Promise<{ done?: boolean; value?: Uint8Array }>;
+          cancel: () => Promise<void>;
+        };
+      } | null;
+    }>;
+    btoa: (binary: string) => string;
+  };
+
+  // The page's own credentials, because a download of a linked file is the
+  // page reaching its own links; `redirect: 'follow'` is fetch's default, and
+  // the final address is reported from the response rather than assumed —
+  // **it is the arrived host that the site fence decides on** (§13p), so an
+  // echo of the request address here would disarm the fence downstream.
+  //
+  // The clock is bounded as well as the byte count: a server that never
+  // answers, or drip-feeds bytes under the ceiling, would otherwise hold this
+  // call — and the lease's after-commit work — open indefinitely. The signal
+  // is handed to `fetch`, which aborts **the whole exchange**, headers and
+  // body alike, so the mapping below wraps the read loop too: a server that
+  // sends a status and then stops mid-body is the ordinary hang, and an
+  // abort surfacing at `reader.read()` is the same event as one surfacing at
+  // `fetch`. On the timeout the promise rejects with a sentence naming the
+  // bound, which reads on every surface as the fetch refusing, not as the
+  // page hanging.
+  //
+  // **The default lives inside this function, and it has to.** The function
+  // body is serialized and shipped to the page; a module-level constant is
+  // not in the closure the page receives, and naming one here would arrive
+  // as a `ReferenceError` on every download. The number is one line of
+  // doc away below rather than a shared binding, and the test against the
+  // clock pins the behaviour either way.
+  const timeoutMs = spec.timeoutMs ?? 30_000;
+  try {
+    const response = await scope.fetch(spec.url, {
+      credentials: 'include',
+      signal: scope.AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      // The status belongs in the sentence a caller sees: `403` on a link
+      // that was on the page a moment ago is a fact about the link (a signed
+      // address that expired), and a caller cannot act on a refusal that
+      // hides it.
+      throw new Error(`the page's own fetch of that address answered ${String(response.status)}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+      throw new Error('the response carried no body to read');
+    }
+
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    for (;;) {
+      const next = await reader.read();
+      if (next.done === true) break;
+      const chunk = next.value;
+      if (chunk === undefined) continue;
+      bytes += chunk.byteLength;
+      if (bytes > spec.maxBytes) {
+        // Cancel before throwing: a reader left open keeps the connection —
+        // and the rest of a body nobody is allowed to have — alive in his
+        // browser.
+        await reader.cancel();
+        throw new Error(`the file passes the ${String(spec.maxBytes)}-byte ceiling`);
+      }
+      chunks.push(chunk);
+    }
+
+    // One base64 pass over the whole body rather than one per chunk: a chunk
+    // is not a multiple of three bytes, and concatenating per-chunk
+    // encodings produces text that decodes to nothing. The whole file is
+    // held here, which is what the ceiling in front of this loop is for.
+    let binary = '';
+    for (const chunk of chunks) {
+      for (const byte of chunk) binary += String.fromCharCode(byte);
+    }
+
+    return {
+      base64: scope.btoa(binary),
+      mime: response.headers.get('content-type') ?? undefined,
+      finalUrl: response.url,
+      bytes,
+    };
+  } catch (error) {
+    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new Error(
+        `the page's own fetch of that address timed out after ${String(timeoutMs)} ms`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+// The clock ceiling on one in-page fetch is written **inside**
+// {@link downloadInPage}, not here: the page receives only the function body,
+// and a constant outside it is undefined at the far end. A file this tool is
+// for arrives in seconds over any real link, and the thirty seconds it gets
+// are generous enough that the timeout fires on a server that is not
+// answering rather than on one that is slow. The byte ceiling bounds size;
+// this bounds patience.
 
 /**
  * How the next native dialog on a page will be answered.
@@ -2334,6 +2477,32 @@ class RealBrowserSession implements BrowserSession {
         }, maskMarker);
       }
     }
+  }
+
+  /**
+   * Fetch a linked file in the page and carry it back base64
+   * (`SCHEMA.md` §3.18) — the same fixed expression the attached kind runs,
+   * shared rather than copied so the two drivers cannot drift on what a
+   * fetch means.
+   *
+   * **No site fence here, and that is the asymmetry `DECISIONS.md` §13p
+   * states and argues**: on a launched lease the caller can already run its
+   * own code in the page through `browser_evaluate` — a `fetch` included —
+   * so a host list on this one verb would fence nothing the lease does not
+   * already have; on the attached kind `evaluate` is refused outright
+   * (§13n), so there the two-host fence is the difference between reach and
+   * no reach. The service re-checks the **arrived** host against that fence
+   * before saving anything, which is why `finalUrl` here reports the
+   * response's address rather than the request's, and the ceiling and the
+   * clock both travel with the request.
+   */
+  async download(tab: TabHandle, request: DownloadRequest): Promise<DownloadResult> {
+    const page = await this.#page(tab);
+    return page.evaluate(downloadInPage, {
+      url: request.url,
+      maxBytes: request.maxBytes,
+      ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+    });
   }
 
   /**
