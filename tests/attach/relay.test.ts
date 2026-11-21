@@ -155,8 +155,8 @@ test('a wrong door is refused, and nothing behind the door happens', async () =>
 });
 
 test('a configured token rides the connect URL only — the door admits without it and refuses without it alike', async () => {
-  // The token's honest scope, pinned at the door it was once said to
-  // guard. Two halves:
+  // The token's honest scope, pinned at the door it does not guard.
+  // Two halves:
   //
   // - **The door does not check it.** With a token configured, the
   //   extension upgrades with no token anywhere in sight (there is no

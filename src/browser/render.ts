@@ -10,9 +10,9 @@
  * layer exists to prevent wearing a smaller hat: a caller that reads a
  * network log learns one line shape, and if the next browser it is served
  * by spells the same fact differently, the caller is parsing per-driver
- * without anything telling it to. `attached.ts` shipped its own copies for
- * one release with the duplication flagged in-file rather than reaching
- * into `real.ts` mid-change; this is that extraction.
+ * without anything telling it to. So each driver calls **one** copy for
+ * what it renders rather than keeping its own: the same fact gets one
+ * spelling whichever browser served it.
  *
  * ── Why these live here, and not in the capture or service layer ─────────
  *

@@ -319,16 +319,17 @@ test('tabs held against an attached browser still count against the shared budge
 });
 
 test('a queued attached place already holds its cap slot, so the cap holds through promotion', async () => {
-  // The breach this pins out: the cap used to count only `active` rows,
-  // while **promotion weighs the shared budget alone**. At cap 1 / budget 2
-  // the sequence went: two regular leases fill the pool; an attached claim
+  // The breach this pins out: a cap that counts only `active` rows while
+  // **promotion weighs the shared budget alone**. At cap 1 / budget 2 the
+  // sequence goes: two regular leases fill the pool; an attached claim
   // passes the cap (nothing attached is live) and queues; a second attached
   // claim passes the cap too — still nothing *active* — and queues; release
   // the regulars and **both promote**, leaving two active tabs against a
-  // browser that allows one. Refusal and count did not move; the cap existed
-  // on the request and not on the outcome. With waiting places counted, the
-  // second attached claim is refused at the request, and the one queued
-  // place is the only attached row that ever reaches `active`.
+  // browser that allows one. Refusal and count never moved along the way;
+  // such a cap exists on the request and not on the outcome. With waiting
+  // places counted, the second attached claim is refused at the request,
+  // and the one queued place is the only attached row that ever reaches
+  // `active`.
   await withBroker(
     async ({ broker, readCommitted }) => {
       const first = await broker.claim({

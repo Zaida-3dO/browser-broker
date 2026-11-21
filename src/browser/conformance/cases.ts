@@ -192,8 +192,9 @@ export const SEAM_PROPERTIES: readonly SeamProperty[] = [
       // The leased handles and the listed tabs: asked of every subject. The
       // keeper half of this same question is its own property next door, so
       // a subject that has no keeper skips **that half alone** rather than
-      // this whole one — dropping it for everyone was how the check on the
-      // keeper handle went missing from the two subjects that do have one.
+      // this whole one — dropping the keeper half for every subject is how
+      // the check goes missing precisely from the subjects that do have a
+      // keeper handle to check.
       const described = session.describe();
       const leased = await session.openTab();
 
