@@ -2592,6 +2592,18 @@ exactly that rather than promising that nothing writable crosses the port. The d
 commands the service speaks and the methods named at the relay; the evaluate residual is the
 protocol's, and it is stated here rather than left for someone to discover.
 
+**Downloads, owned beside the same door.** The relay answers `Browser.setDownloadBehavior`
+locally with an empty success and forwards nothing, so no download policy this service could
+set ever reaches his browser: a download the browser performs — one a page starts itself, or
+one a navigation answers as an attachment — is governed entirely by his own browser's settings.
+This kind clicks nothing and no verb starts a download by name, but `browser_navigate` can
+reach a URL a server answers as an attachment and a page's own script can begin one under the
+allowed verbs, and a file landing in his Downloads folder is a write to his machine that the
+read-only rule does not reach. It is stated here rather than engineered at this seam: deciding
+the download question needs a tool that can be proved against a real extension — the fake
+relay answers commands, not behaviour — and that proof belongs with the gated browser job, not
+with this slice.
+
 ### Why the handle names the browser's own tab id
 
 The launched session mints handles from the debugging protocol's target id because that id is
