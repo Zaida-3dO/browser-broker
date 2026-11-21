@@ -480,7 +480,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     description:
       `Do one thing to the page: ${PAGE_ACTIONS.join(', ')}. Element references come from a ` +
       'snapshot. Returns a fresh snapshot after every change, because your next reference has ' +
-      'to come from the page as it is now.',
+      'to come from the page as it is now. A press of a view-moving key acts wherever the page ' +
+      'already holds focus — its ref, if it names one, is not focused first.',
     arguments: [
       LEASE_KEY,
       {
