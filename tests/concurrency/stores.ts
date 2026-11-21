@@ -125,6 +125,7 @@ export async function withArbitrationStore(
       leaseSeconds: options.leaseSeconds ?? 600,
       queueSeconds: options.queueSeconds ?? 600,
       launchReadinessTimeoutSeconds: 30,
+      downloadMaxBytes: 8388608,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
       attachedBrowsers: [],

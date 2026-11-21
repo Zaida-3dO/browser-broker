@@ -142,6 +142,9 @@ function writingSession(outputDirectory: string): { session: BrowserSession; rea
     capture: () => {
       throw new Error('this test never captures');
     },
+    download: () => {
+      throw new Error('this test never downloads');
+    },
   };
   return { session, reads };
 }

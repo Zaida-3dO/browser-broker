@@ -75,15 +75,15 @@ test(
     // EXPECTED_VERSION deliberately: deriving it would make the test agree
     // with the build by construction, and the assertion is precisely that a
     // build refuses a version it does not know.
-    store.db.pragma('user_version = 14');
+    store.db.pragma('user_version = 15');
     await assert.rejects(stepSchema(store.db), (error: unknown) => {
       assert.ok(error instanceof StartupRefusal);
       assert.equal(error.rule, 'startup.schema_stepped');
-      assert.match(error.message, /14/);
+      assert.match(error.message, /15/);
       return true;
     });
     // Nothing was written: the version is untouched, not reset.
-    assert.equal(readStoreVersion(store.db), 14);
+    assert.equal(readStoreVersion(store.db), 15);
   }),
 );
 
@@ -465,6 +465,93 @@ test(
         .run();
     }, /CHECK constraint failed/);
 
+    assert.deepEqual(store.db.pragma('foreign_key_check'), []);
+  }),
+);
+
+test(
+  'A v13 STORE WITH EVENT ROWS STEPS TO FOURTEEN WITH EVERY VALUE INTACT, AND ONLY THEN ACCEPTS A DOWNLOAD ROW',
+  withStore(async (store) => {
+    // Step fourteen rebuilds `events` to widen the kind check — the same
+    // copy-and-swap mechanism as step eleven — and schema.test.ts pins the
+    // rebuilt table's shape on an empty store. The populated case is the one
+    // that proves the copy list carries the rows: a rebuild that drops or
+    // reorders a column passes a column-list assertion and loses an
+    // installation's ledger. And the refusal before the step is what makes
+    // the test fail if the step is ever forgotten: at v13 the widened kind
+    // must NOT be there.
+    await stepTo(store, 13);
+
+    store.db
+      .prepare(
+        `INSERT INTO claims
+           (id, key_hash, session_id, browser_id, state, purpose,
+            expires_at, ttl_seconds, activated_at, ended_at, revoke_reason)
+         VALUES ('claim-1', 'hash-1', 'session-1', 'regular', 'active', 'reading a page',
+            '2026-11-18T00:10:00.000Z', 600, '2026-11-18T00:00:00.000Z', NULL, NULL)`,
+      )
+      .run();
+    store.db
+      .prepare(
+        `INSERT INTO tabs (id, claim_id, browser_id, driver_tab_id, state, last_url)
+         VALUES ('tab-1', 'claim-1', 'regular', 'driver-1', 'open', 'https://example.com/reports')`,
+      )
+      .run();
+
+    // Both halves of what the ledger is for, before the step: an allowed
+    // call naming its lease and tab, and a refused one carrying guard and
+    // detail — the pair a rebuild most quietly loses is the nullable trio.
+    store.db
+      .prepare(
+        `INSERT INTO events (kind, outcome, guard, claim_id, tab_id, session_id, adapter, browser_id, detail)
+         VALUES ('navigate', 'allow', NULL, 'claim-1', 'tab-1', 'session-1', 'tool-stdio', 'regular', NULL),
+                ('act', 'deny', 'attached.act_site_off_list', 'claim-1', 'tab-1', 'session-1', 'tool-stdio', 'regular', '{"host":"off.example"}')`,
+      )
+      .run();
+
+    // At v13 the kind does not exist yet: this is the assertion that fails
+    // loudly if step fourteen is ever dropped from the list.
+    assert.throws(() => {
+      store.db
+        .prepare(
+          `INSERT INTO events (kind, outcome, claim_id, adapter) VALUES ('download', 'allow', 'claim-1', 'tool-stdio')`,
+        )
+        .run();
+    }, /CHECK constraint failed/);
+
+    const before = {
+      events: store.db.prepare('SELECT * FROM events ORDER BY id').all(),
+      claims: store.db.prepare('SELECT * FROM claims ORDER BY id').all(),
+      tabs: store.db.prepare('SELECT * FROM tabs ORDER BY id').all(),
+    };
+
+    await stepSchema(store.db);
+    assert.equal(readStoreVersion(store.db), EXPECTED_VERSION);
+
+    // Every ledger row, every column, byte for byte — including the deny
+    // row's guard and detail.
+    assert.deepEqual(store.db.prepare('SELECT * FROM events ORDER BY id').all(), before.events);
+    assert.deepEqual(store.db.prepare('SELECT * FROM claims ORDER BY id').all(), before.claims);
+    assert.deepEqual(store.db.prepare('SELECT * FROM tabs ORDER BY id').all(), before.tabs);
+
+    // The widened check arrived with the rebuild, on a store that had the
+    // narrow one — and only for kinds this service names.
+    store.db
+      .prepare(
+        `INSERT INTO events (kind, outcome, claim_id, tab_id, adapter, detail)
+         VALUES ('download', 'allow', 'claim-1', 'tab-1', 'tool-stdio', '{"host":"example.com","maxBytes":1048576}')`,
+      )
+      .run();
+    assert.throws(() => {
+      store.db
+        .prepare(
+          `INSERT INTO events (kind, outcome, adapter) VALUES ('browser_frobnicated', 'allow', 'cli')`,
+        )
+        .run();
+    }, /CHECK constraint failed/);
+
+    // The rebuilt table kept its indexes' subject too: the guard index is
+    // what the ledger views read, and it exists on the new table.
     assert.deepEqual(store.db.pragma('foreign_key_check'), []);
   }),
 );

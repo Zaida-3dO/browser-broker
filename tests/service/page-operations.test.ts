@@ -148,6 +148,7 @@ function recordingSession(canned?: { readonly width: number; readonly height: nu
         url: 'https://example.com/',
       });
     },
+    download: () => Promise.reject(new Error('this test never downloads')),
   } satisfies BrowserSession;
 
   return { calls, session };

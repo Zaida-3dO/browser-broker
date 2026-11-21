@@ -2,7 +2,7 @@ import { OPERATION_NAMES, type OperationName } from '../adapter/operations.ts';
 import { BROWSER_CHOICE_GUIDANCE, PAGE_ACTIONS } from '../browser/driver.ts';
 
 /**
- * The eleven tools, their descriptions, and their argument schemas.
+ * The twelve tools, their descriptions, and their argument schemas.
  *
  * ── Surface area is a standing tax, and this file is where it is paid ────
  *
@@ -337,7 +337,7 @@ const OPTIONAL_LEASE_KEY: ToolArgument = {
 };
 
 /**
- * The eleven, in §3.1's order.
+ * The twelve, in §3.1's order.
  *
  * The list is data rather than a switch statement for the same reason the
  * command table is: the conformance driver reads it to translate a neutral
@@ -749,6 +749,36 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         description:
           'Free text, 8-200 characters, recorded, never refused — why this capture needed more ' +
           'than the default tier. Required with tier="max".',
+      },
+    ],
+  },
+  {
+    name: 'browser_download',
+    operation: 'download',
+    description:
+      "Fetch a file this page links, with the page's own credentials, and save it as an artifact of " +
+      'this lease. Returns the name, the recorded path, the byte count, the sha256 and the source host — never ' +
+      "the bytes. Only the lease's own tab, and only up to the size cap; on a signed-in attached browser, " +
+      'also only where acting on that site is allowed. Files a page only makes when clicked, serves from a ' +
+      'POST, builds as a blob URL, blocks with its own origin policy, or hands out as a one-time link cannot ' +
+      'be fetched.',
+    arguments: [
+      LEASE_KEY,
+      {
+        name: 'url',
+        type: 'string',
+        required: true,
+        description:
+          'The file address — absolute, or relative to the page it is read from. Only http(s) is ' +
+          'accepted; a file, data or script address is refused.',
+      },
+      {
+        name: 'label',
+        type: 'string',
+        required: false,
+        description:
+          'A word to put in front of the saved name, so two files from one page tell each other apart. ' +
+          'It is a label, never a location.',
       },
     ],
   },

@@ -133,6 +133,8 @@ function redirectingSession(
         viewportWidth: 1,
         url: 'https://example.com/',
       }),
+    // Never called by any test here either — the same seam note as above.
+    download: () => Promise.reject(new Error('this test never downloads')),
   };
 
   return { session, calls };

@@ -82,6 +82,7 @@ function brokenSession(failure = new Error('the browser stopped answering')): Br
     evaluate: reject,
     settlePage: reject,
     capture: reject,
+    download: reject,
   };
 }
 
@@ -148,6 +149,7 @@ function workingSession(): BrowserSession {
         viewportWidth: 8,
         url: 'https://example.com/',
       }),
+    download: () => Promise.reject(new Error('this test never downloads')),
   };
 }
 

@@ -630,6 +630,43 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     },
   },
   {
+    name: 'download: a linked file is fetched and reported as an artifact',
+    operation: 'download',
+    // §3.18's promised reply, asserted as a reply: **name, path, byte count,
+    // sha256 and source host — never the bytes**. The fake driver answers with
+    // its canned body and the service saves it under the lease, so the fields
+    // exist only if the whole fetch-and-save path ran and the shape survived
+    // both transports.
+    seed: withALiveLease,
+    input: { url: 'https://example.com/files/spec.pdf' },
+    expect: {
+      outcome: 'accepted',
+      valueFields: [
+        'download.name',
+        'download.path',
+        'download.bytes',
+        'download.sha256',
+        'download.sourceHost',
+      ],
+    },
+  },
+  {
+    name: 'download: a local-file address is refused',
+    operation: 'download',
+    // §7.1 `download.scheme_allowed`, the sibling of `navigate.scheme_allowed`
+    // for the one verb that *fetches* rather than navigates: a `file:` address
+    // would read this machine's filesystem through a lease granted to work
+    // inside a page, and a `data:` address would be obeyed happily by the
+    // in-page fetch, which is exactly why the fence cannot live behind it.
+    seed: withALiveLease,
+    input: { url: 'file:///etc/passwd' },
+    expect: {
+      outcome: 'refused',
+      code: 'download.scheme_allowed',
+      rule: 'download.scheme_allowed',
+    },
+  },
+  {
     name: 'claim: a purpose outside its bounds is refused',
     operation: 'claim',
     // §7.1 `claim.purpose_bounded`. The purpose is what an operator reads

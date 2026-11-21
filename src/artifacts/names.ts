@@ -124,7 +124,7 @@ function reduce(value: string): string {
  * name for no benefit, since it never distinguishes two pages the server
  * served.
  */
-function withoutQuery(address: string): string {
+export function withoutQuery(address: string): string {
   const end = Math.min(
     ...['?', '#'].map((mark) => {
       const at = address.indexOf(mark);
@@ -241,4 +241,88 @@ export function captureFileName(parts: {
       reduce(parts.id),
     ].join('-') + '.png'
   );
+}
+
+/**
+ * Assemble the download name: `<label>-<page-slug>-<stamp>-<sha12>.<ext>`.
+ *
+ * The same rule as every other derived name, applied to the one artefact
+ * whose **contents** arrive from outside: nothing the caller sent, and
+ * nothing the serving site sent in a `Content-Disposition`, reaches this name
+ * verbatim. The label leads because it is the part that tells two files from
+ * one page apart — a caller that downloaded two attachments from one page
+ * said so by giving two labels — and the hash tail makes two files with the
+ * same label and the same page still two names, which is what the digest is
+ * for: identity, not integrity theatre.
+ *
+ * The extension is a separate argument because it is chosen from the bytes
+ * and the reported media type ({@link extensionForDownload}), never from a
+ * server's filename. **A name from a `Content-Disposition` header is a string
+ * a remote server typed**, and this file's whole reason for existing is that
+ * strings travel further than their author meant them to.
+ */
+export function downloadFileName(parts: {
+  readonly label: string | undefined;
+  readonly pageUrl: string | undefined;
+  readonly takenAt: Date;
+  readonly sha12: string;
+  readonly extension: string;
+}): string {
+  return (
+    [
+      sanitiseLabel(parts.label),
+      slugFromUrl(parts.pageUrl),
+      stampFromInstant(parts.takenAt),
+      reduce(parts.sha12),
+    ].join('-') +
+    // The extension is the one part not passed through `reduce`: it comes
+    // from {@link extensionForDownload}, whose every return value is already
+    // a safe literal, and reducing it again would silently rewrite a name
+    // this module chose.
+    `.${parts.extension}`
+  );
+}
+
+/** Media types this service names an extension for. Everything else is `bin`. */
+const MIME_EXTENSIONS: ReadonlyMap<string, string> = new Map([
+  ['application/pdf', 'pdf'],
+  ['application/json', 'json'],
+  ['application/zip', 'zip'],
+  ['image/gif', 'gif'],
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['text/csv', 'csv'],
+  ['text/plain', 'txt'],
+]);
+
+/**
+ * The extension a downloaded file gets: **what the bytes say first**, then
+ * what the server said, then `bin`.
+ *
+ * Sniffing before the media type is the order that survives a lying server,
+ * which is ordinary on the web: a PDF served as `application/octet-stream` is
+ * still a PDF, and a name that says so is worth something to whoever opens
+ * the artifact tree. The signatures below are the few whose first bytes are
+ * unambiguous; anything subtler than that keeps the server's word, and a file
+ * neither source explains gets `bin`, which is an honest admission rather
+ * than a guess. No name is ever wrong about being a file.
+ */
+export function extensionForDownload(bytes: Uint8Array, mime: string | undefined): string {
+  const startsWith = (signature: readonly number[]): boolean =>
+    signature.length <= bytes.length && signature.every((byte, at) => bytes[at] === byte);
+
+  if (startsWith([0x25, 0x50, 0x44, 0x46])) return 'pdf'; // %PDF
+  if (startsWith([0x89, 0x50, 0x4e, 0x47])) return 'png';
+  if (startsWith([0x47, 0x49, 0x46, 0x38])) return 'gif'; // GIF8
+  if (startsWith([0xff, 0xd8, 0xff])) return 'jpg';
+  if (startsWith([0x50, 0x4b, 0x03, 0x04])) return 'zip'; // PK..
+
+  if (mime !== undefined) {
+    // Parameters (`; charset=…`) are not part of the type, and a type that
+    // carries one is ordinary rather than malformed.
+    const type = mime.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+    const named = MIME_EXTENSIONS.get(type);
+    if (named !== undefined) return named;
+  }
+  return 'bin';
 }

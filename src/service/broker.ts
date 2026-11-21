@@ -20,6 +20,8 @@ import type {
   ActResult,
   CaptureInput,
   CaptureResult,
+  DownloadInput,
+  DownloadResult,
   EvaluateInput,
   EvaluateResult,
   NavigateInput,
@@ -93,7 +95,7 @@ export interface Broker {
   release: (input: ReleaseInput) => Promise<ReleaseResult>;
 
   /**
-   * The six tab-addressed operations (§3.5–§3.11).
+   * The seven tab-addressed operations (§3.5–§3.11, §3.18).
    *
    * **Each is one `runArbitration` call like the three above**, and carries
    * no settings for the reason `decideStatus` gives: each renews the lease it
@@ -105,6 +107,8 @@ export interface Broker {
   read: (input: ReadInput) => Promise<ReadResult>;
   evaluate: (input: EvaluateInput) => Promise<EvaluateResult>;
   capture: (input: CaptureInput) => Promise<CaptureResult>;
+  /** Fetch a file the page links and save it as an artifact of the lease (§3.18). */
+  download: (input: DownloadInput) => Promise<DownloadResult>;
   /** Give up this lease's tab and take a fresh one, in one transaction. */
   tab_replace: (input: TabReplaceInput) => Promise<TabReplaceResult>;
 
@@ -563,6 +567,21 @@ export function createBroker(options: BrokerOptions): Broker {
         ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
       }),
     capture: (input) => run<CaptureInput, CaptureResult>('capture', withBrowserAndArtifacts(input)),
+    // The fetch's pair of extras. `diffSettings` is deliberately **not**
+    // spread — a download never diffs, and handing it a setting it cannot use
+    // would be the surface declaring an argument that does nothing. The
+    // artifact store and the byte ceiling always travel together, because
+    // `download` is the one verb that can never answer without both. The
+    // act-site list is spread **always**, empty included: empty is not
+    // "unset", it is the acting capability off, and the download fence reads
+    // that answer exactly as the act fence does.
+    download: (input) =>
+      run<DownloadInput, DownloadResult>('download', {
+        ...withBrowser(input),
+        ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+        attachedActSites: options.environment.attachedActSites,
+        downloadMaxBytes: options.environment.downloadMaxBytes,
+      }),
     tab_replace: (input) =>
       run<TabReplaceInput, TabReplaceResult>('tab_replace', withBrowser(input)),
     begin_sign_in: (input) => run<BeginSignInInput, BeginSignInResult>('begin_sign_in', input),

@@ -76,6 +76,11 @@ export const SERVICE_RULE_REGISTRY: RuleRegistry = {
     'act.action_known',
     'evaluate.expression_bounded',
     'capture.exclusive_mode',
+    // §3.18's fence on the address itself — the `navigate` scheme rule's
+    // sibling for the verb that fetches rather than navigates, and refused
+    // **ahead of the fetch**, not by the page, which would obey a `data:`
+    // address happily.
+    'download.scheme_allowed',
     'feedback.rating_in_scale',
     /**
      * **Enforced on the tool surface rather than inside the service**, and it

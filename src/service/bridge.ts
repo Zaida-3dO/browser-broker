@@ -418,6 +418,24 @@ export function serviceFor(options: BridgeOptions): BrokerService {
         };
       }
 
+      case 'download': {
+        const key = keyFrom(args);
+        const label = asOptionalString(argument(args, 'label'));
+        return {
+          ...(await broker.download({
+            key,
+            tabId: tabForKey(db, key),
+            // Coercion only, never validation: the url stays `unknown` so the
+            // `download.scheme_allowed` guard owns the refusal and its
+            // explanation, rather than the bridge inventing a second one.
+            url: argument(args, 'url'),
+            // **Spread away when absent** — the label is optional and its
+            // absence is the ordinary call, not an empty part of the name.
+            ...(label === undefined ? {} : { label }),
+          })),
+        };
+      }
+
       case 'tab_replace': {
         const key = keyFrom(args);
         return { ...(await broker.tab_replace({ key, tabId: tabForKey(db, key) })) };

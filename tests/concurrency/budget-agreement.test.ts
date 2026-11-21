@@ -173,6 +173,7 @@ test('processes starting together against a stepped store settle on one budget r
       leaseSeconds: 600,
       queueSeconds: 600,
       launchReadinessTimeoutSeconds: 30,
+      downloadMaxBytes: 8388608,
       regularBrowsers: ['regular'],
       privateBrowsers: ['private'],
       attachedBrowsers: [],

@@ -148,7 +148,7 @@ function callIsError(response: Record<string, unknown> | undefined): unknown {
   return (response?.['result'] as Record<string, unknown> | undefined)?.['isError'];
 }
 
-test('tools/list returns the eleven tools, NAMED', () => {
+test('tools/list returns the twelve tools, NAMED', () => {
   // Named rather than counted: `MILESTONES.md` records a hollow test that
   // "iterated a list rather than naming its entries, so deleting an entry
   // stayed green". Deleting a tool changes this list and fails here.
@@ -165,6 +165,7 @@ test('tools/list returns the eleven tools, NAMED', () => {
       'browser_read',
       'browser_evaluate',
       'browser_capture',
+      'browser_download',
       'browser_sign_in',
       'browser_doctor',
     ],
@@ -180,10 +181,11 @@ test('every tool has a description, because the description is the only place a 
   }
 });
 
-test('the eleven tools cover every operation but the retired feedback tool, one action each', () => {
-  // Eleven tools, twelve operations: `browser_sign_in` carries two (`request`
-  // and `done`). `feedback` is the one operation with no tool, on purpose.
-  assert.equal(TOOL_DEFINITIONS.length, 11);
+test('the twelve tools cover every operation but the retired feedback tool, one action each', () => {
+  // Twelve tools, thirteen tool-covered operations: `browser_sign_in` carries
+  // two (`request` and `done`). `feedback` is the one operation with no tool,
+  // on purpose.
+  assert.equal(TOOL_DEFINITIONS.length, 12);
   assert.deepEqual(
     [...TOOL_OPERATIONS].sort((a, b) => a.localeCompare(b)),
     OPERATION_NAMES.filter((operation) => operation !== 'feedback').sort((a, b) =>
@@ -781,7 +783,7 @@ test('the whole handshake runs in order and the session still serves tools after
     'responses did not correlate with the requests that caused them',
   );
   const listed = responses[1]?.['result'] as { tools: { name: string }[] };
-  assert.equal(listed.tools.length, 11, 'the eleven tools were not reachable after the handshake');
+  assert.equal(listed.tools.length, 12, 'the twelve tools were not reachable after the handshake');
 });
 
 test('an error response carries the numeric code AND the internal name, on the same message', () => {

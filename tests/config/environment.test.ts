@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-import { DECLARED_VARIABLES, readEnvironment } from '../../src/config/environment.ts';
+import {
+  DEFAULT_DOWNLOAD_MAX_BYTES,
+  DECLARED_VARIABLES,
+  readEnvironment,
+} from '../../src/config/environment.ts';
 import { StartupRefusal } from '../../src/errors.ts';
 import { localDrivePath } from '../helpers/paths.ts';
 
@@ -133,6 +137,9 @@ test('every variable this build declares is the set below, and no other', () => 
     'BROKER_ATTACHED_TABS',
     'BROKER_ATTACHED_TOKEN',
     'BROKER_DB',
+    // §3.18: the one variable with a hard ceiling above its default — a
+    // fetched body is held by the process that arbitrates every lease.
+    'BROKER_DOWNLOAD_MAX_BYTES',
     'BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS',
     'BROKER_LEASE_SECONDS',
     // S2's grant seam: unset means inert. Verified against in `tests/attach`
@@ -331,6 +338,49 @@ test('a number past the exact-arithmetic boundary refuses', () => {
     (error: unknown) => {
       assert.ok(error instanceof StartupRefusal);
       assert.match(error.message, /BROKER_TAB_BUDGET/);
+      return true;
+    },
+  );
+});
+
+test('the download ceiling defaults to the declared eight mebibytes', () => {
+  const environment = readEnvironment({ env: {}, homedir: home, platform: 'linux' });
+  assert.equal(environment.downloadMaxBytes, DEFAULT_DOWNLOAD_MAX_BYTES);
+  assert.equal(environment.downloadMaxBytes, 8_388_608);
+});
+
+for (const at of ['16777216', ' 16777216 ']) {
+  test(`a download ceiling of ${JSON.stringify(at)} is exactly the declared maximum and is accepted`, () => {
+    const environment = readEnvironment({
+      env: { BROKER_DOWNLOAD_MAX_BYTES: at },
+      homedir: home,
+      platform: 'linux',
+    });
+    assert.equal(environment.downloadMaxBytes, 16_777_216);
+  });
+}
+
+test('a download ceiling past the declared maximum refuses to start, naming the variable and the ceiling', () => {
+  // The only variable in the whole set carrying a `maximum`, and the reason
+  // it carries one is memory rather than ambition: a download's bytes are
+  // held in this process and cross the seam base64, so a two-gigabyte
+  // ceiling is a denial of service the owner configured for himself. The
+  // refusal is at startup — the loudest moment — not at a request that would
+  // have been honoured right up to the point the machine stops.
+  assert.throws(
+    () =>
+      readEnvironment({
+        env: { BROKER_DOWNLOAD_MAX_BYTES: '16777217' },
+        homedir: home,
+        platform: 'linux',
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof StartupRefusal);
+      assert.equal(error.rule, 'config.value_readable');
+      assert.match(error.message, /BROKER_DOWNLOAD_MAX_BYTES/);
+      // The sentence carries the ceiling, not just the complaint: an operator
+      // who set 4 GiB needs to know what the accepted shape was.
+      assert.match(error.message, /16777216/);
       return true;
     },
   );

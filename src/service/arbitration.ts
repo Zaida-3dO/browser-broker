@@ -20,6 +20,7 @@ import { decideRelease, type ReleaseInput, type ReleaseResult } from './operatio
 import {
   decideAct,
   decideCapture,
+  decideDownload,
   decideEvaluate,
   decideNavigate,
   decideRead,
@@ -28,6 +29,8 @@ import {
   type ActResult,
   type CaptureInput,
   type CaptureResult,
+  type DownloadInput,
+  type DownloadResult,
   type EvaluateInput,
   type EvaluateResult,
   type NavigateInput,
@@ -345,7 +348,7 @@ function finishSignInHandler(
 }
 
 /**
- * The six tab-addressed handlers.
+ * The seven tab-addressed handlers.
  *
  * **None of them takes settings**, for the reason `decideStatus` gives about
  * itself: every duration they report comes off the lease's own row, because
@@ -382,6 +385,13 @@ function captureHandler(
   return decideCapture(scope, input);
 }
 
+function downloadHandler(
+  scope: ArbitrationScope,
+  input: DownloadInput,
+): ArbitrationOutcome<DownloadResult> {
+  return decideDownload(scope, input);
+}
+
 function tabReplaceHandler(
   scope: ArbitrationScope,
   input: TabReplaceInput,
@@ -407,9 +417,10 @@ function tabReplaceHandler(
  * over, once for its own renewal and once for the sweep the runner ran
  * before it.
  *
- * **The six tab-addressed operations are writers on the same grounds**, and
+ * **The seven tab-addressed operations are writers on the same grounds**, and
  * it is worth being explicit because they are the ones that look least like
- * it: `navigate`, `act`, `read`, `evaluate` and `capture` each read a page
+ * it: `navigate`, `act`, `read`, `evaluate`, `capture` and `download` each
+ * read a page
  * and change nothing about it, yet each is keyed, so each renews, and each
  * records what it did. The browser work they cause is not part of the
  * transaction at all — it is handed back as `afterCommit` and run once the
@@ -461,6 +472,12 @@ export const ARBITRATION_OPERATIONS = {
     kind: 'capture',
     summary: 'Take an image of an owned tab, of the viewport or of the whole page.',
     handler: captureHandler,
+  },
+  download: {
+    kind: 'download',
+    summary:
+      "Fetch a file the page links, with the page's own credentials, and save it as an artifact of the lease.",
+    handler: downloadHandler,
   },
   begin_sign_in: {
     kind: 'browser_signin_began',

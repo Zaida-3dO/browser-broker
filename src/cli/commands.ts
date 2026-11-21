@@ -48,7 +48,7 @@ export interface CommandOption {
 }
 
 /**
- * Twelve commands for twelve tools (§5.3).
+ * Thirteen commands for thirteen tools (§5.3).
  *
  * ── Two of them are `broker sign in` and `broker sign in done` ──────────
  *
@@ -222,6 +222,21 @@ export const OPERATION_COMMANDS: readonly OperationCommand[] = [
     words: ['capture'],
     operation: 'capture',
     summary: 'Take a picture, and optionally the difference from an earlier one.',
+  },
+  {
+    words: ['download'],
+    operation: 'download',
+    summary: 'Fetch a file this page links and save it as an artifact of this lease.',
+    options: [
+      {
+        flag: '--url <address>',
+        summary: 'The file address — absolute, or relative to the page. http(s) only.',
+      },
+      {
+        flag: '--label <word>',
+        summary: 'A word to put in front of the saved name. A label, never a location.',
+      },
+    ],
   },
   {
     words: ['sign', 'in'],

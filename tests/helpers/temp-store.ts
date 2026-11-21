@@ -76,6 +76,13 @@ export interface TempStoreOptions {
    * through this helper, which is the state every existing installation is in.
    */
   readonly uploadRoot?: string;
+  /**
+   * The download ceiling (`BROKER_DOWNLOAD_MAX_BYTES`), defaulting to the
+   * declared one. A test that wants a small ceiling overrides this rather
+   * than setting the process environment, so one test's ceiling cannot leak
+   * into another's process.
+   */
+  readonly downloadMaxBytes?: number;
 }
 
 /**
@@ -146,6 +153,9 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       attachedExtensionId: options.attachedExtensionId,
       attachedToken: options.attachedToken,
       attachedActSites: options.attachedActSites ?? [],
+      // The declared default (§6.2): 8 MiB. A test that needs a different
+      // ceiling overrides this field, same reason as the budget above.
+      downloadMaxBytes: options.downloadMaxBytes ?? 8388608,
       ownerGrantSecret: options.ownerGrantSecret,
       // Empty unless a test asks otherwise, which is what a default
       // installation has: no browser pointed at a binary of its own, so every

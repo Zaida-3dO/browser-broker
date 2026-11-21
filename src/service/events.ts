@@ -66,6 +66,7 @@ export type EventKind =
   | 'evaluate'
   | 'capture'
   | 'compare'
+  | 'download'
   | 'browser_launched'
   | 'browser_adopted'
   | 'browser_exited'
@@ -95,6 +96,7 @@ export const EVENT_KINDS: readonly EventKind[] = [
   'evaluate',
   'capture',
   'compare',
+  'download',
   'browser_launched',
   'browser_adopted',
   'browser_exited',

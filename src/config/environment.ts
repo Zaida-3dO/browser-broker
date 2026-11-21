@@ -142,6 +142,17 @@ interface IntegerDeclaration {
   readonly key: string;
   readonly kind: Extract<Kind, 'positive-integer'>;
   readonly fallback: number;
+  /**
+   * The largest value this variable is allowed to carry, when it has one.
+   *
+   * Most numbers here are only bounded by what the runtime counts exactly.
+   * This exists for the ones where the runtime itself is the thing being
+   * protected: a ceiling a caller can raise past the point where the value
+   * stops fitting what it governs is not a ceiling, and the refusal belongs
+   * at startup, naming the variable, rather than as a request that is
+   * honoured with an outage attached.
+   */
+  readonly maximum?: number;
   /** What the number means, for the refusal's sentence. */
   readonly unit: string;
 }
@@ -231,6 +242,19 @@ function applicationDataDirectory(home: string, platform: NodeJS.Platform): stri
 function ownDirectory(home: string, platform: NodeJS.Platform): string {
   return path.join(applicationDataDirectory(home, platform), 'browser-broker');
 }
+
+/**
+ * The declared default for `BROKER_DOWNLOAD_MAX_BYTES` — 8 MiB.
+ *
+ * **Exported because it is one number with two consumers**: the fallback in
+ * the declaration below, and the fallback for an in-process caller of the
+ * `download` operation that supplies no ceiling. Two literals would drift the
+ * first time one is retuned — and a handler holding its own ceiling is the
+ * second configuration read §6.3 exists to forbid. A literal with separators
+ * rather than a product: same rule as every other default here, the default
+ * names a number, not a computation.
+ */
+export const DEFAULT_DOWNLOAD_MAX_BYTES = 8_388_608;
 
 const DECLARATIONS = [
   {
@@ -457,6 +481,28 @@ const DECLARATIONS = [
   },
   {
     /**
+     * The largest file a download may bring back (§3.18).
+     *
+     * **Why this one variable carries a `maximum`.** A download's bytes are
+     * held in memory and cross the driver seam base64, so the file size is
+     * bounded by what this process can hold while it arbitrates every lease;
+     * a setting of two gigabytes is not a generous limit, it is a denial of
+     * service the owner configured for himself. The refusal is at startup —
+     * the variable names its own ceiling — rather than a request that would
+     * have been honoured right up to the point the machine stops.
+     *
+     * The default is generous for documents and ordinary attachments and the
+     * maximum bounds the setting, not the ambition: an operator who wants
+     * bigger files is pointing this tool at the wrong job.
+     */
+    key: 'BROKER_DOWNLOAD_MAX_BYTES',
+    kind: 'positive-integer',
+    fallback: DEFAULT_DOWNLOAD_MAX_BYTES,
+    maximum: 16_777_216,
+    unit: 'a byte count for a downloaded file',
+  },
+  {
+    /**
      * The Chrome extension id the attach relay routes to — the id Chrome
      * shows for the attach extension installed in the operator's browser
      * (§13n).
@@ -657,6 +703,13 @@ export interface Environment {
    * only how long the poll runs before giving up on the winner.
    */
   readonly launchReadinessTimeoutSeconds: number;
+  /**
+   * The largest file a download may bring back (§3.18). Checked twice — in
+   * the fixed in-page fetch while the body streams, and again in the service
+   * before anything is written — and already bounded at startup: nothing this
+   * number can be set to exceeds what the runtime holds.
+   */
+  readonly downloadMaxBytes: number;
   /**
    * The persistent, signed-in browsers, in the order they were configured
    * (§1.2). Never empty, and never longer than the cap.
@@ -876,6 +929,15 @@ function readPositiveInteger(declaration: IntegerDeclaration, raw: string | unde
     throw new StartupRefusal(
       'config.value_readable',
       `${declaration.key} is set to ${JSON.stringify(raw)}, which is larger than this runtime counts exactly. Expected ${declaration.unit} below ${String(Number.MAX_SAFE_INTEGER)}.`,
+    );
+  }
+  // The declared ceiling, after the shape checks: a value that reads as a
+  // number and is still impossible for this variable is refused the same way
+  // — by name, at startup, before anything is asked of it.
+  if (declaration.maximum !== undefined && value > declaration.maximum) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set to ${JSON.stringify(raw)}, above the largest ${declaration.unit} this variable allows (${String(declaration.maximum)}). Set it at or below that ceiling, or unset it to use the default of ${String(declaration.fallback)}.`,
     );
   }
   return value;
@@ -1558,6 +1620,7 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     leaseSeconds: getNumber('BROKER_LEASE_SECONDS'),
     queueSeconds: getNumber('BROKER_QUEUE_SECONDS'),
     launchReadinessTimeoutSeconds: getNumber('BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS'),
+    downloadMaxBytes: getNumber('BROKER_DOWNLOAD_MAX_BYTES'),
     regularBrowsers,
     privateBrowsers,
     attachedBrowsers,

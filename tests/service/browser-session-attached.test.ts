@@ -81,6 +81,7 @@ function fakeAttachedSession(browser: string): BrowserSession & {
     evaluate: reject,
     settlePage: reject,
     capture: reject,
+    download: reject,
     setConnected: (value: boolean) => {
       connected = value;
     },

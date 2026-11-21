@@ -21,16 +21,16 @@
  */
 
 /**
- * The thirteen operations of `SCHEMA.md` §3.1, in the order it lists them.
+ * The fourteen operations of `SCHEMA.md` §3.1, in the order it lists them.
  *
- * Twelve of them are tools with a command each (§5.3). The diff rides on
+ * Thirteen of them are tools with a command each (§5.3). The diff rides on
  * `capture` as an argument rather than being an operation of its own (§3.11),
  * and the two removed tools are absent rather than deprecated (§3.1) —
  * `browser_compare` folded into capture, and `browser_tab_close` deleted
  * outright because it produced a lease owning nothing while still consuming
  * budget.
  *
- * ── The thirteenth is `doctor`, and it is the first that does not write ──
+ * ── The fourteenth is `doctor`, and it is the first that does not write ──
  *
  * It is here because a caller whose browser is wedged has to be able to ask
  * what is wrong **from the surface it is already on**. §3.13's evidence is
@@ -47,7 +47,7 @@
  * the same breath and puts all three on the administrative surface (§4.3).
  * Diagnosis is admissible precisely and only because it is read-only.
  *
- * ── Why the eleventh and twelfth are two names rather than one ──────────
+ * ── Why the twelfth and thirteenth are two names rather than one ────────
  *
  * `sign_in` and `sign_in_done` are the two halves of asking a person to sign
  * in (§5.5.2), and they are separate operations for the reason §3.1 gives
@@ -77,6 +77,7 @@ export const OPERATION_NAMES = [
   'read',
   'evaluate',
   'capture',
+  'download',
   'feedback',
   'sign_in',
   'sign_in_done',
@@ -109,6 +110,9 @@ const WRITE_OPERATIONS: ReadonlySet<OperationName> = new Set<OperationName>([
   'read',
   'evaluate',
   'capture',
+  // `download` writes on both halves of the name: it appends a ledger row,
+  // renews the lease that called it, and puts a file on disk.
+  'download',
   'feedback',
   // Both halves of a requested sign-in write: each moves the browser's state,
   // each appends a ledger row, and each renews the lease that called it.

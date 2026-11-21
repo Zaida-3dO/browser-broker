@@ -125,8 +125,8 @@ test('the attached subject’s inapplicable set is pinned by name, argued, and e
       'the keeper tab survives being named to closeTab',
       'establishing the keeper twice yields one keeper, not two',
       'a keeper handle names the browser it belongs to',
-      'a cookie summary carries no value, on any implementation',
       'a download counts the bytes, not the encoding they travel in',
+      'a cookie summary carries no value, on any implementation',
     ],
     'the attached subject declares a different set of inapplicable properties than this suite records',
   );

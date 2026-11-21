@@ -5,6 +5,8 @@ import test from 'node:test';
 import {
   MAXIMUM_PART_LENGTH,
   captureFileName,
+  downloadFileName,
+  extensionForDownload,
   sanitiseLabel,
   slugFromUrl,
   stampFromInstant,
@@ -204,4 +206,95 @@ test('an assembled name is a single path segment', () => {
   });
   assert.equal(path.basename(name), name, `the name was more than one segment: ${name}`);
   assert.ok(!path.isAbsolute(name));
+});
+
+/* ───────────────── the download name (§3.18) ───────────────── */
+
+test('the download parts appear in the order §3.18 gives: label, page slug, stamp, hash tail', () => {
+  const name = downloadFileName({
+    label: 'invoice',
+    pageUrl: 'https://example.com/reports/q1?token=abc123secret',
+    takenAt: new Date('2026-03-04T05:06:07.890Z'),
+    sha12: 'deadbeefcafe',
+    extension: 'pdf',
+  });
+  // Dies if the label and the slug are swapped — the order is the whole
+  // difference between "my file" and "some file on this page".
+  assert.equal(name, 'invoice-example-com-reports-q1-20260304050607-deadbeefcafe.pdf');
+  assert.ok(!name.includes('abc123secret'), `the assembled name leaked a token: ${name}`);
+});
+
+test('an absent label is `unnamed`, not an empty part that doubles a separator', () => {
+  const name = downloadFileName({
+    label: undefined,
+    pageUrl: 'https://example.com/files',
+    takenAt: new Date('2026-01-02T03:04:05.000Z'),
+    sha12: 'abc123def456',
+    extension: 'bin',
+  });
+  assert.equal(name, 'unnamed-example-com-files-20260102030405-abc123def456.bin');
+  assert.doesNotMatch(name, /^-/u);
+});
+
+test('a download label is held to the same rules as every other part — never a location', () => {
+  const name = downloadFileName({
+    label: `../../${BACK}secret${BACK}final`,
+    pageUrl: 'https://example.com/a',
+    takenAt: new Date('2026-01-02T03:04:05.000Z'),
+    sha12: 'ffffffffffff',
+    extension: 'bin',
+  });
+  assert.equal(path.basename(name), name, `the label made the name more than one segment: ${name}`);
+  assert.ok(!path.isAbsolute(name));
+});
+
+test('the extension is chosen separately — the suffix of a page address never leaks into the name', () => {
+  // The page is `spec.pdf`; the bytes were sniffed to be something else. The
+  // name must end in what the **bytes** earned, not what the page was called.
+  const name = downloadFileName({
+    label: undefined,
+    pageUrl: 'https://example.com/files/spec.pdf',
+    takenAt: new Date('2026-01-02T03:04:05.000Z'),
+    sha12: '0123456789ab',
+    extension: extensionForDownload(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), undefined),
+  });
+  assert.ok(name.endsWith('.zip'), `the page's suffix won over the bytes: ${name}`);
+  assert.ok(!name.endsWith('.pdf'));
+});
+
+/* ───────────── the extension rule: bytes first, server second, `bin` last ───────────── */
+
+test('a signature beats a lying media type — a PDF served as octet-stream is still named .pdf', () => {
+  const pdf = Buffer.from('%PDF-1.7 ...', 'utf8');
+  assert.equal(extensionForDownload(new Uint8Array(pdf), 'application/octet-stream'), 'pdf');
+});
+
+test('each sniffed signature names its type, and the check is the first bytes only', () => {
+  const bytes = (head: readonly number[]): Uint8Array =>
+    new Uint8Array([...head, ...Buffer.from('the rest of the file', 'utf8')]);
+  assert.equal(extensionForDownload(bytes([0x89, 0x50, 0x4e, 0x47]), undefined), 'png');
+  assert.equal(extensionForDownload(bytes([0x47, 0x49, 0x46, 0x38]), undefined), 'gif');
+  assert.equal(extensionForDownload(bytes([0xff, 0xd8, 0xff]), undefined), 'jpg');
+  assert.equal(extensionForDownload(bytes([0x50, 0x4b, 0x03, 0x04]), undefined), 'zip');
+  // The same bytes with the signature one byte late are **not** that type: the
+  // signature is a prefix rule, and a matcher searching the body would call a
+  // text file that mentions `%PDF` a document.
+  assert.equal(
+    extensionForDownload(new Uint8Array([0x00, ...Buffer.from('%PDF', 'utf8')]), undefined),
+    'bin',
+  );
+});
+
+test('with no signature to read, the media type is believed — parameters and case and all', () => {
+  const text = new Uint8Array(Buffer.from('a,b,c\n1,2,3\n', 'utf8'));
+  assert.equal(extensionForDownload(text, 'application/pdf'), 'pdf');
+  assert.equal(extensionForDownload(text, 'TEXT/CSV; charset=utf-8'), 'csv');
+  assert.equal(extensionForDownload(text, 'application/vnd.thing'), 'bin');
+});
+
+test('a body neither source explains gets `bin`, and a tiny body is not misread as a signature', () => {
+  assert.equal(extensionForDownload(new Uint8Array(0), undefined), 'bin');
+  // Shorter than every signature: it cannot match one, and must not be
+  // compared out of bounds.
+  assert.equal(extensionForDownload(new Uint8Array([0x89, 0x50]), undefined), 'bin');
 });

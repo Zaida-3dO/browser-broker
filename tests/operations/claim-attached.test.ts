@@ -464,6 +464,7 @@ function neverDriven(): BrowserSession {
     evaluate: refusal,
     settlePage: refusal,
     capture: refusal,
+    download: refusal,
   } satisfies BrowserSession;
 }
 

@@ -91,6 +91,7 @@ function environmentFor(
       // rather than this field, which mirrors how `tabBudget` above is a
       // provider-level default that individual tests already override.
       launchReadinessTimeoutSeconds: 30,
+      downloadMaxBytes: 8388608,
       regularBrowsers: lists?.regular ?? ['regular'],
       privateBrowsers: lists?.private ?? ['private'],
       attachedBrowsers: [],

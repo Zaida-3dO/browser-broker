@@ -13,11 +13,16 @@ import type {
 // the service door and the seam door consult **one** list rather than two
 // that can drift.
 import { actAttached, hostOf, type AttachedActContext } from '../../browser/attached.ts';
-import { decide as gateDecide, type GateRefusal } from '../../attach/gate.ts';
+import {
+  decide as gateDecide,
+  decideDownload as gateDecideDownload,
+  type GateRefusal,
+} from '../../attach/gate.ts';
 import { append, type EventKind } from '../events.ts';
 import { claimIdForKey, extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
 import { resolveOwnedTabOrRefuse } from '../ownership.ts';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 import {
   disposeEvaluationResult,
@@ -30,7 +35,9 @@ import {
   validateAction,
   validateExpression,
   PageRefusal,
+  validateDownloadTarget,
   validateNavigationTarget,
+  ALLOWED_SCHEMES,
   validateNavigationWait,
 } from '../pages.ts';
 import { applyReadWindow, type WindowedText } from '../snapshot-window.ts';
@@ -38,8 +45,18 @@ import { recordTabOpened, reserveTab } from '../tabs.ts';
 import type { PendingSeeds } from '../pending-seeds.ts';
 import { seedRecord } from '../storage-seed.ts';
 import { BrokerError } from '../../errors.ts';
+// Not the environment module's *reading* — the single declared default for the
+// download ceiling, shared so the handler's fallback and the declaration's
+// fallback cannot drift.
+import { DEFAULT_DOWNLOAD_MAX_BYTES } from '../../config/environment.ts';
 import type { ArtifactStore } from '../../artifacts/store.ts';
-import { sanitiseLabel, stampFromInstant } from '../../artifacts/names.ts';
+import {
+  downloadFileName,
+  extensionForDownload,
+  sanitiseLabel,
+  stampFromInstant,
+  withoutQuery,
+} from '../../artifacts/names.ts';
 import { takeCapture, type CaptureRequestOptions } from '../../capture/pipeline.ts';
 import { describeReduction, type CaptureReduction, type CaptureTier } from '../../capture/tiers.ts';
 import {
@@ -65,7 +82,7 @@ import {
 } from '../secrets.ts';
 
 /**
- * The six tab-addressed operations, joined to the arbitration transaction.
+ * The seven tab-addressed operations, joined to the arbitration transaction.
  *
  * ── What this module is, and what it deliberately is not ────────────────
  *
@@ -250,9 +267,10 @@ export interface TabOperationResult {
    *
    * ── Why it is on the shared base rather than on each verb ───────────────
    *
-   * All six tab-addressed results extend this interface, so declaring it here
-   * is what makes it impossible to answer honestly on five verbs and silently
-   * on the sixth. The value comes from {@link afterCommitWork}, which is the
+   * All seven tab-addressed results extend this interface, so declaring it
+   * here is what makes it impossible to answer honestly on six verbs and
+   * silently on the seventh. The value comes from {@link afterCommitWork},
+   * which is the
    * one place in the service that knows whether a session was supplied — the
    * knowledge and the reporting of it are therefore the same expression, and
    * cannot drift apart.
@@ -278,7 +296,7 @@ export interface TabOperationResult {
 }
 
 /**
- * Steps 1 to 3, which are identical for all six and therefore written once.
+ * Steps 1 to 3, which are identical for all seven and therefore written once.
  *
  * Written as one function rather than copied into each handler because the
  * order is the rule: a handler that validated before renewing, or resolved
@@ -710,9 +728,9 @@ function afterCommitWork(
  * is the right name, it holds a value from the right place — and it would
  * report `true` for every failed navigation.
  *
- * Composing the getter through instead means the six results share one
- * definition of the field, so it cannot hold on five verbs and be a stale copy
- * on the sixth. That is the same reason {@link TabOperationResult} declares it
+ * Composing the getter through instead means the seven results share one
+ * definition of the field, so it cannot hold on six verbs and be a stale copy
+ * on the seventh. That is the same reason {@link TabOperationResult} declares it
  * on the shared base rather than on each verb.
  */
 function withPageDriven<T>(
@@ -1734,6 +1752,367 @@ export function decideEvaluate(
  */
 function evaluationFileName(when: Date, claimId: string): string {
   return `evaluation-${stampFromInstant(when)}-${sanitiseLabel(claimId)}.json`;
+}
+
+/* ───────────────────────── download (§3.18) ───────────────────────── */
+
+export interface DownloadInput extends TabOperationInput {
+  readonly url: unknown;
+  /**
+   * A word to put in front of the saved name. **A label, never a location** —
+   * it goes through the same name-reduction as every other derived part
+   * (§1.7a), and nothing here treats it as a path, an extension, or a hint
+   * about where the file goes.
+   *
+   * Typed as `string` rather than `unknown` because the adapters coerce: a
+   * non-string label is an argument mistake the surfaces refuse in their own
+   * vocabulary before it arrives here, the same split the capture tier keeps.
+   */
+  readonly label?: string;
+  /**
+   * The byte ceiling for one download (`BROKER_DOWNLOAD_MAX_BYTES`).
+   *
+   * **Handed in, never read here** — the same one-snapshot discipline as the
+   * act-site list and the upload root: the in-page ceiling and the service's
+   * re-check must be measured against one number, not two reads of a process
+   * environment that could disagree inside one call. The broker always
+   * supplies it; a caller that omits it gets {@link DEFAULT_DOWNLOAD_MAX_BYTES}
+   * — the declared default, the same constant the declaration falls back to,
+   * so an omission answers what a fresh installation answers and is not a
+   * second ceiling living in a second file.
+   */
+  readonly downloadMaxBytes?: number;
+  /**
+   * The act-site list (`BROKER_ATTACHED_ACT_SITES`), same handed-in-not-read
+   * discipline as {@link ActInput.attachedActSites}: this door and the session
+   * door must see one configuration snapshot, not two.
+   */
+  readonly attachedActSites?: readonly string[];
+  /**
+   * Where the fetched file is written, supplied by the caller that owns one.
+   *
+   * **Optional for the same reason {@link TabOperationInput.session} is** — a
+   * caller with no browser has no file to keep, and every guard in this
+   * handler is testable without either. What a *pair* mismatch costs is stated
+   * in {@link decideDownload}.
+   */
+  readonly artifacts?: ArtifactStore;
+}
+
+/**
+ * What one download came home as.
+ *
+ * **Never the bytes.** The whole point of §3.18's shape is that a fetched
+ * file lands on disk once, as an artifact of the lease, and every surface
+ * that answers about it answers *about* it — name, path, size, digest,
+ * source. A copy of the bytes into a tool reply would put a binary into a
+ * conversation for the cost of the tokens to carry it and no benefit at all,
+ * since the file is already where the caller can read it.
+ */
+export interface DownloadedFile {
+  /** The derived name — nothing the caller or the server sent reaches it verbatim. */
+  readonly name: string;
+  /** **Relative to the artifact root**, forward slashes (§1.7a) — the only form stored. */
+  readonly path: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  /** The media type the serving site reported, when it reported one. */
+  readonly mime?: string;
+  /**
+   * The host the bytes actually came from — **the final host after any
+   * redirect**, because "where did this file come from" is a question about
+   * where it ended, not about what was typed.
+   */
+  readonly sourceHost: string;
+}
+
+export interface DownloadResult extends TabOperationResult {
+  /**
+   * What came home, **absent when the page was not driven** — the same
+   * discipline `evaluate` keeps with its `result` field: no page, no file,
+   * and no `null` to mistake for a fetch that produced nothing.
+   */
+  readonly download?: DownloadedFile;
+}
+
+/**
+ * `download` (§3.18, §13p) — fetch a file this page links, with the page's
+ * own credentials, and save it as an artifact of this lease.
+ *
+ * ── The order, and why it is this order ────────────────────────────────
+ *
+ * The address is fenced before admission (a conventional refusal: no lease
+ * renewed, no row, no browser); the address is resolved against the page's
+ * last arrival inside the transaction; the attached fence is asked of both
+ * hosts **before any `allow` row and before any closure exists**, so a
+ * site-list refusal never opens a tab on the way to saying no; the fetch runs
+ * after commit (§2.4b) in the page's own context.
+ *
+ * **The two-host fence is the asymmetry with `act`, stated where the code
+ * is** (§13p): an act touches the page the lease is on; a download reaches a
+ * second host through the first. An attached lease may therefore fetch only
+ * when *both* the page's host and the file's host are on the act list — the
+ * list that exists because a signed-in browser must not be driven anywhere,
+ * and a signed-in fetch out to an off-list host is the same breach by a
+ * quieter route.
+ */
+export function decideDownload(
+  scope: ArbitrationScope,
+  input: DownloadInput,
+): ArbitrationOutcome<DownloadResult> {
+  const address = validateDownloadTarget(input.url);
+
+  const { lease, tab, expiresAt } = admit(scope, input, 'download');
+  const maxBytes = input.downloadMaxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
+
+  // ── Resolve the address against the page, in the store's own words ────
+  //
+  // `tabs.last_url` is **the address the last navigation reported arriving
+  // at**, not the one it requested — the same fact the act fence reads, for
+  // the same reason: a redirect is where a page ends up, and a relative
+  // address is relative to where the page *is*.
+  const arrival = scope.db
+    .prepare<{ id: string }, { last_url: string | null }>(
+      'SELECT last_url FROM tabs WHERE id = @id',
+    )
+    .get({ id: tab.tabId });
+  const pageUrl = arrival?.last_url ?? null;
+
+  let fileAddress: string;
+  try {
+    fileAddress = new URL(address, pageUrl ?? undefined).toString();
+  } catch {
+    // A relative address with no page to read it from. Refused as a recorded
+    // denial of this operation, not thrown raw, for the standing reason: a
+    // ledger that answers `no` without a row cannot answer *was the rule ever
+    // reached* (§1.6), and this is the one case where the answer is interesting
+    // — a caller that forgot to navigate first gets the same message on every
+    // route.
+    //
+    // **The query and fragment come off before anything is recorded or
+    // quoted.** §3.18's promise is that a signed address's token reaches no
+    // row and no reply, and this is the one refusal whose text is the
+    // caller's own string — so it is scrubbed here rather than assumed clean.
+    // The page slug already strips the query (§1.7a); this is the same rule
+    // at the ledger's door, reusing the same function so the two cannot
+    // drift.
+    const bare = withoutQuery(address);
+    scope.recordRefusal({
+      kind: 'download',
+      outcome: 'deny',
+      guard: 'download.address_resolvable',
+      adapter: scope.adapter,
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      sessionId: lease.sessionId,
+      browserId: tab.browserId,
+      detail: { address: bare },
+    });
+    throw new PageRefusal(
+      'download.address_resolvable',
+      `"${bare}" is written relative to a page, but this tab has no page yet — it has not navigated anywhere that could hold a link. Navigate first, or give the file's full http(s) address.`,
+      { address: bare },
+    );
+  }
+
+  // **The scheme fence, asked of the resolved address.** The fence on the
+  // argument could not see what a relative spelling resolves *to*: a page
+  // can arrive at a browser-internal address (an error page is one), and
+  // `files/x.pdf` against that base names a browser-internal address — a
+  // fetch outside the page wearing the look of a link. Same rule, same
+  // refusal name, asked where the answer is actually known; recorded,
+  // because this one arrives after admission.
+  const resolvedProtocol = new URL(fileAddress).protocol;
+  if (!ALLOWED_SCHEMES.includes(resolvedProtocol)) {
+    scope.recordRefusal({
+      kind: 'download',
+      outcome: 'deny',
+      guard: 'download.scheme_allowed',
+      adapter: scope.adapter,
+      claimId: lease.claimId,
+      tabId: tab.tabId,
+      sessionId: lease.sessionId,
+      browserId: tab.browserId,
+      // The scheme, never the resolved address: an internal address is not a
+      // secret, but the ledger records decisions, not full request strings.
+      detail: { scheme: resolvedProtocol },
+    });
+    throw new PageRefusal(
+      'download.scheme_allowed',
+      `That address resolves to a "${resolvedProtocol}" address, which this service does not fetch — the page it is written against is not an ordinary web page. Give the file's full http(s) address.`,
+      { scheme: resolvedProtocol, allowedSchemes: [...ALLOWED_SCHEMES] },
+    );
+  }
+
+  // **The attached door, before any row and before any work** — both hosts,
+  // one gate function shared with the session's own door so the two cannot
+  // drift (`attached.read_only` and `attached.act_site_off_list`, reused, not
+  // renamed, so the ledger and any operator's list stay one vocabulary).
+  //
+  // Launched leases have no such fence by design, and the honest reason is
+  // capability rather than freshness: a launched lease can already run its
+  // own code in the page through `browser_evaluate` — a `fetch` included —
+  // so a host list on this one verb would fence nothing the lease does not
+  // already have, while on the attached browser `evaluate` is refused
+  // outright (§13n) and the fence is the difference between reach and no
+  // reach (`DECISIONS.md` §13p). The scheme fence above and the byte ceiling
+  // below are what a launched lease is asked.
+  const attached = browserKind(scope, tab.browserId) === 'attached';
+  if (attached) {
+    const decision = gateDecideDownload({
+      pageHost: hostOf(pageUrl ?? ''),
+      fileHost: hostOf(fileAddress),
+      actSites: input.attachedActSites ?? [],
+    });
+    if (decision.decision !== 'allow') {
+      refuseAttachedOperation(
+        scope,
+        lease,
+        tab,
+        'download',
+        decision.decision,
+        `${decision.message} Nothing was asked of the browser, and no file was fetched.`,
+        // **The host, not the address** — and the key is `host`, the same
+        // one the `allow` row and the session door's row use, so
+        // `broker events` filters on one name across every download row.
+        // A download address is exactly the kind of URL that carries a
+        // signed query; one token in the ledger and the store has become a
+        // pile of nearly-usable credentials.
+        { host: hostOf(fileAddress) },
+      );
+    }
+  }
+
+  append(scope.db, {
+    kind: 'download',
+    outcome: 'allow',
+    adapter: scope.adapter,
+    claimId: lease.claimId,
+    tabId: tab.tabId,
+    sessionId: lease.sessionId,
+    browserId: tab.browserId,
+    // Host and ceiling only. Not the full address (a signed query must not
+    // reach the ledger), not the bytes (they were never in this row's plan),
+    // not the caller's label (reconstructable from the saved name, which
+    // carries it reduced).
+    detail: { host: hostOf(fileAddress), maxBytes },
+  });
+
+  const artifacts = input.artifacts;
+  // Set inside the after-commit closure and read by the getter below — the
+  // arrangement `decideEvaluate` uses for `evaluated`, for the same reason:
+  // the file does not exist until the fetch has run.
+  let saved: DownloadedFile | undefined;
+
+  const work = afterCommitWork(
+    scope,
+    input,
+    tab,
+    async (session, page) => {
+      if (artifacts === undefined) {
+        // A session that can fetch but nowhere to keep what it fetched.
+        // **Thrown rather than returned**, as the evaluation spill's missing
+        // store is thrown: running to completion would report a driven page
+        // whose file the caller cannot reach. The ordinary after-commit path
+        // carries the sentence to `notDrivenReason` with the decision and its
+        // row already committed.
+        throw new BrokerError(
+          'download.artifacts_configured',
+          'This call supplied a browser to fetch with but no artifact store to save into. Nothing was kept.',
+        );
+      }
+
+      const fetched = await session.download(page, { url: fileAddress, maxBytes });
+
+      // **The site fence, asked of the host the bytes arrived on — before
+      // anything is written** (attached leases only, §13p). The address that
+      // passed the door fence is the address that was *asked for*; fetch
+      // follows redirects, and a listed host's redirect can hand back bytes
+      // from an off-list one with the person's session riding along. The
+      // gate's own name rides the throw, so the session-door denial path in
+      // {@link afterCommitWork} writes the matching `deny` row beside the
+      // decision row, and nothing reaches disk. An implementation whose
+      // session already refused for this (the attached session asks the same
+      // question itself) never reaches this line with an off-list arrival —
+      // the fence standing here too is what makes the promise not depend on
+      // that.
+      if (attached) {
+        const arrived = gateDecideDownload({
+          pageHost: hostOf(pageUrl ?? ''),
+          fileHost: hostOf(fetched.finalUrl),
+          actSites: input.attachedActSites ?? [],
+        });
+        if (arrived.decision !== 'allow') {
+          throw new BrokerError(
+            arrived.decision,
+            `${arrived.message} The fetch followed the address off the list; nothing was saved.`,
+          );
+        }
+      }
+
+      // The ceiling, asked a second time. The page enforced it while the body
+      // streamed, but *this* process cannot write a file whose size it has
+      // only been told: the number written down and the number checked have to
+      // be the bytes actually in hand, or a driver that miscounts gets believed.
+      const bytes = Buffer.from(fetched.base64, 'base64');
+      if (bytes.length > maxBytes) {
+        throw new BrokerError(
+          'download.size_bounded',
+          `The file arrived at ${String(bytes.length)} bytes, past this service's ${String(maxBytes)}-byte ceiling, and nothing was saved.`,
+        );
+      }
+
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      const extension = extensionForDownload(bytes, fetched.mime);
+      const name = downloadFileName({
+        label: input.label,
+        pageUrl: pageUrl ?? undefined,
+        takenAt: new Date(),
+        sha12: digest.slice(0, 12),
+        extension,
+      });
+
+      // Through `ArtifactStore.write` and never a direct file write: that
+      // method is the one implementation that refuses a name resolving
+      // outside the root, and the name above is built to be safe, but *built
+      // to be* is not the same claim as *checked by the one writer*.
+      const stored = artifacts.write(lease.claimId, 'downloads', name, bytes);
+      saved = {
+        name,
+        path: stored.relativePath,
+        bytes: bytes.length,
+        sha256: digest,
+        ...(fetched.mime === undefined ? {} : { mime: fetched.mime }),
+        sourceHost: hostOf(fetched.finalUrl),
+      };
+    },
+    lease.claimId,
+    // The session door re-decides with the page's full facts and can refuse an
+    // allowed call at execution time; its refusals (the two reused gate rules)
+    // owe their own deny rows.
+    {
+      kind: 'download',
+      sessionId: lease.sessionId,
+      detail: { host: hostOf(fileAddress) },
+    },
+  );
+
+  return {
+    value: withPageDriven(
+      {
+        claimId: lease.claimId,
+        tabId: tab.tabId,
+        expiresAt,
+        // A getter for the same reason `pageDriven` is one — see
+        // {@link withPageDriven}. Read eagerly it would always be absent.
+        get download() {
+          return saved;
+        },
+      },
+      work,
+    ),
+    afterCommit: work.afterCommit,
+  };
 }
 
 export interface CaptureInput extends TabOperationInput {

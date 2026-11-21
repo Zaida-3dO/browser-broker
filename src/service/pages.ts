@@ -90,7 +90,9 @@ export class PageRefusal extends BrokerError {
  * machine's filesystem, which no part of this contract intends to grant" —
  * but it is refused here by not being on this list, not by being matched.
  */
-const ALLOWED_SCHEMES: readonly string[] = ['http:', 'https:'];
+/** Exported so the download fence asks the **same list** after resolution —
+ * two lists that can drift are the leak the rule exists to close. */
+export const ALLOWED_SCHEMES: readonly string[] = ['http:', 'https:'];
 
 /** The one address that is not a scheme match: a deliberately blank page. */
 const BLANK_PAGE = 'about:blank';
@@ -1239,4 +1241,70 @@ export function disposeEvaluationResult(value: unknown): EvaluationDisposition {
 
   const bytes = Buffer.byteLength(serialised, 'utf8');
   return { serialised, bytes, spill: bytes > MAX_INLINE_RESULT_BYTES };
+}
+
+/* ───────────────────────── download (§3.18) ───────────────────────── */
+
+/**
+ * Check a download address before anything is fetched.
+ *
+ * Returns the trimmed address, **which may be relative** — the tool takes an
+ * address written relative to the page it is read from, and resolution
+ * against that page needs the store, so it happens in the handler. What is
+ * checked here is only what the argument alone can answer: that there is an
+ * address, and that if it spells out its own scheme, that scheme is ordinary
+ * web traffic.
+ *
+ * ── Why a scheme fence here at all, when the fetch runs in the page ────
+ *
+ * Because the in-page fetch would happily obey. `fetch('data:…')` succeeds in
+ * every browser — a `data:` address is not a network request at all — and a
+ * `file:` address reaches this machine's filesystem from a page on the
+ * internet only when the browser lets it, which is a browser's policy and not
+ * this service's rule. A rule that lives in whatever the page happens to
+ * enforce is a rule with two doors and one of them unlocked, so the fence is
+ * asked here, of the argument, where a refusal means nothing was fetched and
+ * the ledger can say so.
+ *
+ * **The same allowlist as navigation**, which is the point: an address a
+ * lease may *fetch* must be one it may *navigate to*, and anything that makes
+ * the two lists disagree is the leak. A `file:` address in particular "turns
+ * a browser lease into an arbitrary read of the machine's filesystem"
+ * (§3.7's words, and they transfer verbatim).
+ */
+export function validateDownloadTarget(url: unknown): string {
+  if (typeof url !== 'string' || url.trim() === '') {
+    throw new PageRefusal(
+      'download.scheme_allowed',
+      'A download needs the address of a file: an http(s) address, or one written relative to the page it is read from.',
+      { allowedSchemes: [...ALLOWED_SCHEMES] },
+    );
+  }
+
+  const candidate = url.trim();
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    // Not an absolute address, and that is **not a refusal** — a bare path is
+    // the ordinary spelling of "the attachment this page links". Resolution
+    // against the page happens in the handler, where the page is known; what
+    // this guard knows is that an address spelling no scheme of its own cannot
+    // smuggle a scheme in.
+    return candidate;
+  }
+
+  if (!ALLOWED_SCHEMES.includes(parsed.protocol)) {
+    // Named in the sentence rather than matched in the condition, as the
+    // navigation refusal above does: the allowlist is what decides, and
+    // matching `file:` or `data:` specially would suggest the rest are fine.
+    throw new PageRefusal(
+      'download.scheme_allowed',
+      `That address uses "${parsed.protocol}", which this service does not fetch. Ordinary web traffic (${ALLOWED_SCHEMES.join(', ')}) only — a local-file or inline-data address would fetch outside the page from a lease that was granted to work inside it.`,
+      { scheme: parsed.protocol, allowedSchemes: [...ALLOWED_SCHEMES] },
+    );
+  }
+
+  return candidate;
 }
