@@ -887,6 +887,36 @@ test('a consequential step without a grant comes back needs_owner, pointing at b
   }
 });
 
+test('key strings that are not keys refuse at the host-free preflight, and no Input call crosses', async () => {
+  // Every spelling below reaches the page as a real Enter press on a real
+  // Chromium (`Enter+Tab` holds Enter while Tab lands, and a bare carriage
+  // return is the automation library's own alias for Enter), so the session
+  // must refuse them **as not keys at all** — before the page is even
+  // resolved, and with no `Input.*` of any kind on the call log.
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    for (const value of ['Enter+Tab', 'Enter+a', '\n', '\r', 'Shift+\r', 'Tab+Enter']) {
+      const before = inputCalls(ext);
+      await assert.rejects(
+        session.act(tab, { action: 'press', value }, undefined, CALLER),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.key_unparseable' &&
+          error.message.includes('is not a key'),
+        `${JSON.stringify(value)} refused as not a key`,
+      );
+      assert.equal(inputCalls(ext), before, `no Input call for ${JSON.stringify(value)}`);
+    }
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
 test('a valid owner grant lets the one step through once; the same token again is refused as replayed', async () => {
   const secret = 'fixture-grant-secret';
   const { bridge, ext, session } = await live({
@@ -1665,15 +1695,18 @@ test('L2: one spelling of the movement keys — a lower-cased name is no movemen
       `${key} moves the view`,
     );
   }
-  // With acting off, the lower-cased spelling answers read-only at the
-  // door and never reaches the performer.
+  // With acting off, the lower-cased spelling is refused at the door and
+  // never reaches the performer — and since the strict grammar it is
+  // refused as **not a key at all**, the same answer a wrong-cased spelling
+  // gets on a listed site.
   const { bridge, ext, session } = await live({ attachedActSites: [] });
   try {
     const tab = await openedTab({ bridge, ext, session });
     const before = inputCountOf(ext);
     await assert.rejects(
       session.act(tab, { action: 'press', value: 'arrowdown' }),
-      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.read_only',
+      (error: unknown) =>
+        error instanceof AttachedError && error.rule === 'attached.key_unparseable',
     );
     assert.equal(inputCountOf(ext), before);
   } finally {

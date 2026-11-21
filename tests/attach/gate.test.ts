@@ -14,6 +14,7 @@ import {
   decide,
   grantValueDigest,
   isConsequentialText,
+  parseKey,
   verifyOwnerGrant,
   type ActTarget,
   type GrantTuple,
@@ -251,12 +252,15 @@ const rows: Row[] = [
     expect: 'allow',
   },
   {
-    name: 'a lower-cased movement key is not a movement key: with the act list empty it is read-only, not allowed',
+    // The grammar answers first, whatever the list says: a wrong-case
+    // spelling is not a key at all, and the honest sentence is the
+    // grammar's — the same key would be refused even on a listed site.
+    name: 'a lower-cased movement key is refused as not a key, even with the act list empty',
     verb: 'press',
     sites: [],
     value: 'arrowdown',
     target: undefined,
-    expect: 'attached.read_only',
+    expect: 'attached.key_unparseable',
   },
   {
     name: 'every movement key the performer allows is one the gate allows, off the list too',
@@ -441,6 +445,80 @@ const rows: Row[] = [
     target: { tag: 'textarea', role: 'textbox' },
     value: 'two\nlines',
     expect: 'allow',
+  },
+
+  // The key string itself. The performer presses **every** token of a
+  // combination it can name, and its own aliases for Enter are the bare
+  // characters `\n` and `\r`; each value below really does submit a form it
+  // is typed into (probed against real Chromium). So they are refused as
+  // **not keys at all**, before the site fence and before the page — not
+  // merely classified as steps that a grant could wave through.
+  ...(
+    [
+      ['Enter+Tab', 'Enter+Tab'],
+      ['Enter+a', 'Enter+a'],
+      ['\n', 'a bare newline'],
+      ['\r', 'a bare carriage return'],
+      ['Shift+\r', 'Shift over a carriage return'],
+      ['Tab+Enter', 'Tab+Enter'],
+      ['ctrl+a', 'the ctrl alias'],
+      ['ArrowDown+Enter', 'ArrowDown+Enter'],
+      ['Shift+', 'Shift, then a dangling plus'],
+    ] as const
+  ).map(([key, label]): Row => ({
+    name: `a press of "${label}" is refused as not a key`,
+    verb: 'press',
+    target: TEXT_BOX,
+    value: key,
+    expect: 'attached.key_unparseable',
+    message: 'is not a key',
+  })),
+  {
+    name: 'the grammar refusal reaches a text input inside a form just the same',
+    verb: 'press',
+    target: { ...TEXT_BOX, names: ['Sign in form'] },
+    value: 'Enter+Tab',
+    pageSecret: true,
+    expect: 'attached.key_unparseable',
+  },
+  {
+    name: 'no owner grant answers for a string that is not a key',
+    verb: 'press',
+    target: TEXT_BOX,
+    value: 'Enter+a',
+    grant: { present: true, verdict: 'valid' },
+    expect: 'attached.key_unparseable',
+  },
+  {
+    name: 'the grammar refusal stands even on a site nowhere on the list',
+    verb: 'press',
+    host: 'example.org',
+    target: TEXT_BOX,
+    value: '\r',
+    expect: 'attached.key_unparseable',
+  },
+  // What the grammar keeps: valid spellings classify as before.
+  {
+    name: 'Shift+A is a shifted letter, classified as before',
+    verb: 'press',
+    target: TEXT_BOX,
+    value: 'Shift+A',
+    expect: 'allow',
+  },
+  {
+    name: 'Shift+Tab is still just a focus move',
+    verb: 'press',
+    target: TEXT_BOX,
+    value: 'Shift+Tab',
+    expect: 'allow',
+  },
+  {
+    name: 'Shift+ArrowUp is a movement key with a modifier, not a free pass off the list',
+    verb: 'press',
+    host: 'example.org',
+    target: TEXT_BOX,
+    value: 'Shift+ArrowUp',
+    expect: 'attached.act_site_off_list',
   },
   {
     name: 'a username field is not a password field',
@@ -1212,7 +1290,55 @@ test('every movement key the session performs is a key the gate allows, off the 
       pageHasSecretField: false,
       actSites: SITES,
     });
-    assert.equal(answer.decision, 'attached.act_site_off_list', `${key} is not a movement key`);
+    assert.equal(answer.decision, 'attached.key_unparseable', `${key} is not a key spelling`);
+  }
+  // The early allowance reads the parsed key, so a movement name cannot ride
+  // it on the strength of being only one token of a combination.
+  for (const key of ['ArrowDown+Enter', 'Enter+ArrowDown', 'PageUp+Tab']) {
+    const answer = decide({
+      siteHost: 'example.org',
+      verb: 'press',
+      value: key,
+      pageHasSecretField: false,
+      actSites: SITES,
+    });
+    assert.equal(answer.decision, 'attached.key_unparseable', `${key} is not a key`);
+  }
+});
+
+test('the key grammar: what parses, and to what', () => {
+  // Valid spellings, canonicalised for the rules that read them.
+  assert.deepEqual(parseKey('Control+a'), { modifiers: ['Control'], base: 'a' });
+  assert.deepEqual(parseKey('Shift+A'), { modifiers: ['Shift'], base: 'A' });
+  assert.deepEqual(parseKey('Shift+Tab'), { modifiers: ['Shift'], base: 'Tab' });
+  assert.deepEqual(parseKey('control+Enter'), { modifiers: ['Control'], base: 'Enter' });
+  assert.deepEqual(parseKey('ControlOrMeta+s'), { modifiers: ['ControlOrMeta'], base: 's' });
+  // The plus key, with and without a modifier.
+  assert.deepEqual(parseKey('+'), { modifiers: [], base: '+' });
+  assert.deepEqual(parseKey('Control++'), { modifiers: ['Control'], base: '+' });
+  assert.deepEqual(parseKey('Shift+F12'), { modifiers: ['Shift'], base: 'F12' });
+  // Not keys: every one of these would otherwise reach the performer as a
+  // real combination that presses Enter or holds something down.
+  for (const bad of [
+    'Enter+Tab',
+    'Tab+Enter',
+    'Enter+a',
+    'ArrowDown+Enter',
+    '\n',
+    '\r',
+    'Shift+\r',
+    'ctrl+a',
+    'cmd+a',
+    'option+a',
+    'super+a',
+    'command+a',
+    'Return',
+    'a+',
+    'a++b',
+    '',
+    'Control+',
+  ]) {
+    assert.equal(parseKey(bad), undefined, JSON.stringify(bad));
   }
 });
 

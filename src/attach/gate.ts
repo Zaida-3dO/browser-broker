@@ -296,7 +296,8 @@ export type GateRefusal =
   | 'attached.needs_owner'
   | 'attached.act_repeat'
   | 'attached.grant_invalid'
-  | 'attached.no_grant';
+  | 'attached.no_grant'
+  | 'attached.key_unparseable';
 
 export type GateDecision =
   { readonly decision: 'allow' } | { readonly decision: GateRefusal; readonly message: string };
@@ -316,10 +317,32 @@ export function decide(input: GateInput): GateDecision {
     );
   }
 
-  // The read-safe verbs cross the site fence: they change nothing.
+  // A `press` whose key string this grammar does not know is refused here,
+  // before the site fence and before the page — in the full question and in
+  // the host-free preflight alike, because both are this function. The
+  // performer presses **every** token of a combination it can name, so a
+  // string that is not a key is not a step anyone classified, and the honest
+  // answer is that it is never pressed at all.
   const key = verb === 'press' ? (input.value ?? input.target?.key) : undefined;
-  const navigationPress = verb === 'press' && isNavigationKey(key);
-  if (ALWAYS_ALLOWED.includes(verb) || navigationPress) {
+  const parsedKey = key === undefined ? undefined : parseKey(key);
+  if (verb === 'press' && key !== undefined && parsedKey === undefined) {
+    return refusal(
+      'attached.key_unparseable',
+      `"${key}" is not a key the broker knows how to press: name zero or more of Shift, Control, Alt, Meta, ControlOrMeta, then one key. Refused before the page.`,
+    );
+  }
+
+  // The read-safe verbs cross the site fence: they change nothing. The
+  // movement-key allowance is decided on the **parsed** key, so a
+  // combination cannot ride it on the strength of its first token.
+  if (ALWAYS_ALLOWED.includes(verb)) {
+    return { decision: 'allow' };
+  }
+  const navigationPress =
+    parsedKey !== undefined &&
+    parsedKey.modifiers.length === 0 &&
+    NAVIGATION_KEYS.includes(parsedKey.base);
+  if (navigationPress) {
     return { decision: 'allow' };
   }
 
@@ -423,7 +446,7 @@ export function decide(input: GateInput): GateDecision {
     // is not a text field is a site shortcut. A newline typed into a field
     // is an Enter pressed. None of these name a control, so none of them
     // pass through the control's name.
-    (verb === 'press' && isConsequentialKey(key, control)) ||
+    (verb === 'press' && parsedKey !== undefined && isConsequentialKey(parsedKey, control)) ||
     (verb === 'type' && /[\r\n]/.test(input.value ?? '')) ||
     // Any submit while the page holds a password or card field: the field
     // is the tell that this form is signing something or paying something,
@@ -592,10 +615,6 @@ function refusal(decision: GateRefusal, message: string): GateDecision {
   return { decision, message };
 }
 
-function isNavigationKey(key: string | undefined): boolean {
-  return key !== undefined && NAVIGATION_KEYS.includes(key);
-}
-
 /**
  * Site list, env-list style: blank entries ignored, exact host or `*.`
  * prefix, compared lower-case. A wildcard covers subdomains and **not** the
@@ -733,38 +752,129 @@ function isConsequentialSelection(
   return chosen.some((o) => isConsequentialText(o.label) || isConsequentialText(o.value));
 }
 
-const CHORD_MODIFIERS: readonly string[] = [
-  'control',
-  'ctrl',
-  'meta',
-  'alt',
-  'controlormeta',
-  'command',
-  'cmd',
-  'option',
-  'super',
+/**
+ * The grammar of a key the performer can press: zero or more modifier
+ * names, then exactly one base key, joined by `+`. The base key is one
+ * printable character or a name from one fixed list — the names the
+ * automation library itself uses for keys.
+ *
+ * The grammar is deliberately **stricter than the library**. The library
+ * holds down *every* token of a combination it can name, not only the
+ * modifiers, so `"Enter+Tab"` and `"Tab+Enter"` both press Enter, and the
+ * library's own aliases for Enter are the characters `\n` and `\r` — a bare
+ * carriage return really does submit the form it sits in. A string this
+ * grammar rejects is refused at the gate and never reaches the page; a
+ * string it accepts is then classified by the rules below. The aliases a
+ * caller most often reaches for (`ctrl`, `cmd`, `command`, `option`,
+ * `super`) are **not** key names the library knows — it errors on them —
+ * so the grammar does not accept them either: a key the performer cannot
+ * press is not a key worth clearing.
+ */
+export interface ParsedKey {
+  /** The modifier names, in this file's spelling, in the order given. */
+  readonly modifiers: readonly string[];
+  /** The base key, as the classification rules below read it. */
+  readonly base: string;
+}
+
+/** The modifier names the grammar admits, in the library's own spellings. */
+const KEY_MODIFIERS: readonly string[] = ['Shift', 'Control', 'Alt', 'Meta', 'ControlOrMeta'];
+
+/** Of those, the ones that make the combination a chord the owner takes. */
+const CHORD_MODIFIERS: readonly string[] = ['Control', 'Alt', 'Meta', 'ControlOrMeta'];
+
+/** The base keys this grammar can name by word, in the library's spellings. */
+const BASE_KEY_NAMES: readonly string[] = [
+  'Enter',
+  'NumpadEnter',
+  'Tab',
+  'Space',
+  'Backspace',
+  'Delete',
+  'Insert',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+  'Escape',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'F1',
+  'F2',
+  'F3',
+  'F4',
+  'F5',
+  'F6',
+  'F7',
+  'F8',
+  'F9',
+  'F10',
+  'F11',
+  'F12',
 ];
 
+/** The canonical spelling of a base key, or `undefined` if it is not one. */
+function canonicalBase(token: string): string | undefined {
+  if (token.length === 1) {
+    // The line terminators are the library's aliases for Enter — a
+    // `Shift+\r` really does press Enter — but they are not spellings a
+    // caller may use: the grammar refuses them, before the page.
+    if (token === '\n' || token === '\r' || token === '\t') return undefined;
+    return token;
+  }
+  if (token === '+') return '+';
+  return BASE_KEY_NAMES.includes(token) ? token : undefined;
+}
+
 /**
- * Whether pressing this key is a step the owner takes. Three families,
- * none of which name a control: Enter (submits the form it is typed in,
- * sends a compose box), a Control/Meta/Alt chord (send, delete, archive in
- * most web apps), and any key at a control that is not a text field — a
- * bare letter on a page's body is a site shortcut (`#` deletes, `e`
- * archives). Space presses a focused button. Movement keys never reach
+ * Parse the key string a `press` carries, or `undefined` when it is not a
+ * key. The split follows the library's own: a `+` separates only **after a
+ * non-empty token**, so the plus key spells `"+"`, `"Control++"` is the
+ * plus with Control held, and a trailing `+` is a dangling empty segment —
+ * not a key. Modifier names are matched case-insensitively (a wrong case
+ * is a library error at the performer, never a key that slips through
+ * unclassified); base names are matched exactly, so there stays **one
+ * spelling, one list** between this gate and the performer's allow-list.
+ */
+export function parseKey(value: string): ParsedKey | undefined {
+  const tokens: string[] = [];
+  let building = '';
+  for (const char of value) {
+    if (char === '+' && building !== '') {
+      tokens.push(building);
+      building = '';
+    } else {
+      building += char;
+    }
+  }
+  tokens.push(building);
+  const base = canonicalBase(tokens[tokens.length - 1] as string);
+  if (base === undefined) return undefined;
+  const modifiers: string[] = [];
+  for (const token of tokens.slice(0, -1)) {
+    const modifier = KEY_MODIFIERS.find((m) => m.toLowerCase() === token.toLowerCase());
+    if (modifier === undefined) return undefined;
+    modifiers.push(modifier);
+  }
+  return { modifiers, base };
+}
+
+/**
+ * Whether pressing this parsed key is a step the owner takes. Three
+ * families, none of which name a control: Enter (submits the form it is
+ * typed in, sends a compose box), a Control/Alt/Meta chord (send, delete,
+ * archive in most web apps), and any key at a control that is not a text
+ * field — a bare letter on a page's body is a site shortcut (`#` deletes,
+ * `e` archives). Space presses a focused button. Movement keys never reach
  * here (they cross the fence earlier); Tab moves focus and changes nothing.
  */
-function isConsequentialKey(key: string | undefined, control: ActTarget | undefined): boolean {
-  if (key === undefined) return false;
-  // "Control++" is the plus key with a modifier; a lone "+" is the plus key.
-  const body = key.length > 1 && key.endsWith('+') ? key.slice(0, -1) : key;
-  const at = body.lastIndexOf('+');
-  const modifiers = (at < 0 ? [] : body.slice(0, at).split('+')).map((m) => m.toLowerCase());
-  const base = (at < 0 ? body : body.slice(at + 1)).toLowerCase() || '+';
-  if (modifiers.some((m) => CHORD_MODIFIERS.includes(m))) return true;
-  if (base === 'enter' || base === 'numpadenter' || base === 'return') return true;
-  if (base === 'tab') return false;
-  if ((base === 'space' || base === ' ') && isPressable(control)) return true;
+function isConsequentialKey(parsed: ParsedKey, control: ActTarget | undefined): boolean {
+  if (parsed.modifiers.some((m) => CHORD_MODIFIERS.includes(m))) return true;
+  if (parsed.base === 'Enter' || parsed.base === 'NumpadEnter') return true;
+  if (parsed.base === 'Tab') return false;
+  if ((parsed.base === 'Space' || parsed.base === ' ') && isPressable(control)) return true;
   return !isEditableText(control);
 }
 

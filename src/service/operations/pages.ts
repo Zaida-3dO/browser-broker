@@ -368,6 +368,7 @@ const GATE_DENIAL_RULES: ReadonlySet<GateRefusal> = new Set<GateRefusal>([
   'attached.act_repeat',
   'attached.grant_invalid',
   'attached.no_grant',
+  'attached.key_unparseable',
 ]);
 
 /**
