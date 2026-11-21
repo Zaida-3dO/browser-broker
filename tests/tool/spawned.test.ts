@@ -113,6 +113,7 @@ test('a SPAWNED session serves its caller and EXITS WHEN THE INPUT ENDS', async 
       'browser_read',
       'browser_evaluate',
       'browser_capture',
+      'browser_download',
       'browser_sign_in',
       'browser_doctor',
     ],
@@ -274,10 +275,10 @@ test('A REAL CLIENT HANDSHAKE, END TO END, OVER THE PROCESS BOUNDARY', async () 
   const manifest = await import('../../package.json', { with: { type: 'json' } });
   assert.equal(handshake.serverInfo.version, manifest.default.version);
 
-  // `tools/list` after the handshake: the eleven, reached the way a client
+  // `tools/list` after the handshake: the twelve, reached the way a client
   // reaches them.
   const tools = (listed?.['result'] as { tools: { name: string }[] }).tools;
-  assert.equal(tools.length, 11);
+  assert.equal(tools.length, 12);
   assert.ok(
     tools.some((tool) => tool.name === 'browser_status'),
     'the tool the next message calls was not listed',

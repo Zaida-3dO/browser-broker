@@ -260,6 +260,7 @@ export const KEYED_COMMANDS = [
   { words: ['read'], payload: [] },
   { words: ['evaluate'], payload: ['--expression', '1 + 1'] },
   { words: ['capture'], payload: [] },
+  { words: ['download'], payload: ['--url', 'https://example.com/file.pdf'] },
   // The two halves of a requested sign-in (§5.5.2). Both are keyed, which is
   // what puts them on this list at all — the unkeyed pair a person uses,
   // `begin_sign_in` and `end_sign_in`, is not on either caller-facing route.
