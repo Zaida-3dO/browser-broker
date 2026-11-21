@@ -1507,7 +1507,7 @@ surface (§3.13), never on the agent's.
 
 ### 3.1 The list, and what it costs
 
-**Eleven tools.** Every description sits in a connected session's context on every turn whether or
+**Twelve tools.** Every description sits in a connected session's context on every turn whether or
 not anything calls it, so surface area is a standing tax and the list is short on purpose.
 
 | # | Tool | One line |
@@ -1521,8 +1521,9 @@ not anything calls it, so surface area is a standing tax and the list is short o
 | 7 | `browser_read` | The page snapshot by default; console, network or cookies on request. Written to disk, returned as a path. |
 | 8 | `browser_evaluate` | Evaluate an expression in the page and get its value. |
 | 9 | `browser_capture` | Take a picture — **and, if you name an earlier capture, the difference from it.** Returns paths, never the image. |
-| 10 | `browser_sign_in` | **Hit a login wall? Ask, on the tab you already hold** (§5.5.2). Your lease and your tab survive the wait. **`action` is `request` (ask) or `done` (the person confirmed: give the browser back, keeping this lease and its tab).** |
-| 11 | `browser_doctor` | **Why is the browser not working?** Every precondition, reported separately with its remedy. **No lease needed, and it only looks** (§3.17). |
+| 10 | `browser_download` | **Fetch a file this page links** — with the page's own credentials, inside the page — and keep it as an artifact of the lease. Returns a name, a path and a digest, **never the bytes** (§3.18). |
+| 11 | `browser_sign_in` | **Hit a login wall? Ask, on the tab you already hold** (§5.5.2). Your lease and your tab survive the wait. **`action` is `request` (ask) or `done` (the person confirmed: give the browser back, keeping this lease and its tab).** |
+| 12 | `browser_doctor` | **Why is the browser not working?** Every precondition, reported separately with its remedy. **No lease needed, and it only looks** (§3.17). |
 
 **Plus one thing that is not a tool: the operations snapshot** (§4.5). A command generates a
 self-contained file a person opens. It is deliberately absent from this list because no agent needs
@@ -2897,6 +2898,101 @@ and the failure count is a count rather than a judgement.
 precondition is broken and what to do about it*. §3.3's keyless response points here when there is
 spare capacity, because spare capacity means capacity is not the fault.
 
+### 3.18 `browser_download` — the twelfth tool: a file the page fetches, kept as an artifact
+
+**One address, asked once: fetch this file this page links, and keep it.** The fetch runs **inside the
+page** — a fixed fetch the service itself composes, carrying the page's own credentials, the same ones
+that opened the page behind the login — and the body is saved into the lease's artifact folder, under
+`downloads/`. The reply is a record of what was saved, not the file.
+
+**Why it is a tool of its own and not a verb on `browser_act` or an argument on `browser_read`:** §3.1's
+rule again — a separate tool when something must be refusable by name. A download reaches a **file**,
+not the page's rendering: it has its own fence (scheme, size, and on an attached lease both hosts), its
+own ledger kind, and its own folder on disk. Folded behind someone else's verb, its refusals would
+arrive under the wrong name and the ledger would record the wrong kind. (`DECISIONS.md` §13p.)
+
+#### Arguments
+
+| Argument | Type | Required | |
+|---|---|---|---|
+| `lease_key` | string | yes | As on every tab-addressed tool (§3.1) |
+| `tab_id` | string | yes | The tab whose page does the fetching. Its last **arrived-at** address is what a relative address resolves against — the same arrival the acting fence reads (§13o) |
+| `url` | string | yes | **Absolute `http` or `https`**, or a relative address to resolve against that page. Anything else refuses before the lease is renewed (§7.1 `download.scheme_allowed`) |
+| `label` | string | no | A word for the saved name — the caller's shorthand for what the file is. Reduced by the naming rules like every other name, and never treated as a path (§1.7a) |
+
+#### What comes back
+
+`name`, `path`, `bytes`, `sha256`, `mime` — **only when the server named one** — and `sourceHost`, the
+host the body finally arrived from, which is the address after any redirect. **Never the bytes.** The
+address's **query string reaches no name, no reply field and no ledger row**: a signed link is an
+ordinary thing for a page to link, and its token must not be written down anywhere the record travels.
+The decision's ledger row carries the file's host and the ceiling in force, and nothing else.
+`path` is relative to the artifact root with forward slashes, as every artifact path is.
+
+#### The name is earned, never copied
+
+Neither the caller's word nor the server's filename survives into the saved name — a
+`Content-Disposition` name is an input to a filesystem, and this service takes no filenames from the
+page. The name is four reduced parts and an extension the bytes chose: **label, page slug, moment, a
+tail of the content hash**, then the extension. The extension is sniffed from the body's own signature
+first (a document served as `application/octet-stream` is still that document), the server's media type
+is believed only when the bytes offer no signature, and neither explains the body means `bin` — an
+admission rather than a guess. Because the hash tail is of the bytes, a re-download of the same file
+from the same page names itself identically, and the same attachment downloaded from two pages is two
+files that say so.
+
+#### The fence, in the order it is asked
+
+1. **Scheme, first and before anything is admitted**: `http` and `https` only. A local-file or inline
+   address would fetch outside the page from a lease granted to work inside it, and it is refused
+   **before the lease is renewed, before any ledger row, before a session is sought** — the same
+   explicit refusal `browser_navigate` makes (§7.1 `navigate.scheme_allowed`).
+2. **A relative address needs a page.** Resolution is against the address the tab last *arrived* at;
+   a tab that never navigated has nothing to resolve against, and that refusal writes its own ledger
+   row (`download.address_resolvable`) — it is the one download refusal that arrives after admission,
+   because only the store knows whether there is a page.
+3. **On an attached lease, both hosts on the list — and the arrival is asked again.** The **page's**
+   host and the **file's** host must each be named by `BROKER_ATTACHED_ACT_SITES`; an empty list is
+   the read-only refusal. Decided at the service door before any session is touched, and the refusal
+   reuses the acting gate's names — `attached.read_only`, `attached.act_site_off_list` — rather than
+   minting download's own: one operator list deserves one vocabulary (`DECISIONS.md` §13p). After
+   the fetch, the gate is asked a **third time** of the host the body arrived on: a redirect that
+   leaves the list refuses under the same rule and saves nothing. The intermediate hops still
+   received the request — the fence decides what gets **saved**, not what gets contacted
+   (`DECISIONS.md` §13p).
+4. **Size, asked twice, and a clock.** `BROKER_DOWNLOAD_MAX_BYTES` (§6.2): the in-page fetch stops
+   streaming past the ceiling, and the service **re-measures the decoded bytes before anything is
+   written**. Past the ceiling the decision row stays — the call really was allowed — but the
+   completion carries `pageDriven: false` with `download.size_bounded` in `notDrivenReason`, nothing
+   reaches the caller, and `downloads/` is not empty: **it does not exist.** The fetch is also
+   bounded on a clock — the driver's own timeout (thirty seconds by default) ends a server that
+   streams forever.
+
+A launched lease is fenced by 1, 2 and 4; the host list belongs to the attached browser alone, and
+that asymmetry is a decision rather than an oversight — `DECISIONS.md` §13p owns the reasoning.
+
+#### What it is not
+
+**Not the browser's own download machinery.** No download event, no save dialog, no Downloads folder:
+the fetch is the service's fixed in-page fetch, **the same route on both lease kinds**, and the file
+lands in this service's artifact store, never on the person's disk (`DECISIONS.md` §13p). **Not a
+general HTTP client.** One address, one page's credentials, one recorded decision, no caller code —
+§3.10's finding about authenticated calls made *from the service process* stands untouched, because
+the request is made by the browser (§13p). **Not redacted.** A downloaded body is written as it
+arrived: `artifact.write_scanned` matches shapes in text material, and a shape scan against an
+arbitrary binary is a way to be fooled rather than a way to be safe. That is why the fence sits **in
+front** of the fetch and the bytes stay out of every reply and row — the net that catches the rest of
+this service's artifacts deliberately does not stand here, because it cannot.
+
+#### Stated gaps
+
+Files that exist only after an interaction — a report generated by a click, an export that answers a
+`POST`, an object URL built inside the page — have no address to fetch at call time, and this route
+fetches addresses. The page's own origin policy bounds cross-origin fetches and this service does not
+override the browser's. A one-time link the page mints on click cannot be fetched, because this route
+never clicks. All four are in `DECISIONS.md` §13p as gaps, so the caller learns them from the design
+rather than from a failed download.
+
 ---
 
 ## 4. Looking at what is happening — a generated file, not a served page
@@ -3088,8 +3184,9 @@ the service for that reason, not merely for tidiness.
 ### 5.3 The commands that mirror an operation
 
 Every §3 operation has one, so parity is real rather than claimed: `claim`, `status`, `release`,
-`tab replace`, `navigate`, `act`, `read`, `evaluate`, `capture`, `feedback`, `sign in`, `sign in
-done`. **Twelve commands**, one per operation (the tool surface folds the last two into `browser_sign_in` and has no feedback tool), and the diff rides on `capture` here exactly as it does
+`tab replace`, `navigate`, `act`, `read`, `evaluate`, `capture`, `download`, `feedback`, `sign in`,
+`sign in done`. **Thirteen commands**, one per operation (the tool surface folds the last two into
+`browser_sign_in` and has no feedback tool), and the diff rides on `capture` here exactly as it does
 there (§3.11) rather than being a command of its own.
 
 **`broker sign in` is not `broker login`, and both stay.** The first is a *caller* asking a person to
@@ -3324,6 +3421,7 @@ the process that started it — and those say so by naming the browser rather th
 | `BROKER_ATTACHED_TOKEN` | **Unset — and unset works: the first connect page simply waits for a person to press *connect*** | The token rides the connect URL, and that is its whole reach: a copy of it lets the extension finish a reconnect with no person at the keyboard; without it, a person approves. **The relay does not check it at the door** — admission is the loopback Host, the unguessable per-lease path and the exact extension Origin (§13n), checked the same either way — so it is an unattended-approval convenience and **not** what stands between another local process and the port. Set it to spare a person; reading it as a credential is exactly the mistake §6.1's care about it exists to prevent |
 | `BROKER_ATTACHED_ACT_SITES` | **Empty — acting on an attached browser is off; the read-only posture stands** | A comma-separated list of hosts an attached lease may **act** on: exact hosts, or `*.` wildcards that cover subdomains and **not** the apex. Entries are checked at startup for shape (no scheme, port, path, empty entry or non-host character) so an entry that can never match a navigation refuses there rather than mystifying a lease later. The fence is asked against the address the tab **arrived** at, not the one it was sent to (`DECISIONS.md` §13o) |
 | `BROKER_OWNER_GRANT_SECRET` | **Unset — the grant seam is inert, and inert is not permissive** | The signing key for one-time **owner grants**: a token an operator-side caller carries to retry exactly the consequential step the owner approved, signed over `(lease, ref, accessible name, host, issued-at, verb, value digest)` and valid 120 seconds, never ahead-dated beyond a few seconds of clock skew. It is a boundary only where the secret reaches the service by a channel the calling agent cannot read; where it can, the seam is advisory (`DECISIONS.md` §13o). With this unset, **no token ever verifies** — a grant-bearing call answers exactly as one without it, never "allowed because nothing could check it". Carried by the session that verifies against it; written into no row, log line or message (`DECISIONS.md` §13o) |
+| `BROKER_DOWNLOAD_MAX_BYTES` | **8388608 — 8 MiB; a value above 16777216 refuses startup** | The size ceiling for one downloaded file (§3.18), asked at **both** points the bytes cross: the in-page fetch stops streaming past it, and the service re-measures the decoded body before saving anything. The hard **ceiling above the default is the one this design has never needed before** — every other number may be set as high as its type allows, because none of them holds a file. A fetched body travels into the process that arbitrates every lease, so an unbounded ceiling here is not a slow call but an out-of-memory death for the whole service; 16 MiB bounds what one download can cost, and the default is what a linked document, sheet or archive actually weighs (`DECISIONS.md` §13p) |
 | Tab budget | **15** | Total tabs across **both** browsers, and — since a lease is a tab (§2.3) — **the same number as the maximum count of live leases**. No per-browser cap: the scarce thing is page processes and one costs the same in either browser. The keeper tab in each browser is not counted (§3.15). **Provisional** — reasoned from roughly 50–150 MB per idle page process plus two browser processes, so fifteen is one to two gigabytes. **This is the one value also written to the store** (§1.10) |
 | Lease lifetime | **10 minutes** | How long an active lease lives without a call |
 | Queue-place lifetime | **10 minutes** | How long a place in the queue lives without a call. **Deliberately equal to the row above** — §2.5 sets out why, including why the argument for making them differ pointed the other way |
@@ -3470,6 +3568,9 @@ build.
 | `capture.page_settled` | Animations stopped, caret hidden, fonts waited for, before every picture | **Not a refusal — a shape.** Without it the same page produces different pixels run to run, and no colour tolerance can address something that moved (§3.11) |
 | `capture.name_from_address` | **A capture's file name derives its page slug from the page address, with the query string stripped, restricted to safe characters, truncated, and never treated as a path** (§1.7a) | **Not a refusal — a shape.** A file name travels further than a database column does, so the query string is removed before anything else |
 | `capture.label_safe` | A caller's label is within a safe character set and length, and is never treated as a path | invalid label. The same reasoning that refuses a local-file address |
+| `download.scheme_allowed` | A download address is **an absolute `http` or `https` address** (§3.18) | invalid address, **naming the scheme that arrived and the two that are allowed**. Checked **before the lease is renewed, before any ledger row, before a session is sought**: a local-file or inline address turns a browser lease into a read of the machine or of whatever the caller pasted, and the paired refusal test proves the session was never reached and no row of either outcome was written. A relative address is *not* refused here — that is `download.address_resolvable` |
+| `download.address_resolvable` | A relative download address **resolves against the page this tab last arrived at** (§3.18) | address not resolvable, on a tab that has never navigated. The one download refusal that arrives **after** admission — only the store knows whether there is a page to resolve against — so it owes its own `deny` row: §1.6's question, *was the rule ever reached*, is exactly interesting on this path. Nothing is fetched, and `downloads/` does not exist |
+| `download.size_bounded` | A fetched body is **within `BROKER_DOWNLOAD_MAX_BYTES` at both points the bytes cross**: the in-page fetch stops streaming there, and the service re-measures the decoded body before saving anything (§3.18, §13p) | **Not a ledger refusal — a failed drive.** The decision row stands because the call really was allowed; the completion carries `pageDriven: false` with this rule in `notDrivenReason`, no bytes reach the caller, and nothing is written — the paired test reads the *absence* of the `downloads/` directory, because a store that creates the folder lazily at the write leaves an empty one only when it wrote. **The page's fetch is not trusted to police its own ceiling**, which is why the number is asked twice: the check that matters is the one the service can see |
 | `revoke.reason_required` | A revoke carries a reason | reason required |
 | `read.default_snapshot_only` | **A read returns the page snapshot unless console, network or cookies were asked for** (§3.9) | **Not a refusal — a default.** Console and network are accumulated by the browsing context regardless, so this filters what is written to disk and the cost of not asking is zero. **Cookies are the exception**: a live query, so asking is a real operation |
 | `read.cookies_no_values` | A cookie read returns names, domains, paths, expiries and flags | **Not a refusal — a shape.** The value field is absent, not masked |
@@ -3747,7 +3848,7 @@ Each is a change rather than a clarification, and is listed so nobody reconciles
 | **Nothing is served; the operations view is a generated file** | One self-contained document a command writes and a person opens. **It is a snapshot and is labelled with the moment it was taken** (§4). The health endpoint is deleted with it — `broker doctor` answers the same question in a better shape (§4.4) |
 | **Addresses are read live from the browsers at generation time, with a timeout** | The generating process is attached to both browsers, so it asks rather than reading a cached copy. A browser that does not answer renders as unreachable rather than hanging the run (§4.2a) |
 | **`tabs.last_url` is deleted** | A cached copy of something the browser already knows, read only when the source was reachable anyway. **Deleting it removes the most sensitive column in the design**, leaves nothing to retain or redact, makes the private browser trivially leak-free, and makes a clear-history command unnecessary. **`captures.url` is a different column and survives** (§1.4) |
-| **The tool surface is ten, plus a command-line snapshot** | `browser_compare` folded into capture as an argument; `browser_tab_close` deleted outright, because it produced a lease owning nothing while still consuming budget; **`browser_feedback` added as the tenth** (§3.1, §3.16); later `browser_sign_in_done` folded into `browser_sign_in` and the feedback tool retired, leaving eleven |
+| **The tool surface is ten, plus a command-line snapshot** | `browser_compare` folded into capture as an argument; `browser_tab_close` deleted outright, because it produced a lease owning nothing while still consuming budget; **`browser_feedback` added as the tenth** (§3.1, §3.16); later `browser_sign_in_done` folded into `browser_sign_in` and the feedback tool retired, leaving eleven; `browser_download` added as the twelfth — a fixed in-page fetch with its own fence, not the general HTTP client this row refuses (§3.18, `DECISIONS.md` §13p) |
 | **The "execute arbitrary code" arguments were sampled, and the refusal is now evidence-backed** | **Measured: 101 of 328 calls, across 33 of 53 sessions, exercised a real shared-pool hazard** — including **16 calls in one session that enumerated other callers' tabs and drove one it did not own**, **2 that read a local environment file and extracted administrative credentials in cleartext**, and **49 that made outbound authenticated network requests from the server process.** The §3.10 box that flagged this as counts-only is replaced by the finding. **Outbound network calls and cross-tab reach stay unreachable** — an agent that needs authenticated network calls does not need a browser (§3.10, §3.13) |
 | **Browser choice is guidance now, and it is a correction** | **Nothing here ever assigned a kind of caller to a browser** — the two are a choice at claim time. **Measured: 25 sessions hand-seeded auth tokens into an isolated browser while the signed-in one sat unused.** Authenticated surface → the signed-in browser; genuinely-fresh-visitor work → the private one. **With the caveat stated alongside: tabs in the signed-in browser share one cookie jar**, so two callers there are clean-room relative to nothing, and two identities at once stays unsupported (§1.2, §3.2) |
 | **`storage_seed` is added to `browser_claim`** | **Measured: 40 calls across 25 sessions**, all the same shape — fetch a token, seed it before load, navigate. **Applied by the service through a storage interface, never caller code executed as code**, bounded at 16 entries and 4 KB each, and refusing cookies. **The browser guidance shrinks this without deleting it:** the signed-in browser covers anything a person can log into by hand, and does not cover a token obtained from an API (§3.2) |

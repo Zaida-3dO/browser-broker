@@ -2874,6 +2874,125 @@ attached browser ride the same gated browser job as §13n's read paths: the fake
 commands but cannot render, so the fake proves the refusals and the crossings, and the real
 browser owes the performed acts.
 
+## 13p. `browser_download`: the page fetches the file, the service keeps it (2026-11-21)
+
+**The need:** a page behind a login very often *links* the thing the caller actually wants — an
+invoice, an export, a signed document — rather than rendering it. Everything this service offers reads
+the page; the file sits one fetch away that no caller can take. Reaching it from outside the browser
+means an HTTP client without the page's session cookie, and building an HTTP client into this service
+is exactly what §3.10's measured finding refuses. The route that answers both asks **the page itself**
+to fetch its own link, and keeps what comes back as an artifact of the lease.
+
+### Why an in-page fetch rather than the browser's own download machinery
+
+Both routes can put a file on disk, and the obvious one is the browser's: fire a download event, let
+the browser save it, point the service at the result. Four differences settle it, and every one points
+the same way:
+
+- **Landing place.** A browser download lands wherever that browser saves — the person's own Downloads
+  folder on an attached browser — which this service neither controls nor may retarget: moving where a
+  person's browser saves is a write to their machine, and §13n's whole posture forbids the relay making
+  it. A browser-side route would therefore work for launched browsers and **not** for attached ones.
+  The fetch route is **one route for both lease kinds**, and the file lands in the lease's artifact
+  folder, which is the only directory this service writes to.
+- **Who names the file.** A browser download takes its name from the response — `Content-Disposition`
+  is an input to a filesystem, and so is any filename the caller guessed. The fetch route assembles the
+  name from §1.7a's rules and a hash of the bytes: label, page slug, moment, hash tail, and an
+  extension the bytes earned by their own signature. Nothing the caller typed or the server sent
+  becomes a path.
+- **Where the cap is enforced.** A ceiling on a save the service does not control is a promise about
+  somebody else's behaviour. On the fetch route the ceiling is asked **at both points the bytes
+  cross**: the in-page fetch stops streaming past it, and the service re-measures the decoded body
+  before anything is written — and a refusal provably writes nothing, down to the non-existence of
+  the `downloads/` directory.
+- **What the ledger describes.** A decision row that ends with "the browser may have saved something
+  somewhere" records an intent, not an act. The fetch route's rows describe this service's own act,
+  and the artifact index matches it.
+
+**The honest cost:** bodies travel the page→service seam base64-encoded, about a third more bytes
+than raw, held in the process that arbitrates every lease. That is why `BROKER_DOWNLOAD_MAX_BYTES` is
+the one configurable number this design bounds with a hard **ceiling of 16 MiB** above its default —
+every other number can be set as high as its type allows because none of them carries a file; this one
+does, and an unbounded version of it turns one oversized link into an out-of-memory death for every
+caller on the machine.
+
+### Why a tool rather than a verb or an argument
+
+§3.1's rule, applied without new effort: a download must be **refusable by name**. It reaches a file,
+not a rendering; it has its own ledger kind (the events table grew it, schema step 14), its own fence,
+and its own folder. Under `browser_act` its refusals would arrive wearing the acting gate's rules in
+name only, and the queue of questions — *was the download rule reached, how many downloads ran
+against this lease* — would answer itself by filtering the wrong verb.
+
+### Why the fence is in front, because no net stands behind
+
+Everything else this service writes to disk passes `artifact.write_scanned` — a shape-matcher for
+text material, chosen because a snapshot can capture a rendered credential with nobody having asked.
+**A downloaded body does not, and cannot honestly.** Redaction works on material whose shapes can be
+recognised; against an arbitrary PDF, archive or image, a shape scan is a way to be *fooled*, not a
+way to be safe — an attacker needs one format quirk. So the protection moves in front of the fetch:
+the scheme fence always, **both hosts** on an attached lease, and the bytes then stay out of every
+reply, every ledger row and every name. A downloaded file is the one artifact this service stores
+unexamined, and that is admissible exactly because reaching it required a decision that was made,
+named and recorded **before a single byte moved**.
+
+### Why an attached download asks for two hosts, and a launched one asks for one fence
+
+On an attached browser the cookies are a person's live session, and a file fetch is an exfiltration
+route with a receipt: act on a listed page, fetch from an unlisted host, and the page's credentials
+ride along happily — the page's own origin policy is no help when the *service* composes the fetch.
+So the gate is asked twice, page host and file host, and **both** must be on
+`BROKER_ATTACHED_ACT_SITES`. The refusal names are **reused, not minted** — `attached.read_only` and
+`attached.act_site_off_list` — because the operator's decision is one list and one question
+(*may this lease do page-side work here*), and an operator who set the variable deserves the same
+sentence whichever verb reached them.
+
+A launched lease gets the scheme fence and the ceiling only. **The asymmetry is chosen, and the
+honest reason is capability, not freshness:** on a launched lease the caller can already run its own
+code in the page through `browser_evaluate` — a `fetch` with that browser's cookies included — so a
+host list on this one verb would fence nothing the lease does not already have, and would fence it
+inconsistently: download fenced, evaluate not, same page, same cookies. On the attached browser
+`evaluate` is refused outright (§13n), so there the site list *is* the difference between reach and
+no reach, and it earns its maintenance cost. The fence is placed exactly where it fences anything.
+
+### And the fence is asked again of the host the bytes *arrived* on
+
+The address that passes the door fences is the address that was **asked for**; fetch follows
+redirects, and a listed host's 302 can hand back bytes from an off-list host with his session
+cookies riding along. So both doors ask the gate a **third time** — after the fetch returns and
+*before a single byte is written* — of the arrived host. An off-list arrival refuses under the
+gate's own name; the decision row stays because the call really was allowed, the completion carries
+the rule in `notDrivenReason`, and the `downloads/` folder is not empty: it does not exist.
+
+**What the check does not claim, said rather than glossed:** the intermediate hops still received
+the request. A redirect away from the list is a contact an off-list host got; refusing after
+arrival does not un-contact it, and a listed page can already send his browser visiting any link.
+The fence decides what gets **saved and handed back**, not what gets contacted. `redirect: 'error'`
+would narrow the contact too, at the cost of breaking the signed-CDN hops ordinary download links
+ride on — the artifact is what gets fenced, and that is the smaller, honest promise.
+
+**A residual the same honesty requires:** the fixed expression runs in the page's **main world**, so
+page script there can replace `fetch` or `btoa` and answer with chosen bytes and a chosen
+`finalUrl` — the arrival-host check rests on a value the page could forge. The mitigation that is
+real rather than rhetorical: on an attached lease the page reached that list *by the operator's own
+decision*, and a listed page able to forge the seam could also carry his credentials to an off-list
+address with its own `fetch` — the forgery opens no route the listed page did not already have; it
+buys a false label, not new reach. Closing the seam completely means running the expression in an
+isolated world (or fetching relay-side), and that is recorded here as the open item it is.
+
+### Gaps, stated
+
+- **Click-triggered, `POST`-generated and object-URL files** exist only after an interaction; at call
+  time they have no address, and this route fetches addresses. A caller that needs one needs an acting
+  verb and then a capture of where the interaction landed.
+- **The page's origin policy stays the page's.** A cross-origin fetch the browser would refuse is
+  refused, and this service does not override the browser's policy to smuggle one through.
+- **A one-time link minted on click cannot be fetched** — for the same reason as the first gap: this
+  route never clicks, so it is never shown the mint.
+- **Attached completions ride the gated browser job**, exactly as §13n's reads and §13o's acts did:
+  the fake relay proves the refusals, the crossings and the saved file; the real attached browser owes
+  the performed download.
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because
