@@ -2854,6 +2854,11 @@ and records the generation from **before** an act, so a page the act itself move
   proves the named control holds the focus before the first key crosses, so the check makes the
   agent's **own targeting** honest, not the page's; a page that steals focus mid-string stays
   outside what any pre-key check can see.
+- **`fill` and `fill_form` have no pre-write focus proof.** They set values through the library's
+  own fill, which focuses the named element itself and writes at whatever then holds focus — the
+  performer's proof-before-the-first-key check covers the verbs that type as if by keyboard, not
+  these; the harm is consistency with `type`, since a page that redirects its own focus on focus
+  could route the written value elsewhere and could set that field itself anyway.
 
 The asking these rules do — "Sign in", "Post", "Accept cookies", modifier chords, Space on a
 focused button — over-fires **by design**: an ask costs the owner a click and a wrong act costs
