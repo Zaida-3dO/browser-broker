@@ -125,6 +125,21 @@ export const CONSEQUENCE_WORDS: readonly string[] = [
   'invest',
   'erase',
   'terminate',
+  'bid',
+  'redeem',
+  'claim',
+  'agree',
+  'finalise',
+  'finalize',
+  'settle',
+  'wire',
+  'commit',
+  'refund',
+  'dispute',
+  'archive',
+  'block',
+  'report',
+  'unfollow',
 ];
 
 /**
@@ -184,7 +199,12 @@ const CONSEQUENCE_FORMS: ReadonlySet<string> = new Set([
  * names the thing it falls on. Both must appear as tokens of the name or
  * role, in any order.
  */
-export const CONSEQUENCE_PAIRS: readonly (readonly [string, string])[] = [['close', 'account']];
+export const CONSEQUENCE_PAIRS: readonly (readonly [string, string])[] = [
+  ['close', 'account'],
+  ['check', 'out'],
+  ['top', 'up'],
+  ['mark', 'spam'],
+];
 
 /** How long an owner grant stays valid, in seconds. */
 export const GRANT_TTL_SECONDS = 120;
