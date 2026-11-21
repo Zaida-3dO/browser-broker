@@ -118,7 +118,7 @@ const rows: Row[] = [
   ...ACTING.map((verb): Row => ({
     name: `${verb} on a listed site`,
     verb,
-    target: verb === 'press' ? TEXT_BOX : BENIGN,
+    target: verb === 'press' || verb === 'type' ? TEXT_BOX : BENIGN,
     value: verb === 'press' ? 'a' : undefined,
     expect: 'allow',
   })),
@@ -147,7 +147,7 @@ const rows: Row[] = [
     name: `${verb} on a site off the list`,
     verb,
     host: 'example.org',
-    target: verb === 'press' ? TEXT_BOX : BENIGN,
+    target: verb === 'press' || verb === 'type' ? TEXT_BOX : BENIGN,
     value: verb === 'press' ? 'a' : undefined,
     expect: 'attached.act_site_off_list',
     message: 'BROKER_ATTACHED_ACT_SITES',
@@ -156,7 +156,7 @@ const rows: Row[] = [
     name: `${verb} with the act list empty (read-only as before)`,
     verb,
     sites: [],
-    target: verb === 'press' ? TEXT_BOX : BENIGN,
+    target: verb === 'press' || verb === 'type' ? TEXT_BOX : BENIGN,
     value: verb === 'press' ? 'a' : undefined,
     expect: 'attached.read_only',
     message: 'BROKER_ATTACHED_ACT_SITES',
@@ -437,6 +437,31 @@ const rows: Row[] = [
     verb: 'type',
     target: TEXT_BOX,
     value: 'hello world',
+    expect: 'allow',
+  },
+  // A `type` at something that is not editable text is a shortcut in
+  // waiting: the keys land wherever focus sits. The gate asks the owner;
+  // the performer proves the control takes focus (real-browser rows in the
+  // reader suite hold the other half).
+  {
+    name: 'a type at a paragraph cannot land on it — its keys land on whatever holds focus',
+    verb: 'type',
+    target: { tag: 'p', accessibleName: 'Welcome back', names: ['Welcome back'] },
+    value: 'hunter2',
+    expect: 'attached.needs_owner',
+  },
+  {
+    name: 'a type at a focusable list row (tabindex) is a site shortcut waiting, not typing',
+    verb: 'type',
+    target: { tag: 'div', role: 'listitem', accessibleName: 'Message from A' },
+    value: '#e',
+    expect: 'attached.needs_owner',
+  },
+  {
+    name: 'a type into a contenteditable region is typing',
+    verb: 'type',
+    target: { tag: 'div', role: 'textbox', editable: true },
+    value: 'plain words',
     expect: 'allow',
   },
   {

@@ -372,6 +372,63 @@ export async function readFocusedControl(page: Page): Promise<ActTarget | null> 
   }
 }
 
+// ── Does this control actually hold the focus ─────────────────────────────
+
+interface ActiveElement {
+  readonly tagName?: string;
+  readonly shadowRoot?: { readonly activeElement: ActiveElement | null } | null;
+  readonly contentDocument?: { readonly activeElement: ActiveElement | null } | null;
+}
+
+/**
+ * The in-page half of {@link holdsFocus}: is this element the page's **deep
+ * active element**? The walk starts at the document's `activeElement` and
+ * follows it down — into an open shadow root when the focused host has one,
+ * and into a frame's document when the focused element is a frame, for a
+ * same-origin frame answers `contentDocument` and the chain continues
+ * there. One frame hop at most per step, and the element being asked about
+ * lives in the frame this expression runs in, so the check never leaves the
+ * frame it was asked in.
+ *
+ * A **closed** shadow root reports nothing to anyone outside it, so focus
+ * inside one reads as "not this element" — the safe direction: the check
+ * exists so a write lands where it was pointed, and a focus it cannot see
+ * is a focus it does not vouch for.
+ */
+export const HOLDS_FOCUS = (element: unknown): boolean => {
+  const scope = globalThis as unknown as {
+    document: { activeElement: ActiveElement | null };
+  };
+  let active: ActiveElement | null = scope.document.activeElement;
+  while (active !== null && active !== undefined) {
+    if ((active as unknown) === element) return true;
+    if (active.shadowRoot !== null && active.shadowRoot !== undefined) {
+      active = active.shadowRoot.activeElement;
+      continue;
+    }
+    const tag = (active.tagName ?? '').toLowerCase();
+    if (tag === 'iframe' || tag === 'frame') {
+      const inner = active.contentDocument;
+      if (inner === null || inner === undefined) return false;
+      active = inner.activeElement;
+      continue;
+    }
+    return false;
+  }
+  return false;
+};
+
+/**
+ * Whether one focused act's keys will really land on this control: ask the
+ * page, after focusing it, whether it **is** the deep active element. A
+ * disabled or otherwise unfocusable control never becomes the active
+ * element, and the keys would go wherever focus actually sits — a password
+ * box holding the cursor, or the page body and its site shortcuts.
+ */
+export async function holdsFocus(locator: Locator): Promise<boolean> {
+  return await locator.evaluate(HOLDS_FOCUS);
+}
+
 // ── The page's secret fields ───────────────────────────────────────────────
 
 /**

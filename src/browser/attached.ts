@@ -51,6 +51,7 @@ import {
   type Browser,
   type BrowserContext,
   type ConsoleMessage,
+  type Locator,
   type Page,
   type Request,
 } from 'playwright-core';
@@ -96,6 +97,7 @@ import type {
 } from './driver.ts';
 import {
   SECRET_FIELD_SELECTOR,
+  holdsFocus,
   hostOf,
   readControlFacts,
   readFocusedControl,
@@ -1505,6 +1507,51 @@ export class AttachedBrowserSession implements BrowserSession {
   }
 
   /**
+   * The gate judged the **named** control; this proves the keys will land on
+   * it. `pressSequentially` and `locator.press` only *try* to focus — a
+   * disabled or otherwise unfocusable element raises no error and takes no
+   * keys: they go wherever focus actually sits, which is a password box
+   * holding the cursor, or the page body and its site shortcuts. So the
+   * control is focused, and one fixed in-page read (`holdsFocus`, in
+   * `attached-facts.ts` — it walks the active element through open shadow
+   * roots and same-frame, and it was written before the first key was ever
+   * sent, because after the keys the state it would report is gone) asks
+   * whether the element **is** the deep active element now. If it is not —
+   * or the read or the focus itself fails — the answer is
+   * `attached.field_forbidden`, and no key has crossed.
+   *
+   * This makes the agent's **own targeting honest**, not the page's: a page
+   * that moves focus of its own accord between characters of a sequential
+   * type stays a documented residual (§13o of the design notes).
+   */
+  async #holdFocused(locator: Locator, action: string): Promise<void> {
+    try {
+      await locator.focus();
+    } catch {
+      throw new AttachedError(
+        'attached.field_forbidden',
+        `This "${action}" is refused because the control would not take focus — the keys would have landed somewhere else on the page, and a control the broker cannot put the keys into is a control it cannot clear.`,
+      );
+    }
+    let focused: boolean;
+    try {
+      focused = await holdsFocus(locator);
+    } catch {
+      // A focus this read cannot see is a focus it does not vouch for.
+      throw new AttachedError(
+        'attached.field_forbidden',
+        `This "${action}" is refused because the page could not be asked whether the control holds its focus; no key was sent.`,
+      );
+    }
+    if (!focused) {
+      throw new AttachedError(
+        'attached.field_forbidden',
+        `This "${action}" is refused because the control would not take focus — the keys would have landed somewhere else on the page, and a control the broker cannot put the keys into is a control it cannot clear.`,
+      );
+    }
+  }
+
+  /**
    * The physical half of an allowed acting verb — `real.ts`'s operations,
    * over this bridge. Only reached after every gate has said yes.
    * (`hover` and `scroll` never arrive here; the view-moving branch above
@@ -1523,7 +1570,13 @@ export class AttachedBrowserSession implements BrowserSession {
       case 'type': {
         // `type` types as if by keyboard (`real.ts`'s `pressSequentially`);
         // `fill` sets the value — the same split, the same reasons.
-        await (await this.#locate(page, request.ref)).pressSequentially(request.value);
+        //
+        // As if by keyboard means the keys go to whatever holds focus, so
+        // the control named has to be shown to hold it first — see
+        // {@link #holdFocused}.
+        const typed = await this.#locate(page, request.ref);
+        await this.#holdFocused(typed, request.action);
+        await typed.pressSequentially(request.value);
         break;
       }
       case 'fill': {
@@ -1538,7 +1591,9 @@ export class AttachedBrowserSession implements BrowserSession {
         if (request.ref === undefined) {
           await page.keyboard.press(request.value);
         } else {
-          await (await this.#locate(page, request.ref)).press(request.value);
+          const pressed = await this.#locate(page, request.ref);
+          await this.#holdFocused(pressed, request.action);
+          await pressed.press(request.value);
         }
         break;
       }

@@ -447,6 +447,12 @@ export function decide(input: GateInput): GateDecision {
     // is an Enter pressed. None of these name a control, so none of them
     // pass through the control's name.
     (verb === 'press' && parsedKey !== undefined && isConsequentialKey(parsedKey, control)) ||
+    // A `type` whose control is not editable text is a shortcut in waiting:
+    // the keystrokes will land on whatever holds focus — the page body and
+    // its site keys, or a focused field the call never named. A focusable
+    // non-text element (a list row with `tabindex`) takes site shortcuts
+    // too, so "focusable" is not the test; "editable text" is.
+    (verb === 'type' && !isEditableText(control)) ||
     (verb === 'type' && /[\r\n]/.test(input.value ?? '')) ||
     // Any submit while the page holds a password or card field: the field
     // is the tell that this form is signing something or paying something,

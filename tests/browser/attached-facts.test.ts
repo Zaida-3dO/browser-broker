@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 
 import { decide } from '../../src/attach/gate.ts';
 import {
   SECRET_FIELD_SELECTOR,
   controlFacts,
+  holdsFocus,
   readControlFacts,
   readFocusedControl,
   readSnapshotControl,
@@ -60,6 +61,21 @@ async function withPage(
     await body(page, browser);
   } finally {
     await browser.close();
+  }
+}
+
+/**
+ * The two steps the session's performer takes before any key, mirrored
+ * here because the fake relay cannot complete this read: focus, then one
+ * in-page proof that the control **is** the deep active element. `false`
+ * means no key is ever sent.
+ */
+async function focusTakes(locator: Locator): Promise<boolean> {
+  try {
+    await locator.focus();
+    return await holdsFocus(locator);
+  } catch {
+    return false;
   }
 }
 
@@ -217,6 +233,174 @@ test(
           scope.document.getElementById('h').shadowRoot.getElementById('s').focus();
         });
         assert.equal(await readFocusedControl(page), null, 'a shadow host hides what it holds');
+      },
+    );
+  },
+);
+
+test(
+  'B1/B2 (other door): a ref that cannot take focus is stopped before any key — the keys never reach the password box or the body',
+  { skip: available ? false : skipReason() },
+  async () => {
+    // The gate judges the **named** control; `pressSequentially` and
+    // `locator.press` only *try* to focus it, and an element that cannot
+    // take focus takes no keys — they go to whatever holds focus. The
+    // performer's answer is one focus call and one fixed read: was the
+    // control the deep active element before the first key? The setups
+    // below are the four bypass shapes probed against real Chromium; each
+    // asserts the decision half **and** the physical half: the password
+    // box's value and the body's key log stay empty.
+    await withPage(
+      `<form onsubmit="window.__submitted = (window.__submitted || 0) + 1">
+         <p id="welcome">Welcome back</p>
+         <input id="user" type="text" autocomplete="username">
+         <input id="pass" type="password" autocomplete="current-password">
+         <input id="search" type="text" aria-label="Search" disabled>
+       </form>`,
+      async (page) => {
+        const snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
+        const refLine = (pattern: RegExp): string => {
+          const line = snapshot.split('\n').find((l) => pattern.test(l));
+          const ref = /\[ref=([^\]]+)\]/.exec(line ?? '')?.[1];
+          assert.ok(ref, `no ref matches ${String(pattern)}`);
+          return ref;
+        };
+
+        await page.locator('#pass').focus();
+
+        // 1. A paragraph ref typed into a focused password field: the gate
+        //    refuses the type outright (a paragraph is not editable text),
+        //    and the focus proof says it cold as well.
+        const welcome = await readControlFacts(
+          page.locator('#welcome'),
+          snapshot,
+          refLine(/Welcome back/),
+        );
+        assert.equal(verdict('type', welcome, 'hunter2'), 'attached.needs_owner');
+        assert.equal(
+          await focusTakes(page.locator('#welcome')),
+          false,
+          'a paragraph takes no focus',
+        );
+        assert.equal(
+          await page.locator('#pass').inputValue(),
+          '',
+          'nothing typed into the password box',
+        );
+
+        // 2 and 3. A disabled text input: its read says editable text, so
+        //    the gate allows — the physical proof is what stops it.
+        const search = await readControlFacts(page.locator('#search'), snapshot, refLine(/Search/));
+        assert.equal(verdict('type', search, 'abc'), 'allow', 'the gate reads it as a text box');
+        assert.equal(verdict('press', search, 'h'), 'allow');
+        assert.equal(
+          await focusTakes(page.locator('#search')),
+          false,
+          'a disabled input never holds focus',
+        );
+        assert.equal(
+          await page.locator('#pass').inputValue(),
+          '',
+          'no key reached the password box',
+        );
+
+        // The control that *can* take focus: the honest positive half.
+        assert.equal(await focusTakes(page.locator('#user')), true);
+        await page.locator('#user').pressSequentially('hi');
+        assert.equal(await page.locator('#user').inputValue(), 'hi');
+        assert.equal(
+          await page.locator('#pass').inputValue(),
+          '',
+          'the password box stayed empty throughout',
+        );
+      },
+    );
+
+    // 4. Nothing focused on a page with body shortcuts: a type at a
+    //    paragraph is the site's shortcut language, not typing.
+    await withPage(
+      `<p id="note">Inbox</p>
+       <script>
+         window.__keys = '';
+         document.body.addEventListener('keydown', (event) => {
+           window.__keys += event.key;
+         });
+       </script>`,
+      async (page) => {
+        const snapshot = await page.locator('html').ariaSnapshot({ mode: 'ai' });
+        const ref = /\[ref=([^\]]+)\]/.exec(
+          snapshot.split('\n').find((l) => /Inbox/.test(l)) ?? '',
+        )?.[1];
+        assert.ok(ref, 'the paragraph has a ref');
+        const note = await readControlFacts(page.locator('#note'), snapshot, ref);
+        assert.equal(verdict('type', note, '#e'), 'attached.needs_owner');
+        assert.equal(
+          await focusTakes(page.locator('#note')),
+          false,
+          'a paragraph takes no focus, so the shortcut never fires',
+        );
+        assert.equal(
+          await page.evaluate(() => (globalThis as unknown as { __keys: string }).__keys),
+          '',
+        );
+      },
+    );
+  },
+);
+
+test(
+  'the focus proof: the deep active element answers true — plain and through an open shadow root — and false for a frame holder or an unfocused control',
+  { skip: available ? false : skipReason() },
+  async () => {
+    await withPage(
+      `<input id="plain" type="text">
+       <div id="host"></div>
+       <iframe id="f" srcdoc="<input id=inner>"></iframe>`,
+      async (page) => {
+        await page.evaluate(() => {
+          const scope = globalThis as unknown as {
+            document: {
+              getElementById(id: string): {
+                attachShadow(options: { mode: string }): { innerHTML: string };
+              };
+            };
+          };
+          scope.document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML =
+            '<input id="deep" type="text">';
+        });
+
+        await page.locator('#plain').focus();
+        assert.equal(await holdsFocus(page.locator('#plain')), true, 'plain focus answers true');
+        assert.equal(
+          await holdsFocus(page.locator('#host')),
+          false,
+          'an unfocused control answers false',
+        );
+
+        await page.evaluate(() => {
+          const scope = globalThis as unknown as {
+            document: {
+              getElementById(id: string): {
+                shadowRoot: { getElementById(id: string): { focus(): void } };
+              };
+            };
+          };
+          scope.document.getElementById('host').shadowRoot.getElementById('deep').focus();
+        });
+        assert.equal(
+          await holdsFocus(page.locator('#host #deep')),
+          true,
+          'focus inside an open shadow root is still the deep active element',
+        );
+        assert.equal(await holdsFocus(page.locator('#plain')), false, 'the plain box lost it');
+
+        // Focus inside the frame: a main-frame control is not the deep
+        // active element, because the chain walked *into* the frame — and
+        // the focused control inside the frame, read in its own frame,
+        // answers true.
+        await page.locator('#f').contentFrame().locator('#inner').focus();
+        assert.equal(await holdsFocus(page.locator('#plain')), false);
+        assert.equal(await holdsFocus(page.locator('#f').contentFrame().locator('#inner')), true);
       },
     );
   },
