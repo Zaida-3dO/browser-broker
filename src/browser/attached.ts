@@ -61,6 +61,7 @@ import {
   NAVIGATION_KEYS,
   createGrantRegistry,
   decide,
+  decideDownload,
   grantValueDigest,
   isConsequentialText,
   modifierTokensOf,
@@ -76,7 +77,12 @@ import { openConnectPage } from '../attach/connect-launcher.ts';
 import type { ConnectPageRequest } from '../attach/connect-launcher.ts';
 import { AttachedError } from '../attach/errors.ts';
 import { looksLikeSentinel } from '../secrets/sentinel.ts';
-import { annotateRefless, filterSnapshot, REFERENCE_RESOLUTION_MS } from './real.ts';
+import {
+  annotateRefless,
+  downloadInPage,
+  filterSnapshot,
+  REFERENCE_RESOLUTION_MS,
+} from './real.ts';
 import type {
   ActionRequest,
   ArtifactResult,
@@ -85,6 +91,8 @@ import type {
   BrowserSession,
   CaptureRequest,
   CookieSummary,
+  DownloadRequest,
+  DownloadResult,
   EvaluationResult,
   NavigationResult,
   RawCapture,
@@ -432,6 +440,15 @@ export interface AttachedSessionOptions {
    * runs {@link holdsFocus} against it.
    */
   readonly focusHoldsProbe?: (locator: Locator) => Promise<boolean>;
+  /**
+   * What a `download` fetches — injected on {@link focusProbe}'s seam
+   * convention: the fake relay cannot complete the page evaluate the fixed
+   * fetch expression runs through, and the site fence's **allow** branch has
+   * to be provable anyway. Absent, the session runs {@link downloadInPage}
+   * in the page, which is the shipped path and the one the real-browser
+   * suite proves end to end.
+   */
+  readonly downloadProbe?: (request: DownloadRequest) => Promise<DownloadResult>;
 }
 
 /**
@@ -633,6 +650,7 @@ export async function attachOverBridge(
       ...(options.focusHoldsProbe === undefined
         ? {}
         : { focusHoldsProbe: options.focusHoldsProbe }),
+      ...(options.downloadProbe === undefined ? {} : { downloadProbe: options.downloadProbe }),
     });
   } catch (error) {
     // Whatever failed, the port must not outlive the refusal: the bridge is
@@ -721,6 +739,8 @@ export class AttachedBrowserSession implements BrowserSession {
   readonly #pageSecretProbe: (() => Promise<boolean>) | undefined;
   readonly #focusedControlProbe: (() => Promise<ActTarget | null>) | undefined;
   readonly #focusHoldsProbe: ((locator: Locator) => Promise<boolean>) | undefined;
+  /** The injected fetch answer — see {@link AttachedSessionOptions.downloadProbe}. */
+  readonly #downloadProbe: ((request: DownloadRequest) => Promise<DownloadResult>) | undefined;
 
   /**
    * The handle a page answers to, and the page it names.
@@ -794,6 +814,7 @@ export class AttachedBrowserSession implements BrowserSession {
     pageSecretProbe?: () => Promise<boolean>;
     focusedControlProbe?: () => Promise<ActTarget | null>;
     focusHoldsProbe?: (locator: Locator) => Promise<boolean>;
+    downloadProbe?: (request: DownloadRequest) => Promise<DownloadResult>;
   }) {
     this.#browser = options.browser;
     this.#bridge = options.bridge;
@@ -807,6 +828,7 @@ export class AttachedBrowserSession implements BrowserSession {
     this.#pageSecretProbe = options.pageSecretProbe;
     this.#focusedControlProbe = options.focusedControlProbe;
     this.#focusHoldsProbe = options.focusHoldsProbe;
+    this.#downloadProbe = options.downloadProbe;
     // The same eager-name, lazy-create arrangement as `real.ts`, for the same
     // measured reason: an unwired session that never writes must not leave an
     // empty directory behind, and this module still does not know where the
@@ -1927,6 +1949,75 @@ export class AttachedBrowserSession implements BrowserSession {
       viewportWidth: measured.viewportWidth,
       url: page.url(),
     };
+  }
+
+  /**
+   * A download on his browser asks the same question an act does, of two
+   * sites: the page's host **and** the file's host must both be on
+   * `BROKER_ATTACHED_ACT_SITES` (`src/attach/gate.ts`, `DECISIONS.md` §13p).
+   * A fetch carries the page's cookies whether or not anyone clicked, so the
+   * read-only posture has to hold here too — and the empty list is the same
+   * read-only sentence the acting gate gives.
+   *
+   * **This is the second door, and it is asked of the page as it actually
+   * is.** The service decided once against the address the store recorded;
+   * this asks `page.url()` again, because a page that moved between the two
+   * moments is a different site. A refusal here throws before anything is
+   * asked of the page, which is what makes the side-effect half of the
+   * rejection tests mean anything on this kind: the fetch is never asked at
+   * all, on either path, and `tests/browser/attached.test.ts` pins exactly
+   * that. And the gate is asked a **third** time after the fetch, of the
+   * host the bytes actually arrived on — a redirect that leaves the list
+   * refuses there, before anything can be saved.
+   */
+  async download(tab: TabHandle, request: DownloadRequest): Promise<DownloadResult> {
+    this.#requireOurs(tab);
+    const page = this.#page(tab);
+
+    const decision = decideDownload({
+      pageHost: hostOf(page.url()),
+      fileHost: hostOf(request.url),
+      actSites: this.#actSites,
+    });
+    if (decision.decision !== 'allow') {
+      throw new AttachedError(decision.decision, decision.message);
+    }
+
+    // The fetch is this service's program, byte-for-byte — the same standing
+    // that lets the scroll and the measurement run here while the caller's
+    // expression stays refused at {@link evaluate}. The url is the only
+    // variable it is given. The injected probe answers on the same side of
+    // the gate {@link AttachedSessionOptions.downloadProbe} describes: the
+    // fake relay cannot complete this evaluate, and the gate's allow branch
+    // has to be provable anyway.
+    const fetched =
+      this.#downloadProbe !== undefined
+        ? await this.#downloadProbe(request)
+        : await page.evaluate(downloadInPage, {
+            url: request.url,
+            maxBytes: request.maxBytes,
+            ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+          });
+
+    // **The gate, asked a second time — of the host the bytes arrived on.**
+    // The address that was just allowed is the address that was *asked for*;
+    // the fetch follows redirects, and a listed host's redirect can hand the
+    // bytes from an off-list one, with his session cookies riding along. So
+    // the fence is re-asked before this result is handed to anything that
+    // could save it: an off-list arrival refuses with the gate's own name,
+    // and the caller above gets a refusal, not a file. (The intermediate
+    // hops still received the request — what this fence decides is what gets
+    // *saved*, not what gets *contacted*; `DECISIONS.md` §13p says so out
+    // loud, because the difference is the honest version of the promise.)
+    const arrived = decideDownload({
+      pageHost: hostOf(page.url()),
+      fileHost: hostOf(fetched.finalUrl),
+      actSites: this.#actSites,
+    });
+    if (arrived.decision !== 'allow') {
+      throw new AttachedError(arrived.decision, `${arrived.message} Nothing was saved.`);
+    }
+    return fetched;
   }
 
   /**

@@ -816,6 +816,166 @@ test('the never-acted verbs refuse even on a listed site, and their commands nev
   }
 });
 
+// ── The download door ─────────────────────────────────────────────────────
+//
+// A download fetches with the page's cookies whether or not anyone clicked,
+// so it asks the site fence the acting verbs ask — of **two** hosts. The
+// gate's own rule table lives in `gate.test.ts`; these rows pin that the
+// session builds those inputs from the live page and the requested address,
+// and that a refusal means his browser was never asked to fetch. The fetch
+// runs as fixed page code the fake relay can never complete, so the ask is
+// observed through the injected `downloadProbe` — the same seam convention
+// the focus read and the element facts use, for the same fixture reason —
+// and the end-to-end fetch belongs to `download-real.test.ts`.
+
+const DOWNLOAD_PAGE = 'https://example.com/reports';
+const DOWNLOAD_FILE = 'https://example.org/spec.pdf';
+
+for (const row of [
+  {
+    name: 'an empty list is the read-only sentence',
+    actSites: [] as readonly string[],
+    pageUrl: DOWNLOAD_PAGE,
+    fileUrl: DOWNLOAD_FILE,
+    rule: 'attached.read_only',
+  },
+  {
+    // The two hosts sit on **different** hosts on purpose: the page off-list,
+    // the file on it. With one host for both, a door that fed the same host
+    // into both halves of the fence would still refuse — for the wrong
+    // reason — and this row would pass over it.
+    name: 'a page the list does not name refuses, fetching a file on a host it does',
+    actSites: ['example.org'],
+    pageUrl: DOWNLOAD_PAGE,
+    fileUrl: DOWNLOAD_FILE,
+    rule: 'attached.act_site_off_list',
+  },
+  {
+    name: 'a page on the list fetching a file off it refuses',
+    actSites: ['example.com'],
+    pageUrl: DOWNLOAD_PAGE,
+    fileUrl: DOWNLOAD_FILE,
+    rule: 'attached.act_site_off_list',
+  },
+] as const) {
+  test(`a download refuses (${row.name}), and nothing is fetched`, async () => {
+    let asked = 0;
+    const { bridge, ext, session } = await live({
+      attachedActSites: row.actSites,
+      downloadProbe: () => {
+        asked += 1;
+        return Promise.resolve({ base64: 'eA==', finalUrl: row.fileUrl, bytes: 1 });
+      },
+    });
+    try {
+      const tab = await openedTab({ bridge, ext, session });
+      // The page's own address is what the gate is asked about. The fake
+      // bounds the goto unfinalised, but the page has moved as far as this
+      // session can know — the same stand the repeat-guard rows run on.
+      await session.navigate(tab, row.pageUrl, 300).catch(() => undefined);
+
+      await assert.rejects(
+        session.download(tab, { url: row.fileUrl, maxBytes: 1024 }),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === row.rule &&
+          error.message.includes('BROKER_ATTACHED_ACT_SITES'),
+        `the refusal must name the variable to set (${row.name})`,
+      );
+      // The physical half: the fetch never happened, wherever it would have
+      // happened.
+      assert.equal(asked, 0, `nothing was fetched for ${row.name}`);
+    } finally {
+      session.detach().catch(() => undefined);
+    }
+  });
+}
+
+test('a download on a listed page for a file on a listed file host fetches, with the address and cap as handed', async () => {
+  const asked: { url: string; maxBytes: number }[] = [];
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com', 'example.org'],
+    downloadProbe: (request) => {
+      asked.push({ url: request.url, maxBytes: request.maxBytes });
+      return Promise.resolve({
+        base64: Buffer.from('a fetched file', 'utf8').toString('base64'),
+        mime: 'application/pdf',
+        finalUrl: request.url,
+        bytes: 13,
+      });
+    },
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    await session.navigate(tab, DOWNLOAD_PAGE, 300).catch(() => undefined);
+
+    const result = await session.download(tab, { url: DOWNLOAD_FILE, maxBytes: 1024 });
+
+    // The gate let it through, and the ask carries exactly what the caller
+    // handed: a rewritten address or a dropped cap would show up here.
+    assert.deepEqual(asked, [{ url: DOWNLOAD_FILE, maxBytes: 1024 }]);
+    assert.equal(result.bytes, 13);
+    assert.equal(Buffer.from(result.base64, 'base64').toString('utf8'), 'a fetched file');
+    assert.equal(result.mime, 'application/pdf');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a download whose fetch lands off the list is refused when it arrives, having fetched', async () => {
+  // The door fences the address that was **asked for**; fetch follows
+  // redirects, and here the probe plays a listed host that 302s to one the
+  // list does not name. Unlike the rows above, the honest half of this one
+  // is that the fetch **did** run — the ask count is 1 — and the refusal
+  // still stands, with nothing handed back. A door that checked only the
+  // requested address returns these bytes; that is the defect.
+  let asked = 0;
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    downloadProbe: () => {
+      asked += 1;
+      return Promise.resolve({
+        base64: 'eA==',
+        finalUrl: 'https://example.net/landed.bin',
+        bytes: 1,
+      });
+    },
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    await session.navigate(tab, DOWNLOAD_PAGE, 300).catch(() => undefined);
+
+    // Page and requested file host are both listed; only the arrival is not.
+    await assert.rejects(
+      session.download(tab, { url: 'https://example.com/files/spec.pdf', maxBytes: 1024 }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.act_site_off_list' &&
+        /off the list|BROKER_ATTACHED_ACT_SITES/u.test(error.message),
+      'an off-list arrival must refuse under the gate’s own name',
+    );
+    assert.equal(asked, 1, 'the arrival fence refused before the fetch instead of after it');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a download on a foreign handle refuses as foreign, before any site question is asked', async () => {
+  const { bridge, ext, session } = await live({ attachedActSites: ['example.com'] });
+  try {
+    await openedTab({ bridge, ext, session });
+    const foreign: TabHandle = { browser: BROWSER, driverTabId: 'tab-999999' };
+    const worldsBefore = cdpCalls(ext, 'Page.createIsolatedWorld').length;
+    await assert.rejects(
+      session.download(foreign, { url: DOWNLOAD_FILE, maxBytes: 1024 }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.foreign_tab',
+    );
+    assert.equal(cdpCalls(ext, 'Page.createIsolatedWorld').length, worldsBefore);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
 test('a control the page will not describe refuses the act, and nothing is attempted on trust', async () => {
   const { bridge, ext, session } = await live({
     attachedActSites: ['example.com'],
