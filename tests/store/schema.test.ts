@@ -104,6 +104,10 @@ test('every table this design has is created, and nothing else', async () => {
     // millisecond clock. The test below asserts a `settings` table
     // specifically is still absent.
     assert.deepEqual(names, [
+      // Step thirteen's log: one row per acting call against an attached
+      // lease, performed or refused (§3.5's "Visible" promise). It is not in
+      // §1's original list because the attached kind postdates it.
+      'attached_actions',
       'browsers',
       'captures',
       'claim_arrival',

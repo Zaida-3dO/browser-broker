@@ -565,6 +565,26 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           '<input type=file>, or the visible <label> around it: the real input is usually ' +
           'hidden and often carries no reference at all.',
       },
+      // **Declared because the retry path needs a route, and an agent must
+      // be able to see why it usually has none.** A consequential step on an
+      // attached browser comes back `attached.needs_owner`; the answer is
+      // `browser_sign_in`, not a re-ask. The only legitimate carrier of an
+      // owner grant is a caller on the operator side — the side holding the
+      // signing secret — retrying the exact step the owner approved. An
+      // agent sending a value here has nothing to send unless it can read the
+      // signing secret (a boundary only where it cannot — `DECISIONS.md`
+      // §13o), and an unverifiable one is refused `attached.grant_invalid`,
+      // never allowed.
+      {
+        name: 'owner_grant',
+        type: 'string',
+        required: false,
+        description:
+          'A one-time owner grant for a consequential step on an attached browser, supplied only ' +
+          'by the operator side when retrying the exact step the owner approved. It answers one ' +
+          'call on one lease for one named control on one host, then it is spent. Leaving it out ' +
+          'is normal: on an attached browser, consequential steps go through browser_sign_in.',
+      },
       {
         name: 'request',
         type: 'object',
@@ -747,7 +767,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     // than asking, so the alternative is named explicitly — the way the
     // refusals do — rather than left to be inferred from the tool existing.
     description:
-      'Hit a login wall? Ask the person to sign in, on the tab you already have. Do NOT abandon ' +
+      'Hit a login wall — or need a step done that only the owner should do (a consequential ' +
+      'step on an attached browser comes back attached.needs_owner) — ask the person to do it, ' +
+      'on the tab you already have. Do NOT abandon ' +
       'the task and do NOT fabricate a session by seeding tokens or cookies — ask. ' +
       'action is required: "request" asks (needs what; takes the browser only while no other ' +
       'lease holds a tab on it), "done" is for when the person says they are finished (only the ' +

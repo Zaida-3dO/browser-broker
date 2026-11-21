@@ -53,6 +53,14 @@ export interface TempStoreOptions {
   readonly attachedExtensionId?: string;
   readonly attachedToken?: string;
   /**
+   * The act-site list (`BROKER_ATTACHED_ACT_SITES`, S2). **Empty by default,
+   * which is acting off** — the read-only posture — so the existing attached
+   * refusal tests stand on the default and a test that wants acting says so.
+   */
+  readonly attachedActSites?: readonly string[];
+  /** The owner-grant signing secret; `undefined` leaves the seam inert. */
+  readonly ownerGrantSecret?: string;
+  /**
    * Browsers pointed at a binary of their own
    * (`BROKER_BROWSER_<NAME>_PATH`). Overridden rather than reached for
    * through the environment, so one test's configured binary cannot leak
@@ -137,6 +145,8 @@ export function makeTempStore(options: TempStoreOptions = {}): TempStore {
       attachedTabs: options.attachedTabs ?? 3,
       attachedExtensionId: options.attachedExtensionId,
       attachedToken: options.attachedToken,
+      attachedActSites: options.attachedActSites ?? [],
+      ownerGrantSecret: options.ownerGrantSecret,
       // Empty unless a test asks otherwise, which is what a default
       // installation has: no browser pointed at a binary of its own, so every
       // one of them takes the bundled build.

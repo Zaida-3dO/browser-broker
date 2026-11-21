@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import test from 'node:test';
 
 import { connect } from '../../src/attach/session.ts';
@@ -7,10 +8,14 @@ import { AttachedError } from '../../src/attach/errors.ts';
 import {
   attachOverBridge,
   focusChainHoldsFormControl,
+  isViewMovingAction,
   openAttachedSession,
+  SECRET_FIELD_SELECTOR,
+  type AttachedSessionOptions,
   type FocusChainElement,
 } from '../../src/browser/attached.ts';
 import type { ActionRequest, SecretScope, TabHandle } from '../../src/browser/driver.ts';
+import { NAVIGATION_KEYS, grantValueDigest } from '../../src/attach/gate.ts';
 import { FakeExtension } from '../attach/fake-extension.ts';
 
 /**
@@ -43,7 +48,7 @@ interface Live {
   session: Awaited<ReturnType<typeof attachOverBridge>>;
 }
 
-async function live(focusProbe?: () => Promise<readonly FocusChainElement[]>): Promise<Live> {
+async function live(overrides: Partial<AttachedSessionOptions> = {}): Promise<Live> {
   const bridge = await connect({ clientName: 'attached test', extensionId: EXTENSION_ID });
   const ext = await FakeExtension.connect(bridge.extensionEndpoint, {
     origin: EXTENSION_ORIGIN,
@@ -53,9 +58,44 @@ async function live(focusProbe?: () => Promise<readonly FocusChainElement[]>): P
     browser: BROWSER,
     clientName: 'attached test',
     extensionId: EXTENSION_ID,
-    ...(focusProbe === undefined ? {} : { focusProbe }),
+    ...overrides,
   });
   return { bridge, ext, session };
+}
+
+/**
+ * Mint an owner grant exactly as `verifyOwnerGrant` expects to check one:
+ * the HMAC over the escaped `|`-joined tuple, sent as
+ * `<issued-at-seconds>.<tag>`. Mirroring the wire here is deliberate —
+ * `gate.test.ts` pins the minting and checking against each other, and
+ * these session tests pin that **the session builds the same tuple from a
+ * live call**, lease key and host included.
+ */
+function signGrant(
+  secret: string,
+  tuple: {
+    leaseKey: string;
+    ref: string;
+    accessibleName: string;
+    urlHost: string;
+    issuedAtSeconds: number;
+    /** The verb and value the grant is for; every grant row here is for a press of Enter. */
+    verb?: string;
+    value?: string;
+  },
+): string {
+  const esc = (s: string): string => s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+  const payload = [
+    esc(tuple.leaseKey),
+    esc(tuple.ref),
+    esc(tuple.accessibleName),
+    esc(tuple.urlHost),
+    String(tuple.issuedAtSeconds),
+    esc(tuple.verb ?? 'press'),
+    esc(grantValueDigest(tuple.value ?? 'Enter')),
+  ].join('|');
+  const tag = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${String(tuple.issuedAtSeconds)}.${tag}`;
 }
 
 /** CDP methods the extension was asked to run on a tab. */
@@ -68,6 +108,64 @@ function cdpCalls(ext: FakeExtension, cdpMethod: string): unknown[] {
 function sawCdp(ext: FakeExtension, cdpMethod: string): boolean {
   return cdpCalls(ext, cdpMethod).length > 0;
 }
+
+/** Every CDP call that touches the page's input side, whatever method it names. */
+function inputCalls(ext: FakeExtension): number {
+  return ext.calls.filter(
+    (call) =>
+      call.method === 'chrome.debugger.sendCommand' &&
+      typeof call.params[1] === 'string' &&
+      call.params[1].startsWith('Input.'),
+  ).length;
+}
+
+/**
+ * Raise a page dialog the way Chromium does: as a `Page.javascriptDialogOpening`
+ * debugger event on the tab, forwarded through the same route the real one
+ * takes. What answers it — or fails to — shows up as a
+ * `Page.handleJavaScriptDialog` command in the call log.
+ */
+function raiseDialog(
+  ext: FakeExtension,
+  tabId: number,
+  message = 'Do you want to continue?',
+): void {
+  ext.sendEvent('chrome.debugger.onEvent', [
+    { tabId },
+    'Page.javascriptDialogOpening',
+    { type: 'confirm', message, hasInputBox: false, defaultPrompt: '' },
+  ]);
+}
+
+/**
+ * The page moves **by itself** — a clicked link, a submitted form, a script's
+ * redirect — as Chromium reports it: a main-frame `Page.frameNavigated`. The
+ * session never asked for it, which is the case the broker's own `navigate`
+ * hook does not cover.
+ */
+function pageNavigatesItself(ext: FakeExtension, tabId: number, url: string): void {
+  ext.sendEvent('chrome.debugger.onEvent', [
+    { tabId },
+    'Page.frameNavigated',
+    {
+      frame: {
+        id: ext.targetIdOf(tabId),
+        loaderId: 'loader-after-click',
+        url,
+        securityOrigin: new URL(url).origin,
+        mimeType: 'text/html',
+      },
+    },
+  ]);
+}
+
+/** What a press with no ref reaches when the cursor sits in a plain text box. */
+const TEXT_BOX_FOCUS = {
+  tag: 'input',
+  inputType: 'text',
+  accessibleName: 'Notes',
+  editable: true,
+} as const;
 
 async function openedTab(live: Live): Promise<TabHandle> {
   return await live.session.openTab();
@@ -651,6 +749,938 @@ test('Escape is refused while a focused field could clear, and the key never cro
   }
 });
 
+// ── Acting on a listed site (S2) ─────────────────────────────────────────
+//
+// Same rule as every refusal above, and harder to satisfy now that the
+// session can act: the call-log half. Where a gate refuses, no `Input.*`
+// command crossed; where it allows, the key that crossed **is** the proof.
+// The fake still cannot complete the accessibility render a locator verb
+// resolves through, so the allowed-and-performed rows run through `press`
+// with no ref — `page.keyboard`, which crosses — and the locator verbs'
+// performed half rides on the service tests' fake session plus the gated
+// browser job. The gate's own row table lives in `gate.test.ts`; these rows
+// pin that **the session builds the inputs the gate is told it will get**,
+// host included, and spends the grant exactly once.
+
+/** A caller identified the way the service identifies one acting call. */
+const CALLER = { claimId: 'claim-wire', leaseKey: 'lease-wire' } as const;
+
+test('an acting verb on a site the list does not name refuses by the site rule, and the browser is not asked', async () => {
+  const { bridge, ext, session } = await live({ attachedActSites: ['other.example.net'] });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.dispatchMouseEvent').length;
+    await assert.rejects(
+      session.act(tab, { action: 'click', ref: 'e1' }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.act_site_off_list' &&
+        error.message.includes('BROKER_ATTACHED_ACT_SITES'),
+      'off-list must name the variable to set, not just refuse',
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchMouseEvent').length, before);
+    assert.equal(sawCdp(ext, 'Page.navigate'), false);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('the never-acted verbs refuse even on a listed site, and their commands never cross', async () => {
+  const { bridge, ext, session } = await live({ attachedActSites: ['example.com'] });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    for (const { request, forbidden } of [
+      {
+        request: { action: 'resize', viewport: { width: 8, height: 6 } } as ActionRequest,
+        forbidden: ['Emulation.setDeviceMetricsOverride'],
+      },
+      {
+        request: { action: 'emulate', preferences: {} } as ActionRequest,
+        forbidden: ['Emulation.setEmulatedMedia'],
+      },
+    ]) {
+      const before = forbidden.map((method) => cdpCalls(ext, method).length);
+      await assert.rejects(
+        session.act(tab, request),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.read_only' &&
+          error.message.includes('never acts'),
+      );
+      forbidden.forEach((method, at) => {
+        assert.equal(cdpCalls(ext, method).length, before[at], `${method} never asked`);
+      });
+    }
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a control the page will not describe refuses the act, and nothing is attempted on trust', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: () => Promise.resolve(null),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.dispatchMouseEvent').length;
+    await assert.rejects(
+      session.act(tab, { action: 'click', ref: 'e1' }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.field_forbidden' &&
+        error.message.includes('could not be asked'),
+      'an unread control is a refusal, not a guess',
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchMouseEvent').length, before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('the field guard: a password ref refuses fill, and the text never reaches the page', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: (ref: string) =>
+      Promise.resolve(
+        ref === 'e1' ? { tag: 'input', inputType: 'password', accessibleName: 'Password' } : null,
+      ),
+    pageSecretProbe: () => Promise.resolve(true),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.insertText').length;
+    await assert.rejects(
+      session.act(tab, { action: 'fill', ref: 'e1', value: 'hunter2' }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.field_forbidden' &&
+        error.message.includes('browser_sign_in'),
+      'the refusal names who does the step',
+    );
+    assert.equal(cdpCalls(ext, 'Input.insertText').length, before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a consequential step without a grant comes back needs_owner, pointing at browser_sign_in, with no key crossing', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve({ tag: 'button', accessibleName: 'Pay' }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Enter' }, undefined, CALLER),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.needs_owner' &&
+        error.message.includes('browser_sign_in'),
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchKeyEvent').length, before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a valid owner grant lets the one step through once; the same token again is refused as replayed', async () => {
+  const secret = 'fixture-grant-secret';
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    ownerGrantSecret: secret,
+    focusedControlProbe: () => Promise.resolve({ tag: 'button', accessibleName: 'Pay' }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const token = signGrant(secret, {
+      leaseKey: CALLER.leaseKey,
+      ref: '',
+      accessibleName: 'Pay',
+      urlHost: 'example.com',
+      issuedAtSeconds: Math.floor(Date.now() / 1_000),
+    });
+    // First call: the gate lets it, and the key event **crosses** — the
+    // allowed half of the rejection rule, stated as a physical fact. The
+    // follow-on snapshot the fake cannot render is swallowed, as in the
+    // Escape row above; the crossing is the proof.
+    const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    const failures: unknown[] = [];
+    void session
+      .act(tab, { action: 'press', value: 'Enter' }, undefined, { ...CALLER, ownerGrant: token })
+      .catch((error: unknown) => failures.push(error));
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+      'the granted key press crossing',
+    );
+    // What the granted press put over the bridge, counted **after** it
+    // crossed and after the pair settles: a key is a down and an up, so the
+    // honest baseline for "no more keys" is wherever the count stood once
+    // the press was complete — not a hard-coded event count, and not a
+    // mid-pair snapshot.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const afterGrant = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    for (const failure of failures) {
+      assert.ok(
+        !(failure instanceof AttachedError && failure.rule.startsWith('attached.')),
+        'the granted press was never refused by a gate rule',
+      );
+    }
+    // Second call, same token: spent. Refused, and the key count does not
+    // move again.
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Enter' }, undefined, {
+        ...CALLER,
+        ownerGrant: token,
+      }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.grant_invalid' &&
+        error.message.includes('replayed') &&
+        // The token itself appears nowhere in what the caller is told.
+        !error.message.includes(token),
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchKeyEvent').length, afterGrant);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a grant signed for a different control is forged against the live page, and never retries as another verdict', async () => {
+  const secret = 'fixture-grant-secret';
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    ownerGrantSecret: secret,
+    focusedControlProbe: () => Promise.resolve({ tag: 'button', accessibleName: 'Pay' }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const token = signGrant(secret, {
+      leaseKey: CALLER.leaseKey,
+      ref: '',
+      accessibleName: 'Buy',
+      urlHost: 'example.com',
+      issuedAtSeconds: Math.floor(Date.now() / 1_000),
+    });
+    const before = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Enter' }, undefined, {
+        ...CALLER,
+        ownerGrant: token,
+      }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.grant_invalid' &&
+        error.message.includes('forged'),
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchKeyEvent').length, before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('with no signing secret configured the seam is inert: a carried token answers no_grant, never allow', async () => {
+  const token = `${String(Math.floor(Date.now() / 1_000))}.ZmFrZS10YWctbm90LWEtY3J5cHRvZ3JhcGhpYy10YWc`;
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve({ tag: 'button', accessibleName: 'Pay' }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Enter' }, undefined, {
+        ...CALLER,
+        ownerGrant: token,
+      }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.no_grant' &&
+        !error.message.includes(token),
+      'an uncheckable token is not a pass, and never an echo',
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchKeyEvent').length, before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('the repeat guard: the same press again after a navigation refuses, and the second key never crosses', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    void session
+      .act(tab, { action: 'press', value: 'a' }, undefined, CALLER)
+      .catch(() => undefined);
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+      'the first press crossing',
+    );
+    // Settle the down/up pair before taking the baseline, as in the grant
+    // row: the claim is about the **replay**, and a mid-pair snapshot would
+    // confuse the first press's own second event for a second press.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const afterFirst = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    // A navigation asked for — the fake bounds it unfinalised, but the page
+    // has moved as far as this session can know, and that is what the
+    // guard's generation counter records before the goto.
+    await session.navigate(tab, 'https://example.com/next', 300).catch(() => undefined);
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'a' }, undefined, CALLER),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.act_repeat',
+    );
+    assert.equal(
+      cdpCalls(ext, 'Input.dispatchKeyEvent').length,
+      afterFirst,
+      'the replayed press never went out',
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a different acting key after a navigation is not the same act, and the repeat guard stays out of it', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    void session
+      .act(tab, { action: 'press', value: 'a' }, undefined, CALLER)
+      .catch(() => undefined);
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+      'the first press crossing',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100)); // settle the down/up pair
+    await session.navigate(tab, 'https://example.com/next', 300).catch(() => undefined);
+    const afterFirst = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    // Same tab, same verb, same (empty) refs, **different key**: the row
+    // §6 calls an "identical act" is identical in the key it presses too,
+    // and this one is not. It goes out — the physical half of the row.
+    void session
+      .act(tab, { action: 'press', value: 'b' }, undefined, CALLER)
+      .catch(() => undefined);
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > afterFirst,
+      'the different-key press crossing',
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('the page secret-field scan names every secret token the gate reads on a control', () => {
+  // gate.fieldKind calls a control secret by these `autocomplete` tokens;
+  // the page scan must name the same set, or a page holding only a card
+  // **expiry** field passes the "any submit over a card page" rule.
+  for (const token of [
+    'password',
+    'current-password',
+    'new-password',
+    'one-time-code',
+    'cc-number',
+    'cc-exp',
+    'cc-exp-month',
+    'cc-exp-year',
+    'cc-csc',
+  ]) {
+    assert.ok(
+      SECRET_FIELD_SELECTOR.includes(`autocomplete~="${token}"`),
+      `fieldKind treats autocomplete "${token}" as a secret; the page scan must name it too`,
+    );
+  }
+});
+
+// ── drag: both endpoints are decided ───────────────────────────────────────
+//
+// A drag moves a value *into* the drop target and drops *onto* it. Deciding
+// only the source would let a value land in a password field and let a
+// control named by a consequence word serve as a drop target — so every
+// drag row here names the endpoint that is dangerous and pins that the
+// pair is refused because of it, with the `Input.*` count unmoved. The
+// allowed row pins the decision half only: the fake cannot render the
+// snapshot the reference resolver reads, so the drag itself waits out the
+// snapshot timeout, never reaching a browser call — the drag's physical
+// completion rides the gated browser job, as §3.5's completions do.
+
+test('drag into a password input is refused at the drop target, and no Input call is asked for', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: (ref: string) =>
+      Promise.resolve(
+        ref === 'e2'
+          ? { tag: 'input', inputType: 'password', accessibleName: 'Confirm password' }
+          : { tag: 'li', accessibleName: 'Widget' },
+      ),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const tabsBefore = (await session.listTabs()).length;
+    const before = inputCalls(ext);
+    await assert.rejects(
+      session.act(tab, { action: 'drag', ref: 'e1', targetRef: 'e2' }),
+      (error: unknown) =>
+        error instanceof AttachedError && error.rule === 'attached.field_forbidden',
+      'a value dropped into a password field is the fill the field guard exists to stop',
+    );
+    assert.equal(inputCalls(ext), before, 'no input call was ever sent to the page');
+    assert.equal((await session.listTabs()).length, tabsBefore, 'no tab opened or closed');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('drag onto a target named "Pay now" answers needs_owner — consequence on either end asks the owner', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: (ref: string) =>
+      Promise.resolve(
+        ref === 'e2'
+          ? { tag: 'button', accessibleName: 'Pay now', role: 'button' }
+          : { tag: 'li', accessibleName: 'Widget' },
+      ),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const tabsBefore = (await session.listTabs()).length;
+    const before = inputCalls(ext);
+    // No grant engages a two-ref call, so the consequential target is the
+    // agent's path: needs_owner, pointing at browser_sign_in.
+    await assert.rejects(
+      session.act(tab, { action: 'drag', ref: 'e1', targetRef: 'e2' }, undefined, CALLER),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.needs_owner' &&
+        error.message.includes('browser_sign_in'),
+    );
+    assert.equal(inputCalls(ext), before, 'the drop was never attempted');
+    assert.equal((await session.listTabs()).length, tabsBefore, 'no tab opened or closed');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a clean drag is allowed on both endpoints; its physical completion rides the gated browser job', async () => {
+  const rows: string[] = [];
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: (ref: string) =>
+      Promise.resolve(
+        ref === 'e1'
+          ? { tag: 'li', accessibleName: 'Widget' }
+          : { tag: 'div', accessibleName: 'Inbox' },
+      ),
+    pageSecretProbe: () => Promise.resolve(false),
+    actionLog: (entry) => {
+      rows.push(entry.outcome);
+    },
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    let failure: unknown;
+    const attempted = session
+      .act(tab, { action: 'drag', ref: 'e1', targetRef: 'e2' }, undefined, CALLER)
+      .catch((error: unknown) => {
+        failure = error;
+      });
+    // The gate's answer comes **before** the reference snapshot the fake
+    // cannot render, so a rule refusal surfaces in milliseconds while an
+    // allow sits waiting in that snapshot's timeout. A short beat tells
+    // the two apart without waiting the timeout out.
+    for (let beat = 0; beat < 250 && failure === undefined; beat += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(
+      failure,
+      undefined,
+      `the gate refused a clean pair: ${failure instanceof AttachedError ? failure.rule : String(failure)}`,
+    );
+    assert.deepEqual(rows, [], 'no gate rule refused either endpoint');
+    void attempted;
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── dialog dispositions are bound to the page that armed them ──────────────
+//
+// The `dialog` verb arms a disposition behind the gate; the page's dialog
+// event spends it once. Navigation is free, so a disposition that survived
+// it would be a standing answer handed to whatever page the navigation
+// reaches — including one the act list does not name, where acting verbs
+// never run. The control row first proves the route works at all through
+// the fake (arm spends on the arming page, once); the second row pins the
+// navigation case against the call log.
+
+test('an armed dialog answer is spent by the page that armed it, and only once', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const handleCalls = (): number => cdpCalls(ext, 'Page.handleJavaScriptDialog').length;
+    const armed = session.act(
+      tab,
+      { action: 'dialog', response: { accept: true } },
+      undefined,
+      CALLER,
+    );
+    armed.catch(() => undefined); // the follow-on snapshot is the fake's limit
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    raiseDialog(ext, ext.lastCreatedTabId);
+    await waitFor(() => handleCalls() > 0, 'the armed accept crossing as a dialog answer');
+    const answer = ext.calls.find(
+      (call) =>
+        call.method === 'chrome.debugger.sendCommand' &&
+        call.params[1] === 'Page.handleJavaScriptDialog',
+    );
+    assert.equal(
+      (answer?.params[2] as { accept?: boolean } | undefined)?.accept,
+      true,
+      'the disposition was spent as the caller armed it',
+    );
+    // Spent: the next dialog on the same page is the person's to answer.
+    const spent = handleCalls();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    raiseDialog(ext, ext.lastCreatedTabId);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(handleCalls(), spent, 'no disposition is left standing to spend twice');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('a dialog disposition armed on a listed site does not survive navigation to an off-list one', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const tabId = ext.lastCreatedTabId;
+    const handleCalls = (): number => cdpCalls(ext, 'Page.handleJavaScriptDialog').length;
+    const before = handleCalls();
+    const armed = session.act(
+      tab,
+      { action: 'dialog', response: { accept: true } },
+      undefined,
+      CALLER,
+    );
+    armed.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Navigation itself is free — that is the rule. The arm is not, and it
+    // must not ride along with it: the page that raised the dialog is
+    // gone, and the address now named is on no list.
+    await session.navigate(tab, 'https://example.net/confirm', 300).catch(() => undefined);
+    raiseDialog(ext, tabId);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    raiseDialog(ext, tabId);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(
+      handleCalls(),
+      before,
+      "the off-list page's dialog was never answered on the owner's behalf",
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('every acting decision the session makes lands one audit row, and no row carries the grant', async () => {
+  const secret = 'fixture-grant-secret';
+  const rows: { verb: string; outcome: string; host: string; claimId: string }[] = [];
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    ownerGrantSecret: secret,
+    focusedControlProbe: () => Promise.resolve({ tag: 'button', accessibleName: 'Pay' }),
+    pageSecretProbe: () => Promise.resolve(false),
+    actionLog: (entry) => {
+      rows.push({
+        verb: entry.verb,
+        outcome: entry.outcome,
+        host: entry.host,
+        claimId: entry.claimId,
+      });
+    },
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const token = signGrant(secret, {
+      leaseKey: CALLER.leaseKey,
+      ref: '',
+      accessibleName: 'Pay',
+      urlHost: 'example.com',
+      issuedAtSeconds: Math.floor(Date.now() / 1_000),
+    });
+    // refused row: no grant.
+    await session
+      .act(tab, { action: 'press', value: 'Enter' }, undefined, CALLER)
+      .catch(() => undefined);
+    // acted row: valid grant (the snapshot after is the fake's limit; the
+    // decision row is written before it).
+    void session
+      .act(tab, { action: 'press', value: 'Enter' }, undefined, { ...CALLER, ownerGrant: token })
+      .catch(() => undefined);
+    await waitFor(() => rows.some((row) => row.outcome === 'acted'), 'the acted row');
+    // replayed row.
+    await session
+      .act(tab, { action: 'press', value: 'Enter' }, undefined, { ...CALLER, ownerGrant: token })
+      .catch(() => undefined);
+    assert.deepEqual(
+      rows.map((row) => row.outcome),
+      ['attached.needs_owner', 'acted', 'attached.grant_invalid'],
+    );
+    assert.ok(rows.every((row) => row.host === 'example.com'));
+    assert.ok(rows.every((row) => row.claimId === CALLER.claimId));
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+// ── the review's hunt list, at the session ──────────────────────────────────
+//
+// What these rows add to the gate's table is the **physical half** of each
+// refusal: the call log. A gate that says "needs the owner" after the key was
+// sent is the failure this codebase is organised against, so every row here
+// reads the extension's call log, not only the answer.
+
+/** The `Input.*` commands the extension was asked for — a typed key, an inserted text, a click. */
+function inputCountOf(ext: FakeExtension): number {
+  return inputCalls(ext);
+}
+
+test('B1: a ref-less press into a focused password field is refused, and not one key crosses', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () =>
+      Promise.resolve({ tag: 'input', inputType: 'password', accessibleName: 'Password' }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = inputCountOf(ext);
+    for (const key of ['h', 'p', 'Enter']) {
+      await assert.rejects(
+        session.act(tab, { action: 'press', value: key }, undefined, CALLER),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.field_forbidden' &&
+          error.message.includes('password'),
+      );
+    }
+    assert.equal(inputCountOf(ext), before, 'no key reached the password field');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('B2: Enter, a chord and a site shortcut each ask the owner, and no key crosses', async () => {
+  for (const { focus, key } of [
+    { focus: TEXT_BOX_FOCUS, key: 'Enter' },
+    { focus: TEXT_BOX_FOCUS, key: 'NumpadEnter' },
+    {
+      focus: { tag: 'div', role: 'textbox', editable: true, accessibleName: 'Message body' },
+      key: 'Control+Enter',
+    },
+    { focus: { tag: 'body' }, key: '#' },
+    { focus: { tag: 'body' }, key: 'Shift+3' },
+  ] as const) {
+    const { bridge, ext, session } = await live({
+      attachedActSites: ['example.com'],
+      focusedControlProbe: () => Promise.resolve(focus),
+      pageSecretProbe: () => Promise.resolve(false),
+    });
+    try {
+      const tab = await openedTab({ bridge, ext, session });
+      const before = inputCountOf(ext);
+      await assert.rejects(
+        session.act(tab, { action: 'press', value: key }, undefined, CALLER),
+        (error: unknown) =>
+          error instanceof AttachedError &&
+          error.rule === 'attached.needs_owner' &&
+          error.message.includes('browser_sign_in'),
+        `${key} with ${focus.tag} focused is the owner's`,
+      );
+      assert.equal(inputCountOf(ext), before, `${key} never crossed`);
+    } finally {
+      session.detach().catch(() => undefined);
+    }
+  }
+});
+
+test('B2: a type whose text carries a newline is an Enter, and nothing is typed', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: () => Promise.resolve({ ...TEXT_BOX_FOCUS }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = inputCountOf(ext);
+    await assert.rejects(
+      session.act(tab, { action: 'type', ref: 'e1', value: 'hello\n' }, undefined, CALLER),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.needs_owner',
+    );
+    assert.equal(inputCountOf(ext), before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('B2: with the cursor in a text box, a letter is typing and crosses', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    void session
+      .act(tab, { action: 'press', value: 'a' }, undefined, CALLER)
+      .catch(() => undefined);
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > before,
+      'the allowed letter crossing',
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('H3: an armed dialog answer does not survive a navigation the page made by itself', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const tabId = ext.lastCreatedTabId;
+    const handleCalls = (): number => cdpCalls(ext, 'Page.handleJavaScriptDialog').length;
+    const armed = session.act(
+      tab,
+      { action: 'dialog', response: { accept: true } },
+      undefined,
+      CALLER,
+    );
+    armed.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // A click on a link, a submit, a redirect: the page moves and the broker's
+    // own `navigate` is never called.
+    pageNavigatesItself(ext, tabId, 'https://example.net/next');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    raiseDialog(ext, tabId);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(handleCalls(), 0, "the next page's dialog was never answered for the owner");
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('H3: a dialog whose message names a consequence is left to the owner, armed or not', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const tabId = ext.lastCreatedTabId;
+    const handleCalls = (): number => cdpCalls(ext, 'Page.handleJavaScriptDialog').length;
+    session
+      .act(tab, { action: 'dialog', response: { accept: true } }, undefined, CALLER)
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    raiseDialog(ext, tabId, 'Permanently delete your account?');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(handleCalls(), 0, 'a consequential confirm is the owner to answer');
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('M2: the repeat guard sees a navigation the page made itself', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    void session
+      .act(tab, { action: 'press', value: 'a' }, undefined, CALLER)
+      .catch(() => undefined);
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+      'the first press crossing',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const afterFirst = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    pageNavigatesItself(ext, ext.lastCreatedTabId, 'https://example.com/after-the-click');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'a' }, undefined, CALLER),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.act_repeat',
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchKeyEvent').length, afterFirst);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('H5: a grant signed for a click does not verify for a press, whatever the control and host', async () => {
+  const secret = 'fixture-grant-secret';
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    ownerGrantSecret: secret,
+    focusedControlProbe: () => Promise.resolve({ tag: 'button', accessibleName: 'Pay' }),
+    pageSecretProbe: () => Promise.resolve(false),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    const wrongVerb = signGrant(secret, {
+      leaseKey: CALLER.leaseKey,
+      ref: '',
+      accessibleName: 'Pay',
+      urlHost: 'example.com',
+      issuedAtSeconds: Math.floor(Date.now() / 1_000),
+      verb: 'click',
+      value: '',
+    });
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Enter' }, undefined, {
+        ...CALLER,
+        ownerGrant: wrongVerb,
+      }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.grant_invalid' &&
+        error.message.includes('forged'),
+    );
+    const otherKey = signGrant(secret, {
+      leaseKey: CALLER.leaseKey,
+      ref: '',
+      accessibleName: 'Pay',
+      urlHost: 'example.com',
+      issuedAtSeconds: Math.floor(Date.now() / 1_000),
+      verb: 'press',
+      value: 'Space',
+    });
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'Enter' }, undefined, {
+        ...CALLER,
+        ownerGrant: otherKey,
+      }),
+      (error: unknown) =>
+        error instanceof AttachedError &&
+        error.rule === 'attached.grant_invalid' &&
+        error.message.includes('forged'),
+    );
+    assert.equal(cdpCalls(ext, 'Input.dispatchKeyEvent').length, before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('L1: an audit write that fails after the act does not turn a performed act into an error', async () => {
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    focusedControlProbe: () => Promise.resolve(TEXT_BOX_FOCUS),
+    pageSecretProbe: () => Promise.resolve(false),
+    actionLog: () => {
+      throw new Error('SQLITE_BUSY: database is locked');
+    },
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
+    const outcome = session.act(tab, { action: 'press', value: 'a' }, undefined, CALLER).then(
+      () => 'resolved' as const,
+      (error: unknown) => error,
+    );
+    await waitFor(
+      () => cdpCalls(ext, 'Input.dispatchKeyEvent').length > keysBefore,
+      'the press crossing',
+    );
+    const settled = await Promise.race([
+      outcome,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 500)),
+    ]);
+    assert.ok(
+      !(settled instanceof Error && settled.message.includes('SQLITE_BUSY')),
+      'the caller was not handed the log failure for an act that happened',
+    );
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('L4: the control name the log keeps is capped, so a hostile page cannot bloat the store', async () => {
+  const names: (string | undefined)[] = [];
+  const { bridge, ext, session } = await live({
+    attachedActSites: ['example.com'],
+    elementFactsProbe: () =>
+      Promise.resolve({ tag: 'button', accessibleName: `Pay ${'x'.repeat(5_000)}` }),
+    pageSecretProbe: () => Promise.resolve(false),
+    actionLog: (entry) => names.push(entry.accessibleName),
+  });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    await session
+      .act(tab, { action: 'click', ref: 'e1' }, undefined, CALLER)
+      .catch(() => undefined);
+    assert.equal(names.length, 1);
+    assert.ok((names[0] ?? '').length <= 200, 'the stored name is bounded');
+    assert.ok((names[0] ?? '').startsWith('Pay '));
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
+test('L2: one spelling of the movement keys — a lower-cased name is no movement key at either door', async () => {
+  assert.equal(isViewMovingAction({ action: 'press', value: 'arrowdown' }), false);
+  for (const key of NAVIGATION_KEYS) {
+    assert.equal(
+      isViewMovingAction({ action: 'press', value: key }),
+      true,
+      `${key} moves the view`,
+    );
+  }
+  // With acting off, the lower-cased spelling answers read-only at the
+  // door and never reaches the performer.
+  const { bridge, ext, session } = await live({ attachedActSites: [] });
+  try {
+    const tab = await openedTab({ bridge, ext, session });
+    const before = inputCountOf(ext);
+    await assert.rejects(
+      session.act(tab, { action: 'press', value: 'arrowdown' }),
+      (error: unknown) => error instanceof AttachedError && error.rule === 'attached.read_only',
+    );
+    assert.equal(inputCountOf(ext), before);
+  } finally {
+    session.detach().catch(() => undefined);
+  }
+});
+
 test('the focus decision is table-driven: only plain page focus passes — controls, editables, frames, shadow hosts, role widgets, aria values and custom elements all hold focus', () => {
   // The predicate half of the gate, with no page anywhere: what the read
   // learns is data, and this is where the answer is decided. The shape is
@@ -728,7 +1758,7 @@ test('the press gate, answered: a focused control refuses and the key never cros
           hasAriaValue: false,
         },
       ]);
-    const { bridge, ext, session } = await live(probe);
+    const { bridge, ext, session } = await live({ focusProbe: probe });
     try {
       const tab = await openedTab({ bridge, ext, session });
       const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;
@@ -764,7 +1794,7 @@ test('the press gate, answered: a focused control refuses and the key never cros
         },
       ]);
     };
-    const { bridge, ext, session } = await live(probe);
+    const { bridge, ext, session } = await live({ focusProbe: probe });
     try {
       const tab = await openedTab({ bridge, ext, session });
       const keysBefore = cdpCalls(ext, 'Input.dispatchKeyEvent').length;

@@ -34,6 +34,7 @@ type Kind =
   | 'optional-command'
   | 'positive-integer'
   | 'name-list'
+  | 'host-list'
   | 'enum'
   | 'token';
 
@@ -105,6 +106,28 @@ interface OptionalTokenDeclaration {
   readonly key: string;
   readonly kind: Extract<Kind, 'token'>;
   /** What the token guards, for the refusal's sentence. */
+  readonly unit: string;
+}
+
+/**
+ * A comma-separated list of site patterns: exact hosts, or `*.`-prefixed
+ * wildcard domains.
+ *
+ * A different shape from {@link NameListDeclaration}'s names because hosts
+ * carry dots, and the wildcard entry is a host with a prefix, not a name with
+ * a flag — `*.example.org` is one token that means "every subdomain of
+ * example.org, and not its apex", and `src/attach/gate.ts` is what reads it
+ * that way. Like the name lists, there is no quoting, no escaping and no
+ * nesting; a token either is a legal host pattern or is not, and an illegal
+ * one refuses the spawn naming the variable — an entry that silently never
+ * matches would turn a site the operator meant to allow into a quiet refusal,
+ * which is configuration guessing §6.1 declines.
+ */
+interface HostListDeclaration {
+  readonly key: string;
+  readonly kind: Extract<Kind, 'host-list'>;
+  readonly fallback: readonly string[];
+  /** What the list governs, for the refusal's sentence. */
   readonly unit: string;
 }
 
@@ -187,6 +210,7 @@ type Declaration =
   | OptionalTokenDeclaration
   | IntegerDeclaration
   | NameListDeclaration
+  | HostListDeclaration
   | EnumDeclaration;
 
 /**
@@ -471,6 +495,61 @@ const DECLARATIONS = [
     kind: 'token',
     unit: 'the attach relay token',
   },
+  {
+    /**
+     * The sites an attached browser may be **acted on** (§3.5 of the attach
+     * safety plan): exact hosts or `*.`-prefixed wildcard domains.
+     *
+     * **Empty means acting is off entirely** — the read-only posture the
+     * attached kind shipped with, and the default because no set of sites is
+     * sensible for a machine this configuration does not know. Read freely
+     * stays the default on every site: this list fences acting, never
+     * reading. It is environment-only and an agent has no route to it — the
+     * fence that stops a disguised button is the site, so the fence has to be
+     * somewhere the button-pusher cannot reach (§3.5's residual-risk note:
+     * keep the consequential sites **off** this list and the classifier is
+     * the second line, not the first).
+     *
+     * The patterns are interpreted by `src/attach/gate.ts` — wildcard covers
+     * subdomains and not the apex — and the shape is checked **here**, at
+     * startup, because an entry that can never match a navigation is a silent
+     * refusal the operator would chase through the lease forever.
+     */
+    key: 'BROKER_ATTACHED_ACT_SITES',
+    kind: 'host-list',
+    fallback: [],
+    unit: 'a comma-separated list of hosts or *.-prefixed wildcard domains',
+  },
+  {
+    /**
+     * The signing secret for owner grants (§3.5's consequential-step seam).
+     *
+     * The operator side mints a one-time token for one exact step
+     * (lease, ref, control name, host, moment, verb, value digest) with this
+     * secret; the broker
+     * **verifies and consumes** it, and never mints. **Unset means the seam
+     * is inert**: a grant-bearing call is refused exactly as one without it —
+     * never allowed "because there was no way to check" — which is why an
+     * empty default is safe rather than a hole.
+     *
+     * **Where it lives decides what the seam is.** The service is started by
+     * its caller, so the secret is in that caller's launch configuration and
+     * the service's process environment: an agent that can read either can
+     * mint a grant. The seam is a boundary only where the secret reaches the
+     * service by a channel the agent cannot read, and advisory where it can
+     * (`DECISIONS.md` §13o).
+     *
+     * **Carried, never echoed, never written**: the secret appears in no
+     * store row, no ledger detail, no log line and no refusal sentence — the
+     * same discipline `BROKER_ATTACHED_TOKEN` carries, inherited from
+     * {@link OptionalTokenDeclaration}. The *grant* a caller sends is
+     * likewise echoed nowhere; refusals name only the verdict (forged,
+     * expired, replayed).
+     */
+    key: 'BROKER_OWNER_GRANT_SECRET',
+    kind: 'token',
+    unit: 'the owner-grant signing secret',
+  },
 ] as const satisfies readonly Declaration[];
 
 /** Every variable this build declares. Row #9's walk test reads this. */
@@ -617,6 +696,21 @@ export interface Environment {
    * field keeps that rule; nothing may format it into a message.
    */
   readonly attachedToken: string | undefined;
+  /**
+   * The sites an attached lease may be acted on (exact hosts or `*.`
+   * wildcards), or **empty — empty is the whole acting capability off**, and
+   * the read-only posture stays the default (§3.5 of the attach safety plan).
+   * Shape-checked at startup; interpreted by `src/attach/gate.ts`.
+   */
+  readonly attachedActSites: readonly string[];
+  /**
+   * The owner-grant signing secret, or `undefined` when unset — unset means
+   * the grant seam is **inert**: a grant-bearing call is refused exactly as
+   * one without it. **Carried, never echoed**: like the attach token it is
+   * formatted into no message, store row or log line, and the grant itself
+   * is echoed nowhere either — only its verdict ever is.
+   */
+  readonly ownerGrantSecret: string | undefined;
   /**
    * The binary each browser was pointed at, by browser name.
    *
@@ -1048,6 +1142,61 @@ function readToken(
   return raw;
 }
 
+/** One DNS label as it may appear in a host pattern. */
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+
+/**
+ * Read a host-list: comma-separated exact hosts or `*.`-prefixed wildcards.
+ *
+ * Blank after the split refuses rather than being skipped — unlike a gate's
+ * tolerant matching at the point of use, this is the startup check, and a
+ * stray comma is somebody mid-edit, not a meaning. A port, a path, a scheme,
+ * a space or an underscore is refused the same way: **these are hosts as
+ * navigations report them**, and an entry that can never match one is a
+ * silent never-allow the operator would debug from the lease side. The
+ * wildcard apex rule (`*.x` does not cover `x`, which must be listed itself)
+ * belongs to `src/attach/gate.ts` and is not restated here — this function
+ * only says an entry is *shape*-legal.
+ */
+function readHostList(
+  declaration: HostListDeclaration,
+  raw: string | undefined,
+): readonly string[] {
+  if (raw === undefined) {
+    return declaration.fallback;
+  }
+  if (raw.includes('\0')) {
+    throw new StartupRefusal(
+      'config.value_readable',
+      `${declaration.key} is set but is not a readable value: it contains a null byte. Expected ${declaration.unit}.`,
+    );
+  }
+  const entries: string[] = [];
+  for (const part of raw.split(',')) {
+    const entry = part.trim();
+    if (entry === '') {
+      throw new StartupRefusal(
+        'config.value_readable',
+        `${declaration.key} has an empty entry${raw.startsWith(',') || raw.endsWith(',') ? ' (a leading or trailing comma counts as one)' : ''}. Expected ${declaration.unit}; each entry is a host like example.com or a wildcard like *.example.com.`,
+      );
+    }
+    const host = entry.toLowerCase().startsWith('*.') ? entry.slice(2) : entry;
+    if (
+      !host
+        .toLowerCase()
+        .split('.')
+        .every((label) => HOST_LABEL.test(label))
+    ) {
+      throw new StartupRefusal(
+        'config.value_readable',
+        `${declaration.key} contains "${entry}", which is not a host pattern. Each entry is a host like example.com — letters, digits and hyphens in dot-separated labels — or the same with a leading "*." to cover every subdomain. Ports, paths, schemes and wildcards inside a label are not hosts.`,
+      );
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
 /**
  * Resolve one declaration by its kind.
  *
@@ -1072,6 +1221,8 @@ function readDeclaration(
       return readPositiveInteger(declaration, raw);
     case 'name-list':
       return readNameList(declaration, raw);
+    case 'host-list':
+      return readHostList(declaration, raw);
     case 'enum':
       return readEnum(declaration, raw);
     case 'token':
@@ -1292,6 +1443,8 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
   const attachedTabs = getNumber('BROKER_ATTACHED_TABS');
   const attachedExtensionId = getOptionalToken('BROKER_ATTACHED_EXTENSION_ID');
   const attachedToken = getOptionalToken('BROKER_ATTACHED_TOKEN');
+  const attachedActSites = getList('BROKER_ATTACHED_ACT_SITES');
+  const ownerGrantSecret = getOptionalToken('BROKER_OWNER_GRANT_SECRET');
 
   // **The extension id is checked here, not at connect.** It has a shape,
   // unlike the rest of what a token kind accepts, and an attached browser
@@ -1411,6 +1564,8 @@ export function readEnvironment(options: ReadEnvironmentOptions = {}): Environme
     attachedTabs,
     attachedExtensionId,
     attachedToken,
+    attachedActSites,
+    ownerGrantSecret,
     browserPaths,
   };
 }

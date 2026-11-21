@@ -2656,6 +2656,202 @@ handle this session never issued and the mirror does not show), defend states th
 against the fake; `SCHEMA.md` §7.1's rule is that a row owes a test that fires it, so they are
 recorded here rather than in that table.
 
+## 13o. Acting on a listed site: two doors, one gate, and a grant that spends itself (2026-11-16)
+
+**The need:** §13n's read-only posture makes the attached connection useful and powerless at the
+same time, and some work genuinely needs one click in the browser that already holds the session.
+"Never write" refuses that work; "may write" hands a stranger's browser to an agent with nothing
+between. The shape that answers both is a **fence the operator sets** (which sites may be acted
+on at all), a **guard the page decides** (what the control actually is), and for the steps that
+change something the owner cares about, a **human approval with a physical expiry**.
+
+### Why the decision is one pure function, asked at two doors
+
+The gate (`src/attach/gate.ts`) is pure: inputs in, verdict out, no I/O — because §13n's
+two-door finding is that a refusal decided only at the session arrives **after** the ledger said
+`allow` and possibly after a tab opened, and a refusal that arrives late is a refusal that did
+not happen. So the service's decide step calls the gate with exactly the facts a service can
+honestly hold — verb, host, configured list — and refuses with a `deny` row and no closure, no
+tab. The session then re-asks the same function with the facts only the page holds — what the
+control is, whether the page carries a secret field, whether this replays across a navigation,
+what the grant says — and its refusals write their own `deny` rows beside the decision row. One
+function at both doors is what keeps the doors from drifting the way two hand-maintained
+allow-lists do; the fact-set each door holds is written down in the call-site comments so a
+reader can see *why* the two answers are allowed to differ.
+
+### Why the fence asks about the arrival, not the request
+
+The service door needs a host **before any browser call**, and the only honest source is the
+store. `tabs.last_url` (step 13) records what the last navigation **reported arriving at** —
+never the requested address. `decideNavigate`'s header already carries the redirect lesson in
+prose; a site fence asked against the caller's *intent* would fence a page that a redirect had
+carried somewhere else, and — the direction that matters here — could wave through an act on a
+page that was carried **into** a listed site from an unlisted one. A tab that never navigated
+answers blank, blank is on no list, and "this site is not listed" is the true sentence for a
+blank page.
+
+### Why the grant is a signature over a tuple, and spent before the decision
+
+A consequential step's approval must not be replayable, retargetable, or mintable by the agent
+asking. So the grant is
+`HMAC-SHA256(secret, lease | ref | accessible-name | host | issued-at | verb | value-digest)` —
+opaque on the wire (`<issued-at>.<tag>`) and verified against **the live call's own tuple**: the
+name the page reports for that ref right now, the verb the call carries, and the digest of the
+value it carries (the key, the typed text, the option; empty for a verb with none). A grant for
+"click Pay" is a grant for a click: it does not verify for a `type`, a `select` or a `press` on
+the same ref, and a grant for typing `12` does not verify for typing `1200`. Retargeting any
+component is not a smaller verdict, it is `forged` — there is deliberately no per-component answer
+to leak and trade on. The stamp is checked one-sided: a few seconds of clock skew ahead, the
+grant's life behind, never a life *ahead* of it. A caller that cannot read the secret cannot mint
+a grant, which is what makes `needs_owner` (the seam was never engaged — ask the owner via
+`browser_sign_in`) and `no_grant` (the operator side engaged and carried nothing verifiable —
+not a second ask) two different refusals with two different audiences. Validity spends the token
+**before** any verdict is returned: a lost grant costs the caller a re-ask, an unspent one costs
+the owner a second consequential act on one approval, and those are not comparable mistakes. The
+registry is per session, so the memory of spent grants ends exactly where the lease does.
+
+### Why the secret and the token appear nowhere, and the audit appears everywhere
+
+Neither the secret nor any token reaches a ledger row, a log line, a refusal message, or a
+result — refusals name the **verdict** ("forged", "replayed") and nothing else, under the same
+carried-never-echoed discipline the attach token and the secret sentinels live by. What *is*
+written, per acting decision, is one `attached_actions` row: lease, verb, ref, the accessible
+name the page reported, host, and the outcome — `acted` or the refusing rule. The refusal rows
+are the point as much as the acted ones: the visibility promise of the attached kind (§3.5) is
+that a person can read what a lease tried to do and what stopped it. There is deliberately **no
+foreign key** on the claim: an audit that vanishes when the thing audited ends audits nothing.
+
+### Why the repeat guard exists, and why it needs a navigation
+
+Thirty seconds, same tab, same verb, same refs — and only refused when a navigation happened in
+between. That last condition is the whole guard: replaying an act after the page moved is the
+tell of acting on a snapshot that the navigation invalidated, and the fix belongs to the caller
+(read the page again), not to the broker waiting it out. The same act twice with no navigation
+is not a repeat, and a navigation that was asked for counts even when its load later fails —
+the counter bumps before the goto, because erring toward "the page moved" is the safe direction
+for a guard about stale references.
+
+### Why the word table normalizes typography, and what it still honestly misses
+
+A consequence word can be hidden in the page's own typography, so the classifier strips invisible
+characters before tokenizing — zero-width joins and separators, the bidi embedding controls, the
+soft hyphen — normalizes each run (compatibility forms folded, combining marks dropped), and keeps
+letters and numbers of any script as one run, so a CJK label survives as a token and the shape a
+CJK word in the table needs already exists. `Pay` with a zero-width space, `Päy`, a fullwidth `P`:
+all of them are "pay" to the table now.
+
+The fold stops where Unicode's stops, and the table says so in its own comment rather than
+claiming more: a Cyrillic `а` that looks like `a` is a different letter to every normalizer, and
+the table speaks Latin — a consequence word written in another script's look-alikes is **not**
+caught by this half of the fence. That is a known residual, not an oversight to widen away: a
+hand-rolled transliteration would invent matches Unicode refuses and drift the moment anyone
+reviewed it. The site fence is the first line against a page like that (the operator listed the
+site knowing its audience), and the table is the second; over-firing costs an ask, under-firing a
+look-alike costs the fence standing where it was drawn. The pinned rows name both directions.
+
+### Where the grant secret lives is the whole of the seam's strength
+
+The service is started by its caller and reads the signing secret from its own environment. The
+seam is therefore a boundary **only against a caller that cannot read that environment**: an
+agent that can read its own launch configuration, the service's process environment, or run a
+shell as the same user can read the secret, and with it every field of the tuple (lease, ref and
+name from its own snapshot, host, time, and the verb and value it chose), so it can mint a grant
+for any step it likes. Nothing in the service can tell a token minted by the operator's tooling
+from one minted by an agent holding the same key.
+
+So the seam is stated as what it is: **advisory against a hostile agent that shares a user
+context with the service, and a real boundary when the secret reaches the service by a channel
+the agent cannot read** (a launch path the agent does not control, a secret file only the
+operator's account can read). Nothing in the repository sets that condition up; it is the
+operator's to meet. A stronger shape would have the service verify an approval it can attribute
+to the owner's own channel rather than a key present in the agent's process tree; that is a design
+of its own and is not built here. Until it is, a deployment that lets an agent read the secret
+should treat `needs_owner` as a guard against mistakes, and the site list as the actual fence.
+
+### A key is a step, and the gate reads the page the way the page is read
+
+The consequential table classifies a **control's name**. The steps that have no control to name
+are keys and typed text, so they are classified on their own terms. `Enter` and `NumpadEnter`
+submit the form they are typed in; a Control, Meta or Alt chord sends, deletes or archives in
+most web applications; a bare letter on a page whose focus is not a text field is a site
+shortcut; Space presses a focused button; a newline inside a `type` is an `Enter`. Each of those
+is consequential — `needs_owner` without a grant, an allow with a valid one. A letter typed into a
+text field, `Tab`, and the movement keys are not. Movement keys are one list, shared by the gate
+and by the session that performs them, so the two can never disagree about which keys scroll.
+
+The facts the gate decides on come from **one real reader per fact**, and the same reader serves a
+named ref and a ref-less press: the focused control's type and `autocomplete` are read exactly as
+a named control's are, because a field that arrives without them is read as plain text. An input
+reported with no type is refused, not cleared. A control is also judged on **every name it answers
+to** — its snapshot name, its visible text, `title`, `aria-label`, a button-type input's value, the
+names beneath it, and the element sitting under its click point — because a page decides what a
+control is called in several places and the snapshot shows one of them. The snapshot's unquoted
+`: text` tail is a name (a clickable `div` has no other); the tail of a text box is what someone
+typed, and is not.
+
+For the verbs that put characters into a field, the field's kind is also read from what it is
+called (`name`, `id`, `placeholder`, its label): a card number or a code box that declares no
+`autocomplete` is still one. Over-firing there costs a refusal; under-firing is the leak. A click
+is not subject to it.
+
+A ref inside a frame is fenced on **the frame's host**, not only the top document's; a click that
+lands on a frame element is refused because what is inside it cannot be read; and the page's
+secret-field scan matches list-valued `autocomplete`, walks open shadow roots and same-origin
+frames, and counts a frame it cannot enter as holding one. All refs of one call are read from one
+whole-page snapshot: the library resolves a ref against the last snapshot taken in its frame, and
+a snapshot of one element becomes the frame's whole ref map, holding only that element's own subtree.
+
+### The consequence table's reach
+
+A word matches as a whole token, in the forms listed: each table word and its regular inflections
+(`pay`, `paying`, `paid`, `payment`; `submit`, `submitted`), plus the verbs real labels use for a
+purchase, a booking, a gift, a signature, a withdrawal, a removal or a publication. The words
+that name something else stay out on purpose — `cancellation` (a policy page), `reorder`,
+`postcode`, `bookmark`, `signature` — and each has a row on the allow side. For a `select`, the
+**option chosen** is classified, by value and by label; a dialog's own message goes through the
+table before it is answered. Every Unicode format character is invisible to the table, plus the
+fillers that are letters or symbols but draw nothing.
+
+### The dialog answer has a lifetime
+
+An armed `dialog` answer is dropped when the page moves **for any reason** — the session's own
+navigation, a followed link, a submitted form, a script's redirect, a same-document history change
+— because the page that armed it is gone. At the moment of answering, the site fence is asked again
+against the live address and the dialog's message is classified; a dialog that fails either is
+left where it is, for the person. The repeat guard's navigation counter moves on the same events,
+and records the generation from **before** an act, so a page the act itself moved counts as moved.
+
+### What these rules still do not cover
+
+- **A hostile agent that can read the grant secret** (above).
+- **Navigation is an unfenced act.** A plain GET to an address with a one-click side effect
+  (an unsubscribe link, a sign-out, an old-style delete link) runs on any site. Navigation is free
+  by design, and the act list does not cover it.
+- **A dialog raised from a frame inside a listed page** is answered under the page's host: the
+  automation library does not say which frame raised a dialog, so the gate cannot fence it. The
+  message classifier is the defence that remains.
+- **A control hidden under an overlay that is not in its own subtree**, when the control is
+  scrolled out of view: the click-point read needs the control on screen, and the page is not
+  scrolled to read a name.
+- **Closed shadow roots** hide their contents from every reader here, and a focused host is
+  refused for that reason.
+- **Look-alike letters from other scripts** (§13o above) remain a residual of the table.
+- **A grant for a ref-less press binds the focused control's own name** as the page reports it, and
+  the operator-side minter rarely sees the same string; such grants verify as `forged`. A step
+  worth granting is better named by ref.
+- **Text typed into a field is not classified.** Typing the word "send" into a search box is
+  typing; the step that submits it is the one the table sees.
+
+### Deliberately not here
+
+`resize`, `emulate` and `upload` stay refused on every site on the list — they change his browser
+or read his filesystem, not the page. A call naming more than one control (`drag`'s pair,
+`fill_form`'s fields) carries **no grant**: the tuple binds one ref, and a token that cannot say
+which control it approved approves none of them. The completion-side acting paths against a real
+attached browser ride the same gated browser job as §13n's read paths: the fake relay answers
+commands but cannot render, so the fake proves the refusals and the crossings, and the real
+browser owes the performed acts.
+
 ## 14. Still open
 
 Closed items keep their place here as struck-through pointers rather than being deleted, because

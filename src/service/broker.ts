@@ -534,6 +534,14 @@ export function createBroker(options: BrokerOptions): Broker {
         ...(options.environment.uploadRoot === undefined
           ? {}
           : { uploadRoot: options.environment.uploadRoot }),
+        // The act-site list, spread **always** — including when empty,
+        // because empty is not "unset", it is the acting capability off,
+        // and the gate reads that answer. Same one-snapshot discipline as
+        // the upload root above: this door and the session door see the
+        // same list because both see this one read. The owner grant, by
+        // contrast, arrives only with the call that carries it, and passes
+        // through untouched.
+        attachedActSites: options.environment.attachedActSites,
       }),
     // The artifact store, alongside the browser: an `inline` read returns the
     // text of the artefact **file** the read writes, so it needs somewhere to

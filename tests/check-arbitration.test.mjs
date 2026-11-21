@@ -575,14 +575,15 @@ test('the same call inside an after-commit closure does not fire, so the rule is
   // *where* the call sits, so a seed in the permitted position must stay
   // silent.
   //
-  // **The anchor is the closure's head, deliberately, and stops before the
-  // argument list.** An argument list is the part of a call that churns: a
-  // seed spelling out `session.navigate(page, url)` in full matches nothing
-  // the moment `navigate` takes another argument, and a seed that matches
-  // nothing leaves this guarantee untested while the suite stays green.
-  // `seededOperation` is what stops that being silent, and anchoring on the
-  // part that does not churn — a closure taking `(session, page)` and calling
-  // a method on the session it was handed — is what stops it happening.
+  // **The anchor is the closure's head, deliberately.** An argument list is
+  // the part of a call that churns, and a seed that matches nothing leaves
+  // this guarantee untested while the suite stays green — `seededOperation`
+  // is what stops that being silent. Since the attached acting calls, the
+  // injection needs the call's closing bracket to keep its own brackets
+  // balanced, so the whole call is spelled out and the backstop, not the
+  // anchor's brevity, is what keeps a stale seed from passing vacuously.
+  // What the anchor is still pinned to is the part that does not churn: a
+  // closure taking `(session, page)` and driving the session it was handed.
   //
   // **What is seeded is still a real second browser call in the permitted
   // position** — `session.describe()`, a method scan B looks for by name,
@@ -590,10 +591,16 @@ test('the same call inside an after-commit closure does not fire, so the rule is
   // expression so that every bracket in the injected text closes: the region
   // finder counts brackets, and an unbalanced seed would drop the enclosing
   // region and make this control pass for the wrong reason.
+  // The head of the one-line closure is `actAttached(session` rather than
+  // `session.` since the attached acting calls gained their grant context —
+  // and the backstop above is what keeps that churn honest: when this anchor
+  // stopped matching, the seed said so in a failing test rather than going
+  // quietly green, which is exactly the failure mode the anchor choice was
+  // written to survive.
   const sources = seededOperation('src/service/operations/pages.ts', (source) =>
     source.replace(
-      '(session, page) => session.',
-      '(session, page) => (session.describe() as unknown) ?? session.',
+      '(session, page) => actAttached(session, page, request, secrets, attachedContext),',
+      '(session, page) => ((session.describe() as unknown) ?? actAttached(session, page, request, secrets, attachedContext)),',
     ),
   );
   assert.deepEqual(

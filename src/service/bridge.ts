@@ -293,8 +293,25 @@ export function serviceFor(options: BridgeOptions): BrokerService {
 
       case 'act': {
         const key = keyFrom(args);
+        // The owner grant is **passed through as text, untouched**: this
+        // layer never parses, logs, or re-serialises it, and the only place
+        // it is examined is the attached session that verifies it against
+        // the configured secret. The agent's own calls never carry one —
+        // the field exists for the operator-side retry path, and a refusal
+        // naming its failure quotes the verdict, never the token.
+        const ownerGrant = argument(args, 'owner_grant', 'ownerGrant');
         return {
-          ...(await broker.act({ key, tabId: tabForKey(db, key), request: actionFrom(args) })),
+          ...(await broker.act({
+            key,
+            tabId: tabForKey(db, key),
+            request: actionFrom(args),
+            // A text token is handed on untouched — including an empty one,
+            // which the session reads as a present-but-unverifiable grant
+            // (`forged`) rather than as absence, because "I carried a token"
+            // and "I did not" are different claims to make. Anything that
+            // is not text at all is treated as absent.
+            ...(typeof ownerGrant === 'string' ? { ownerGrant } : {}),
+          })),
         };
       }
 

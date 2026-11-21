@@ -401,3 +401,188 @@ test('the door is about the attached rules, not about this browser: scroll and r
     assert.equal(allowCount(fixture, 'act'), 1);
   }, ATTACHED_OPTIONS);
 });
+
+// ── S2: the site fence at the door, and the grant that rides through ────
+//
+// Same four assertions per row as every refusal above — the response, the
+// rows, the call log, the tab. The fence is where S2 moved the decision
+// from: an off-list act must refuse **on the wire**, so the session is
+// never reached and no tab opens on the way to the refusal. And the grant
+// is the one new piece of data that must provably go in without staying
+// anywhere: rows, details, messages and results are all searched for it.
+
+const LISTED_ACT_OPTIONS = { ...ATTACHED_OPTIONS, attachedActSites: ['example.com'] };
+const OFF_LIST_ACT_OPTIONS = { ...ATTACHED_OPTIONS, attachedActSites: ['other.example.net'] };
+
+/** Navigate the fake way: requested url, same url back as the arrival. */
+async function arriveAt(
+  fixture: BrokerFixture,
+  lease: { key: string; tabId: string },
+  driver: { session: BrowserSession },
+  url: string,
+): Promise<void> {
+  await fixture.broker.navigate({
+    key: lease.key,
+    tabId: lease.tabId,
+    url,
+    session: () => driver.session,
+  });
+}
+
+test('an act on a listed site is not refused by the fence: it reaches the session and keeps its allow row', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    await arriveAt(fixture, lease, driver, 'https://example.com/checkout');
+    const result = await fixture.broker.act({
+      key: lease.key,
+      tabId: lease.tabId,
+      request: { action: 'click', ref: 'e1' },
+      session: () => driver.session,
+    });
+    assert.equal(result.pageDriven, true, 'the listed act never reached the session');
+    assert.deepEqual(driver.calls, [
+      'openTab',
+      'navigate:https://example.com/checkout',
+      'act:click',
+    ]);
+    assert.equal(allowCount(fixture, 'act'), 1);
+    assert.deepEqual(denyGuards(fixture, 'act'), []);
+  }, LISTED_ACT_OPTIONS);
+});
+
+test('an act on an arrival the list does not name refuses at the door: no act row, no session act, and the denial reaches the ledger', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    await arriveAt(fixture, lease, driver, 'https://example.com/checkout');
+    await assert.rejects(
+      fixture.broker.act({
+        key: lease.key,
+        tabId: lease.tabId,
+        request: { action: 'click', ref: 'e1' },
+        session: () => driver.session,
+      }),
+      refusedWithRule('attached.act_site_off_list'),
+    );
+    assert.equal(allowCount(fixture, 'act'), 0, 'the fence wrote an allow anyway');
+    assert.deepEqual(denyGuards(fixture, 'act'), ['attached.act_site_off_list']);
+    assert.ok(
+      !driver.calls.some((call) => call.startsWith('act:')),
+      'the session was asked to act after being refused',
+    );
+  }, OFF_LIST_ACT_OPTIONS);
+});
+
+test('the fence asks where the tab ARRIVED, not where it was sent: a redirect off-list is fenced', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    // The fake that answers the navigation with a different address than it
+    // was asked for — the redirect case the row in `decideNavigate` keeps
+    // the whole comment about.
+    const redirecting = {
+      ...driver.session,
+      navigate: (_tab: TabHandle, url: string) => {
+        driver.calls.push(`navigate:${url}`);
+        return Promise.resolve({
+          url: 'https://example.net/landed',
+          title: 'somewhere else',
+          status: 200,
+        });
+      },
+    } satisfies BrowserSession;
+    await arriveAt(fixture, lease, { session: redirecting }, 'https://example.com/start');
+    await assert.rejects(
+      fixture.broker.act({
+        key: lease.key,
+        tabId: lease.tabId,
+        request: { action: 'click', ref: 'e1' },
+        session: () => redirecting,
+      }),
+      refusedWithRule('attached.act_site_off_list'),
+      'the requested address fenced the call while the browser sat on another site',
+    );
+    assert.equal(allowCount(fixture, 'act'), 0);
+  }, LISTED_ACT_OPTIONS);
+});
+
+test('a tab that has never navigated is on no list: the act refuses before the session is reached', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    const reached = countingSource(driver);
+    await assert.rejects(
+      fixture.broker.act({
+        key: lease.key,
+        tabId: lease.tabId,
+        request: { action: 'click', ref: 'e1' },
+        session: reached.source,
+      }),
+      refusedWithRule('attached.act_site_off_list'),
+    );
+    assert.equal(reached.asked(), 0);
+    assertTabUnopened(fixture, lease.tabId);
+    assert.equal(allowCount(fixture, 'act'), 0);
+    assert.deepEqual(denyGuards(fixture, 'act'), ['attached.act_site_off_list']);
+  }, LISTED_ACT_OPTIONS);
+});
+
+test('a gate refusal at the session door joins the ledger beside its decision row, and the split survives', async () => {
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    // The session's fuller gate — page facts the door cannot hold — refuses
+    // a call the door let through. The decision row stays; the refusal
+    // joins it naming **its own** rule, not `read_only`.
+    const gate = {
+      ...driver.session,
+      act: (_tab: TabHandle, request: ActionRequest) => {
+        driver.calls.push(`act:${request.action}`);
+        return Promise.reject(
+          new AttachedError(
+            'attached.needs_owner',
+            'This step is consequential, so the owner does it: call browser_sign_in with what to press.',
+          ),
+        );
+      },
+    } satisfies BrowserSession;
+    await arriveAt(fixture, lease, driver, 'https://example.com/checkout');
+    const result = await fixture.broker.act({
+      key: lease.key,
+      tabId: lease.tabId,
+      request: { action: 'click', ref: 'e1' },
+      session: () => gate,
+    });
+    assert.equal(result.pageDriven, false);
+    assert.match(result.notDrivenReason ?? '', /attached\.needs_owner/);
+    assert.deepEqual(denyGuards(fixture, 'act'), ['attached.needs_owner']);
+    assert.equal(allowCount(fixture, 'act'), 1);
+  }, LISTED_ACT_OPTIONS);
+});
+
+test('an owner grant carried by a retry appears in no ledger row, detail, or result', async () => {
+  const TOKEN = 'opaque-grant-token-never-printed';
+  await withBroker(async (fixture) => {
+    const lease = await attachedLease(fixture);
+    const driver = recordingSession();
+    await arriveAt(fixture, lease, driver, 'https://example.com/checkout');
+    const result = await fixture.broker.act({
+      key: lease.key,
+      tabId: lease.tabId,
+      request: { action: 'click', ref: 'e1' },
+      ownerGrant: TOKEN,
+      session: () => driver.session,
+    });
+    assert.equal(result.pageDriven, true);
+    // Every event the call wrote, searched whole — rows and details alike.
+    const rows = fixture.readCommitted<{ detail: string | null }>(
+      'SELECT detail FROM events ORDER BY id',
+    );
+    assert.ok(rows.length > 0, 'the fixture wrote no rows to search');
+    for (const row of rows) {
+      assert.ok(!(row.detail ?? '').includes(TOKEN), 'a ledger row carried the grant token');
+    }
+    assert.ok(!JSON.stringify(result).includes(TOKEN));
+  }, LISTED_ACT_OPTIONS);
+});

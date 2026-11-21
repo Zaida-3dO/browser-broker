@@ -179,6 +179,8 @@ test('processes starting together against a stepped store settle on one budget r
       attachedTabs: 3,
       attachedExtensionId: undefined,
       attachedToken: undefined,
+      attachedActSites: [],
+      ownerGrantSecret: undefined,
       // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
       // pointed at a binary of its own, and an empty map is exactly what a
       // default installation has.

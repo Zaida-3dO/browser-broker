@@ -33,6 +33,8 @@ let nextTargetSerial = 0;
 
 export class FakeExtension {
   readonly calls: RecordedCall[] = [];
+  /** The id of the most recently created tab, for tests that address it. */
+  lastCreatedTabId = 0;
   /** Called for every request it receives, for wait-until assertions. */
   onCall: (() => void) | undefined;
 
@@ -89,6 +91,11 @@ export class FakeExtension {
     return this._ws.readyState === 'closed';
   }
 
+  /** The CDP target id the fake gave a tab — which is also its main frame's id. */
+  targetIdOf(tabId: number): string | undefined {
+    return this._targetByTab.get(tabId);
+  }
+
   sawCall(method: string): boolean {
     return this.calls.some((call) => call.method === method);
   }
@@ -133,6 +140,7 @@ export class FakeExtension {
           url: requested.url ?? 'about:blank',
           title: 'Fake tab',
         };
+        this.lastCreatedTabId = tab.id;
         // The extension reports its own creations exactly like user-visible ones.
         this.sendEvent('chrome.tabs.onCreated', [tab]);
         return tab;

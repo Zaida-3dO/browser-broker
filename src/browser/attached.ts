@@ -4,13 +4,15 @@
 //
 // This file is the session layer the attach README names as its only consumer
 // below the seam: it calls `connect()`, drives the returned bridge with
-// Playwright, and implements {@link BrowserSession}. What it never does is the
-// three things that make the other two kinds what they are — it never launches
-// his browser, never closes it, and never writes to it. Every verb that would
-// write — a seed, an expression, a click, a typed value, a style injection, a
-// painted mask — is refused here, at the seam, before the bridge is asked, so
-// the refusal and the absence of the side effect are the same fact rather than
-// two promises that can drift.
+// Playwright, and implements {@link BrowserSession}. What it never does is
+// what makes the other two kinds what they are — it never launches his
+// browser and never closes it, and its storage is never seeded. It writes to
+// his page only where the gate allows. A verb that would
+// write to his page runs only when `src/attach/gate.ts` says so — the site
+// fence, the field guards, the repeat window and the owner grant, all decided
+// **before the bridge is asked**, so the refusal and the absence of the side
+// effect are the same fact rather than two promises that can drift. Seeding,
+// expressions and full-page captures are refused outright, list or no list.
 //
 // ── Why the handle names the extension's tab, not the CDP target ──────────
 //
@@ -54,6 +56,18 @@ import {
 } from 'playwright-core';
 
 import { slugFromUrl, stampFromInstant } from '../artifacts/names.ts';
+import {
+  NAVIGATION_KEYS,
+  createGrantRegistry,
+  decide,
+  grantValueDigest,
+  isConsequentialText,
+  verifyOwnerGrant,
+  type ActTarget,
+  type GateDecision,
+  type GrantState,
+  type OwnerGrantRegistry,
+} from '../attach/gate.ts';
 import { connect } from '../attach/session.ts';
 import type { AttachedBridge } from '../attach/session.ts';
 import { openConnectPage } from '../attach/connect-launcher.ts';
@@ -80,7 +94,16 @@ import type {
   TabCloseOutcome,
   TabHandle,
 } from './driver.ts';
+import {
+  SECRET_FIELD_SELECTOR,
+  hostOf,
+  readControlFacts,
+  readFocusedControl,
+  scanSecretField,
+} from './attached-facts.ts';
 import { readPngDimensions, renderNetworkLog, type NetworkEntry } from './render.ts';
+
+export { SECRET_FIELD_SELECTOR, hostOf };
 
 /**
  * How long the open path waits for the extension when a token is configured.
@@ -145,7 +168,25 @@ const SNAPSHOT_RENDER_MS = 15_000;
 const FOCUS_PROBE_MS = 5_000;
 
 /**
- * The keys `press` may send.
+ * How long an acted verb keeps the **repeat** guard up for that same tab,
+ * verb and refs.
+ *
+ * Thirty seconds because it is a human-scale window: long enough that a
+ * model re-asking on stale references lands inside it, short enough that a
+ * person's own deliberate second click an hour later is not blocked. The
+ * guard does not fire on the window alone — the gate only honours the answer
+ * for a repeat whose page has **moved** since the first act (the repeat is
+ * the tell of acting against a snapshot that navigation invalidated), and a
+ * further act without navigation in between is not a repeat. The session
+ * keeps the clock and the navigation generation; {@link decide} judges.
+ */
+const REPEAT_WINDOW_MS = 30_000;
+
+/** The longest page-supplied control name the action log keeps. */
+const ACTION_NAME_CAP = 200;
+
+/**
+ * The keys `press` may send as view-moving.
  *
  * Scrolling and dismissing are the only things a key may do to a page this
  * kind reads: they change which part of the page is visible and what is drawn
@@ -156,20 +197,10 @@ const FOCUS_PROBE_MS = 5_000;
  * that scrolls an unfocused page moves the value of a focused select. The
  * names are allow-listed because a person watching a
  * page presses them (§13n); whether *this* press may go out is the page's
- * fact, not the name's.
+ * fact, not the name's. **The list is the gate's own** (`NAVIGATION_KEYS`):
+ * one spelling, so the gate's allowance and this door's can never differ.
  */
-const ALLOWED_PRESS_KEYS = new Set([
-  // The automation library's own key names — what a caller's `value` is
-  // spelled in on every other driver in this codebase, since the request
-  // carries "the key's name" and this is the name the key is driven by.
-  'PageUp',
-  'PageDown',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-  'Escape',
-]);
+const ALLOWED_PRESS_KEYS: ReadonlySet<string> = new Set(NAVIGATION_KEYS);
 
 /**
  * Whether an `act` request stays inside the view-moving allow-list (§7.1
@@ -350,6 +381,83 @@ export interface AttachedSessionOptions {
    * provable anyway.
    */
   readonly focusProbe?: () => Promise<readonly FocusChainElement[]>;
+  /**
+   * The act-site list (`BROKER_ATTACHED_ACT_SITES`). **Empty by default,
+   * which is acting off** — the read-only posture stands and every acting
+   * verb refuses as it always did.
+   */
+  readonly attachedActSites?: readonly string[];
+  /**
+   * The owner-grant signing secret (`BROKER_OWNER_GRANT_SECRET`). Passed to
+   * {@link verifyOwnerGrant} for the one tuple the current call presents;
+   * never logged, never echoed, never part of any refusal sentence.
+   */
+  readonly ownerGrantSecret?: string;
+  /**
+   * Where the session appends one row per acting-verb decision it makes
+   * (`attached_actions`, step 13). Injected because this layer does not own
+   * the store — the same sink convention as {@link log} above.
+   */
+  readonly actionLog?: (entry: AttachedActionLogEntry) => void;
+  /**
+   * What the field guards learn about a named ref — tag, role, accessible
+   * name, input type, autocomplete. Injected on {@link focusProbe}'s seam
+   * convention: the fake relay cannot complete a locator evaluate any more
+   * than it can the accessibility render, and the guards' rows must be
+   * provable anyway. Absent, the session reads the element itself.
+   */
+  readonly elementFactsProbe?: (ref: string) => Promise<ActTarget | null>;
+  /**
+   * Whether the page holds a password or card field. Injected on the same
+   * convention; absent, the session runs its own fixed scan, and a scan the
+   * page will not answer counts as **yes** (a page that cannot rule a field
+   * out cannot be submitted through).
+   */
+  readonly pageSecretProbe?: () => Promise<boolean>;
+  /**
+   * What a `press` that names no ref reaches: the focused control's facts,
+   * or `null` when the read cannot say. Absent, the session reads the page's
+   * own `activeElement`; frames and shadow hosts answer `null`.
+   */
+  readonly focusedControlProbe?: () => Promise<ActTarget | null>;
+}
+
+/**
+ * What the **caller** carries into one acting call, beyond the seam's
+ * `BrowserSession.act` arguments: the identity the owner grant is bound to.
+ * Absent (every other caller, and every other verb), the acting path treats
+ * the grant seam as never engaged — `needs_owner`, never `no_grant`.
+ */
+export interface AttachedActContext {
+  /** The lease's claim id, for the action-log row. */
+  readonly claimId: string;
+  /** The lease key, first component of the grant tuple. */
+  readonly leaseKey: string;
+  /**
+   * The owner grant as the operator's retry carried it, wire form
+   * `<issued-at-seconds>.<base64url tag>` — the tag is what
+   * {@link verifyOwnerGrant} checks, the timestamp is the expiry input.
+   * **Never logged, never echoed**: a refusal names the verdict only.
+   */
+  readonly ownerGrant?: string;
+}
+
+/** One acting decision's audit row, as the step-13 `attached_actions` table holds it. */
+export interface AttachedActionLogEntry {
+  readonly claimId: string;
+  readonly driverTabId: string;
+  readonly verb: string;
+  readonly ref: string | undefined;
+  readonly accessibleName: string | undefined;
+  readonly host: string;
+  /** `acted`, or the refusing rule. The token is never in any field. */
+  readonly outcome: string;
+}
+
+/** The armed answer to one native dialog — the `dialog` verb's disposition. */
+interface DialogDisposition {
+  readonly accept: boolean;
+  readonly promptText?: string;
 }
 
 /**
@@ -494,6 +602,22 @@ export async function attachOverBridge(
         ? {}
         : { outputDirectory: options.outputDirectory }),
       ...(options.focusProbe === undefined ? {} : { focusProbe: options.focusProbe }),
+      ...(options.attachedActSites === undefined
+        ? {}
+        : { attachedActSites: options.attachedActSites }),
+      ...(options.ownerGrantSecret === undefined
+        ? {}
+        : { ownerGrantSecret: options.ownerGrantSecret }),
+      ...(options.actionLog === undefined ? {} : { actionLog: options.actionLog }),
+      ...(options.elementFactsProbe === undefined
+        ? {}
+        : { elementFactsProbe: options.elementFactsProbe }),
+      ...(options.pageSecretProbe === undefined
+        ? {}
+        : { pageSecretProbe: options.pageSecretProbe }),
+      ...(options.focusedControlProbe === undefined
+        ? {}
+        : { focusedControlProbe: options.focusedControlProbe }),
     });
   } catch (error) {
     // Whatever failed, the port must not outlive the refusal: the bridge is
@@ -518,6 +642,47 @@ export class AttachedBrowserSession implements BrowserSession {
 
   /** The press gate's focus answer, when a test injected one — see {@link AttachedSessionOptions.focusProbe}. */
   readonly #focusProbe: (() => Promise<readonly FocusChainElement[]>) | undefined;
+
+  // ── Acting state (S2) ───────────────────────────────────────────────────
+
+  /** `BROKER_ATTACHED_ACT_SITES`, read once at construction. Empty is acting off. */
+  readonly #actSites: readonly string[];
+  /** `BROKER_OWNER_GRANT_SECRET`, held only to verify against. Never logged, never echoed. */
+  readonly #grantSecret: string | undefined;
+  /** The `attached_actions` sink, when the wiring injected one. */
+  readonly #actionLog: ((entry: AttachedActionLogEntry) => void) | undefined;
+  /**
+   * Spent owner grants for **this session's life**: one token answers one
+   * act, and the memory ends where the lease does. Holding the tag in a set
+   * is safe — it is an HMAC digest, not the secret.
+   */
+  readonly #grants: OwnerGrantRegistry = createGrantRegistry();
+  /**
+   * The last acting call per tab+verb+refs (+ the pressed key, for
+   * `press`): when it landed and the navigation generation that was
+   * current then. Feeds the gate's `repeatAfterNavigation` — see
+   * {@link REPEAT_WINDOW_MS}.
+   */
+  readonly #acts = new Map<string, { atMs: number; navGen: number }>();
+  /**
+   * Bumped by every {@link navigate} on this session, before the goto, and by
+   * every **main-frame navigation the page reports** — a clicked link, a
+   * submitted form, a script's redirect, a same-document history change. The
+   * repeat guard asks "did the page move since that act", and the page moves
+   * for reasons other than this session's own goto.
+   */
+  #navGen = 0;
+  /**
+   * Armed `dialog`-verb answers, per handle, consumed once by the page's
+   * own dialog event. An undisposed dialog stays the person's to answer —
+   * see {@link #recordFrom}.
+   */
+  readonly #dialogs = new Map<string, DialogDisposition>();
+
+  /** The field guards' element read, and the two other injected acting answers. */
+  readonly #elementFactsProbe: ((ref: string) => Promise<ActTarget | null>) | undefined;
+  readonly #pageSecretProbe: (() => Promise<boolean>) | undefined;
+  readonly #focusedControlProbe: (() => Promise<ActTarget | null>) | undefined;
 
   /**
    * The handle a page answers to, and the page it names.
@@ -584,12 +749,24 @@ export class AttachedBrowserSession implements BrowserSession {
     context: BrowserContext;
     outputDirectory?: string;
     focusProbe?: () => Promise<readonly FocusChainElement[]>;
+    attachedActSites?: readonly string[];
+    ownerGrantSecret?: string;
+    actionLog?: (entry: AttachedActionLogEntry) => void;
+    elementFactsProbe?: (ref: string) => Promise<ActTarget | null>;
+    pageSecretProbe?: () => Promise<boolean>;
+    focusedControlProbe?: () => Promise<ActTarget | null>;
   }) {
     this.#browser = options.browser;
     this.#bridge = options.bridge;
     this.#connection = options.connection;
     this.#context = options.context;
     this.#focusProbe = options.focusProbe;
+    this.#actSites = options.attachedActSites ?? [];
+    this.#grantSecret = options.ownerGrantSecret;
+    this.#actionLog = options.actionLog;
+    this.#elementFactsProbe = options.elementFactsProbe;
+    this.#pageSecretProbe = options.pageSecretProbe;
+    this.#focusedControlProbe = options.focusedControlProbe;
     // The same eager-name, lazy-create arrangement as `real.ts`, for the same
     // measured reason: an unwired session that never writes must not leave an
     // empty directory behind, and this module still does not know where the
@@ -722,6 +899,19 @@ export class AttachedBrowserSession implements BrowserSession {
     this.#refuseSecrets(secrets);
     this.#requireOurs(tab);
     const page = this.#page(tab);
+    // Bumped **before** the goto: the repeat guard's "did the page move
+    // since that act" question is answered against this counter, and a
+    // navigation that was asked and then failed has still moved — erring
+    // toward treating the page as moved is the safe direction for a guard
+    // whose whole job is stale references.
+    this.#navGen += 1;
+    // **The arm does not ride the navigation.** An armed `dialog` answer
+    // belongs to the page that armed it: navigation is free, so a listed
+    // page can arm an accept and hand its redirect target a standing
+    // disposition — a dialog on an off-list site would then be answered
+    // on the owner's behalf where acting verbs never run. The next page
+    // must re-arm through the fence itself.
+    this.#dialogs.delete(tab.driverTabId);
     const response = await page.goto(
       url,
       ...(waitMs === undefined
@@ -761,8 +951,9 @@ export class AttachedBrowserSession implements BrowserSession {
   }
 
   /**
-   * The read-only half of `browser_act`: scrolling, hovering, and pressing a
-   * key that can only move the view or dismiss an overlay.
+   * `browser_act` on an attached browser: the view-moving verbs always, and
+   * the acting verbs only where `src/attach/gate.ts` allows — the site
+   * fence, the field guards, the repeat window, and the owner grant.
    *
    * **The refusal is decided before the page is resolved**, so a refused verb
    * is a verb the bridge was never asked to perform — the side-effect half of
@@ -770,11 +961,16 @@ export class AttachedBrowserSession implements BrowserSession {
    * runs a fixed one-line expression this file contains; the session's own
    * fixed expressions are not the caller's expression, and the expression
    * {@link evaluate} refuses is refused there, at its own door.
+   *
+   * `context` is {@link AttachedActContext}: the caller-side half of the
+   * owner-grant seam. Every other caller, and every view-moving verb, leaves
+   * it absent and the seam stays unengaged.
    */
   async act(
     tab: TabHandle,
     request: ActionRequest,
     secrets?: SecretScope,
+    context?: AttachedActContext,
   ): Promise<ArtifactResult> {
     this.#refuseSecrets(secrets);
     if ('value' in request && looksLikeSentinel(request.value)) {
@@ -783,10 +979,38 @@ export class AttachedBrowserSession implements BrowserSession {
         'A secret sentinel reached an attached browser. Secrets are typed into fields, and an attached browser is never typed into — the secret was never resolved.',
       );
     }
-    this.#refuseOutsideAllowList(request);
+
+    // ── The host-free half of the gate, before the page or the mirror ────
+    //
+    // What `decide` can answer without knowing which site this is: the
+    // never-acted verbs, an empty act list (the capability itself is off,
+    // so the read-only sentence stands for any site), and the view-moving
+    // allow-list. `attached.act_site_off_list` is the one answer that
+    // genuinely needs the page's address, and it waits for the second,
+    // fully-informed `decide` below — a refusal that needs a host the
+    // session has not looked at yet would be a guess about someone else's
+    // tab. This ordering is also why a hostile verb on a **foreign** handle
+    // still refuses on the rule before the ownership rule: the gate's
+    // sentence is true of the verb, whatever tab it named.
+    const preflight = decide({
+      siteHost: '',
+      verb: request.action,
+      ...(request.action === 'press' ? { value: request.value } : {}),
+      stage: 'fence',
+      pageHasSecretField: false,
+      actSites: this.#actSites,
+    });
+    if (preflight.decision !== 'allow' && preflight.decision !== 'attached.act_site_off_list') {
+      this.#logAction(tab, request, context, '', undefined, preflight.decision);
+      throw new AttachedError(preflight.decision, preflight.message);
+    }
+
     this.#requireOurs(tab);
 
     const page = this.#page(tab);
+    if (!isViewMovingAction(request)) {
+      return await this.#actOnListedSite(tab, page, request, context);
+    }
     switch (request.action) {
       case 'scroll': {
         if (request.ref === undefined) {
@@ -810,8 +1034,9 @@ export class AttachedBrowserSession implements BrowserSession {
         break;
       }
       case 'press': {
-        // Allowed keys only reach the page, never a field's text: `#refuseOutsideAllowList`
-        // already checked the key against the movement-and-dismiss set.
+        // Allowed keys only reach the page, never a field's text: the
+        // preflight's `decide` already let the key through as a movement or
+        // dismiss key.
         //
         // **Whether a key could reach a focused field is a fact about the page,
         // not about the key name** — §7.1's `attached.read_only` refuses "press
@@ -933,6 +1158,447 @@ export class AttachedBrowserSession implements BrowserSession {
         },
       ];
     });
+  }
+
+  // ── Acting on a listed site ─────────────────────────────────────────────
+
+  /**
+   * The acting verbs, reached only after the preflight let the verb through
+   * as one that *can* act and the tab resolved to one of ours.
+   *
+   * The gate's remaining answers need facts the page holds — its host, what
+   * the named control is, whether the page carries a secret field, whether
+   * this is a replay across a navigation, and what the owner grant says —
+   * so they are read here, in the open, before the browser performs
+   * anything. **Every fact the page will not answer is a refusal**, in the
+   * same fail-safe direction as the focus read: a control this session
+   * cannot describe is a control it cannot rule out as a password field,
+   * and the call ends before `Input.*` is ever mentioned.
+   */
+  async #actOnListedSite(
+    tab: TabHandle,
+    page: Page,
+    request: ActionRequest,
+    context: AttachedActContext | undefined,
+  ): Promise<ArtifactResult> {
+    const host = hostOf(page.url());
+
+    // The site fence, with the address now known. An attached page on
+    // `about:blank` or an unread address answers `''`: not on any list, and
+    // the honest reason is "this site is not listed", not a guess.
+    const fence = decide({
+      siteHost: host,
+      verb: request.action,
+      ...(request.action === 'press' ? { value: request.value } : {}),
+      stage: 'fence',
+      pageHasSecretField: false,
+      actSites: this.#actSites,
+    });
+    if (fence.decision !== 'allow') {
+      this.#logAction(tab, request, context, host, undefined, fence.decision);
+      throw new AttachedError(fence.decision, fence.message);
+    }
+
+    // ── What this call reaches ────────────────────────────────────────────
+    const refs = this.#refsOf(request);
+    const named = new Map<string, ActTarget>();
+    // **One whole-page snapshot serves every ref of the call.** The library
+    // resolves a ref against the last snapshot taken in its frame, and a
+    // snapshot of one element makes that the frame's whole ref map, holding only the element's own subtree —
+    // so reading each ref's facts from its own snapshot left the second ref
+    // of a drag or a form unresolvable.
+    let pageSnapshot: string | undefined;
+    if (refs.length > 0 && this.#elementFactsProbe === undefined) {
+      try {
+        pageSnapshot = await this.#pageSnapshotText(page);
+      } catch {
+        const message = `This "${request.action}" could not read the page to learn which controls its references are, so it cannot rule out a password or code field; nothing was attempted.`;
+        this.#logAction(tab, request, context, host, undefined, 'attached.field_forbidden');
+        throw new AttachedError('attached.field_forbidden', message);
+      }
+    }
+    for (const ref of refs) {
+      try {
+        named.set(ref, await this.#elementFacts(page, ref, pageSnapshot));
+      } catch (error) {
+        // A ref that resolves to nothing is the stale-reference case with its
+        // own guidance; anything else that went wrong reading the control is
+        // the unread-control case, and both refuse before any act.
+        if (error instanceof AttachedError) {
+          this.#logAction(tab, request, context, host, undefined, error.rule);
+          throw error;
+        }
+        const message = `This "${request.action}" could not be asked which control "${ref}" is, so it cannot rule out a password or code field; nothing was attempted.`;
+        this.#logAction(tab, request, context, host, undefined, 'attached.field_forbidden');
+        throw new AttachedError('attached.field_forbidden', message);
+      }
+    }
+
+    const pageHasSecretField = await this.#pageSecretField(page);
+    const navigationsBefore = this.#navGen;
+    const focusedControl =
+      request.action === 'press' && request.ref === undefined
+        ? await this.#focusedControlFacts(page)
+        : undefined;
+    const repeatAfterNavigation = this.#isRepeat(tab, request, refs);
+
+    // The grant: verified against **this exact call** — this lease, this
+    // ref, the accessible name this page reports for it right now, this
+    // host — so a token minted for "Pay" cannot answer for "Delete", and a
+    // retargeted one is `forged`, not a smaller verdict. A call naming more
+    // than one control (drag's pair, fill_form's list) carries no grant at
+    // all: the tuple binds a single ref, and a token that cannot say which
+    // control it approved approves none of them.
+    // The control the grant binds: the named ref if the call named one,
+    // else the focused control a no-ref press reaches — the same control the
+    // gate reads. A token signed over any other name, ref or host is
+    // `forged` against this call.
+    const boundTarget = refs[0] !== undefined ? named.get(refs[0]) : (focusedControl ?? undefined);
+    const grant = this.#grantState(context, refs, boundTarget, host, request);
+
+    const decideOne = (target: ActTarget | undefined): GateDecision =>
+      decide({
+        siteHost: host,
+        verb: request.action,
+        ...('value' in request ? { value: request.value } : {}),
+        ...(target === undefined ? {} : { target }),
+        ...(focusedControl === undefined ? {} : { focusedControl }),
+        pageHasSecretField,
+        ...(grant === undefined ? {} : { grant }),
+        repeatAfterNavigation,
+        actSites: this.#actSites,
+      });
+
+    if (request.action === 'fill_form') {
+      // Every field passes on its own facts; one forbidden field refuses the
+      // whole form, because a form filled except for one box is the shape a
+      // page submits by accident.
+      for (const field of request.fields) {
+        const decision = decideOne(named.get(field.ref));
+        if (decision.decision !== 'allow') {
+          this.#logAction(tab, request, context, host, named.get(field.ref), decision.decision);
+          throw new AttachedError(decision.decision, decision.message);
+        }
+      }
+    } else if (request.action === 'drag') {
+      // **Both endpoints are decided.** A drag moves a value *into*
+      // `targetRef` and drops *onto* it: Chrome accepts text dropped into
+      // an input, and a control named by a consequence word is a
+      // consequential target whatever the source was called. Reading both
+      // refs' facts and deciding only the first is a gate that has read a
+      // control and not asked about it — and a control it has not asked
+      // about is a control it has not cleared. The pair carries no grant
+      // (`#grantState` refuses multi-ref calls), so a consequence on either
+      // side answers `needs_owner`, never an allow.
+      for (const ref of refs) {
+        const facts = named.get(ref);
+        const decision = decideOne(facts);
+        if (decision.decision !== 'allow') {
+          this.#logAction(tab, request, context, host, facts, decision.decision);
+          throw new AttachedError(decision.decision, decision.message);
+        }
+      }
+    } else {
+      // A `press` naming no ref passes **no** target, so the gate falls back
+      // to the focused control — and if that read could not say, the gate's
+      // own "cannot say which control it reaches" row refuses. The key needs
+      // no mention here: every key the gate would exempt as view-moving left
+      // for the view-moving branch above.
+      const facts = refs[0] === undefined ? undefined : named.get(refs[0]);
+      const decision = decideOne(facts);
+      if (decision.decision !== 'allow') {
+        this.#logAction(tab, request, context, host, facts, decision.decision);
+        throw new AttachedError(decision.decision, decision.message);
+      }
+    }
+
+    // ── Allowed: the browser work, mirroring `real.ts` verb for verb ──────
+    await this.#performActing(tab, page, request);
+    // The generation recorded is the one **before** the act, so a page the
+    // act itself moved (a click on "Next", a submit) counts as moved since:
+    // the replay of the same ref onto the new page is the stale-reference
+    // mistake the guard exists for.
+    this.#acts.set(this.#repeatKey(tab, request, refs), {
+      atMs: Date.now(),
+      navGen: navigationsBefore,
+    });
+    const primary = refs[0];
+    this.#logAction(
+      tab,
+      request,
+      context,
+      host,
+      primary === undefined ? undefined : named.get(primary),
+      'acted',
+    );
+    return await this.#writeSnapshot(tab, page);
+  }
+
+  /** The refs one acting request names, in call order. */
+  #refsOf(request: ActionRequest): readonly string[] {
+    switch (request.action) {
+      case 'click':
+      case 'check':
+      case 'hover':
+      case 'type':
+      case 'fill':
+      case 'select':
+        return [request.ref];
+      case 'press':
+        return request.ref === undefined ? [] : [request.ref];
+      case 'drag':
+        return [request.ref, request.targetRef];
+      case 'fill_form':
+        return request.fields.map((field) => field.ref);
+      default:
+        return [];
+    }
+  }
+
+  #repeatKey(tab: TabHandle, request: ActionRequest, refs: readonly string[]): string {
+    // "Identical act" means the key it presses too: `press` is the one
+    // acting verb whose *parameter* is the act (the others say everything
+    // they do through verb and refs), so a second press of a **different**
+    // key onto the same refs after a navigation is a new act, not a
+    // replay — and the guard that refuses anyway over-refuses safe keys
+    // off a page it merely wants re-read.
+    const pressed = request.action === 'press' ? `|${request.value}` : '';
+    return `${tab.driverTabId}|${request.action}${pressed}|${refs.join(',')}`;
+  }
+
+  /**
+   * The repeat answer the gate honours: the same tab, verb, refs (and
+   * pressed key) landed inside the window **and** a navigation has
+   * happened since — replaying an
+   * act onto a page that has moved underneath it is the mistake this stops.
+   * The same act again with no navigation between is not a repeat.
+   */
+  #isRepeat(tab: TabHandle, request: ActionRequest, refs: readonly string[]): boolean {
+    const prior = this.#acts.get(this.#repeatKey(tab, request, refs));
+    if (prior === undefined) return false;
+    return Date.now() - prior.atMs <= REPEAT_WINDOW_MS && this.#navGen > prior.navGen;
+  }
+
+  /**
+   * The grant as this call presents it: absent when the caller engaged no
+   * seam (the agent's path), present-and-verified when an operator's retry
+   * carried a token. Multi-ref calls never engage it — see the note at the
+   * call site. The wire form is `<issued-at-seconds>.<base64url tag>`; a
+   * token with no parseable stamp verifies against issued-at `0`, which
+   * `verifyOwnerGrant` reads as expired at best and forged at worst —
+   * malformed input is never a partial pass.
+   */
+  #grantState(
+    context: AttachedActContext | undefined,
+    refs: readonly string[],
+    control: ActTarget | undefined,
+    host: string,
+    request: ActionRequest,
+  ): GrantState | undefined {
+    if (context?.ownerGrant === undefined) return undefined;
+    if (refs.length > 1) return undefined;
+    const ref = refs[0] ?? '';
+    const at = context.ownerGrant.lastIndexOf('.');
+    let tag = context.ownerGrant;
+    let issuedAtSeconds = 0;
+    if (at > 0) {
+      const stamped = Number(context.ownerGrant.slice(0, at));
+      if (Number.isSafeInteger(stamped) && stamped >= 0) {
+        tag = context.ownerGrant.slice(at + 1);
+        issuedAtSeconds = stamped;
+      }
+    }
+    const verdict = verifyOwnerGrant(
+      tag,
+      this.#grantSecret,
+      {
+        leaseKey: context.leaseKey,
+        ref,
+        accessibleName: control?.accessibleName ?? '',
+        urlHost: host,
+        issuedAtSeconds,
+        // The grant answers one verb carrying one value: approving "click
+        // Pay" is not approving a `type` of a different amount into the
+        // same ref.
+        verb: request.action,
+        valueDigest: grantValueDigest('value' in request ? request.value : undefined),
+      },
+      Math.floor(Date.now() / 1_000),
+      this.#grants,
+    );
+    return { present: true, verdict };
+  }
+
+  /**
+   * The page's accessibility snapshot as text — the one a call's refs are
+   * read from, and the one the library then resolves them against. Marks the
+   * page as referenced, so {@link #locate} does not take a second one that
+   * would replace this.
+   */
+  async #pageSnapshotText(page: Page): Promise<string> {
+    const text = await page.locator('html').ariaSnapshot({
+      mode: 'ai',
+      timeout: SNAPSHOT_RENDER_MS,
+    });
+    this.#referenced.add(page);
+    return text;
+  }
+
+  /**
+   * One ref's facts as the gate reads them. With the injected probe
+   * ({@link AttachedSessionOptions.elementFactsProbe}) the answer is given;
+   * without it the session reads the element — `readControlFacts`, which
+   * joins the page's own read (type, `autocomplete`, every name the control
+   * answers to, the frame it lives in) with the snapshot's line for the ref.
+   * A read that will not answer throws — the caller turns that into a
+   * refusal, never a guess.
+   */
+  async #elementFacts(page: Page, ref: string, snapshot?: string): Promise<ActTarget> {
+    if (this.#elementFactsProbe !== undefined) {
+      const answer = await this.#elementFactsProbe(ref);
+      // `null` from the probe is "this control cannot be described", which
+      // is the unread-control case, not a blank target: a guard cannot clear
+      // a field it cannot see, and the caller turns the throw into a
+      // refusal.
+      if (answer === null) throw new Error(`the element read could not describe "${ref}"`);
+      return answer;
+    }
+    return await readControlFacts(await this.#locate(page, ref), snapshot, ref);
+  }
+
+  /**
+   * Whether the page holds a secret field. The fixed scan is this file's,
+   * not the caller's; **a page that will not answer counts as holding one**
+   * — the fact's only use is refusing a submit over it, and the safe
+   * failure is the refusal.
+   */
+  async #pageSecretField(page: Page): Promise<boolean> {
+    if (this.#pageSecretProbe !== undefined) {
+      try {
+        return await this.#pageSecretProbe();
+      } catch {
+        return true;
+      }
+    }
+    return await scanSecretField(page);
+  }
+
+  /**
+   * What a `press` that names no ref reaches: the focused control's facts,
+   * or `null` when the read cannot say. The same read a named ref gets (see
+   * `readFocusedControl`): the focused field's type and `autocomplete` are
+   * known, so a password box holding the cursor is refused as one.
+   */
+  async #focusedControlFacts(page: Page): Promise<ActTarget | null> {
+    if (this.#focusedControlProbe !== undefined) {
+      try {
+        return await this.#focusedControlProbe();
+      } catch {
+        return null;
+      }
+    }
+    try {
+      return await readFocusedControl(page);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The physical half of an allowed acting verb — `real.ts`'s operations,
+   * over this bridge. Only reached after every gate has said yes.
+   * (`hover` and `scroll` never arrive here; the view-moving branch above
+   * runs them.)
+   */
+  async #performActing(tab: TabHandle, page: Page, request: ActionRequest): Promise<void> {
+    switch (request.action) {
+      case 'click': {
+        await (await this.#locate(page, request.ref)).click();
+        break;
+      }
+      case 'check': {
+        await (await this.#locate(page, request.ref)).check();
+        break;
+      }
+      case 'type': {
+        // `type` types as if by keyboard (`real.ts`'s `pressSequentially`);
+        // `fill` sets the value — the same split, the same reasons.
+        await (await this.#locate(page, request.ref)).pressSequentially(request.value);
+        break;
+      }
+      case 'fill': {
+        await (await this.#locate(page, request.ref)).fill(request.value);
+        break;
+      }
+      case 'select': {
+        await (await this.#locate(page, request.ref)).selectOption(request.value);
+        break;
+      }
+      case 'press': {
+        if (request.ref === undefined) {
+          await page.keyboard.press(request.value);
+        } else {
+          await (await this.#locate(page, request.ref)).press(request.value);
+        }
+        break;
+      }
+      case 'fill_form': {
+        for (const field of request.fields) {
+          await (await this.#locate(page, field.ref)).fill(field.value);
+        }
+        break;
+      }
+      case 'drag': {
+        await (
+          await this.#locate(page, request.ref)
+        ).dragTo(await this.#locate(page, request.targetRef));
+        break;
+      }
+      case 'dialog': {
+        // Arm the disposition for the dialog this verb exists to answer;
+        // {@link #recordFrom}'s handler spends it once. A dialog that never
+        // comes costs nothing; a dialog with no armed disposition stays the
+        // person's to answer.
+        this.#dialogs.set(tab.driverTabId, {
+          accept: request.response.accept,
+          ...(request.response.promptText === undefined
+            ? {}
+            : { promptText: request.response.promptText }),
+        });
+        break;
+      }
+    }
+  }
+
+  /** One audit row for one acting decision, when the caller identified itself. */
+  #logAction(
+    tab: TabHandle,
+    request: ActionRequest,
+    context: AttachedActContext | undefined,
+    host: string,
+    target: ActTarget | undefined,
+    outcome: string,
+  ): void {
+    if (context === undefined || this.#actionLog === undefined) return;
+    const refs = this.#refsOf(request);
+    // The name is page-controlled text: capped, so a hostile page cannot
+    // bloat the store a row at a time.
+    const name = target?.accessibleName;
+    try {
+      this.#actionLog({
+        claimId: context.claimId,
+        driverTabId: tab.driverTabId,
+        verb: request.action,
+        ref: refs[0],
+        accessibleName: name === undefined ? undefined : name.slice(0, ACTION_NAME_CAP),
+        host,
+        outcome,
+      });
+    } catch {
+      // The audit row is written after the browser acted on the `acted`
+      // path; a store that is busy must not turn a performed act into an
+      // error the caller would retry; the row is the thing that is lost.
+    }
   }
 
   /**
@@ -1171,20 +1837,6 @@ export class AttachedBrowserSession implements BrowserSession {
     );
   }
 
-  #refuseOutsideAllowList(request: ActionRequest): void {
-    if (isViewMovingAction(request)) return;
-    if (request.action === 'press') {
-      throw new AttachedError(
-        'attached.read_only',
-        `press of "${request.value}" is not available on an attached browser. Only view-moving and overlay-dismissing keys are: ${[...ALLOWED_PRESS_KEYS].join(', ')}. A key that could reach a focused field is typing, and typing writes to his page.`,
-      );
-    }
-    throw new AttachedError(
-      'attached.read_only',
-      `The ${request.action} action is not available on an attached browser. An attached browser belongs to a person and this service only reads it: scroll, hover and press (${[...ALLOWED_PRESS_KEYS].join(', ')}) are the whole allow-list, and nothing that clicks, types, selects, resizes, emulates, answers dialogs, fills, drags or uploads ever runs.`,
-    );
-  }
-
   // ── Resolution ──────────────────────────────────────────────────────────
 
   #page(tab: TabHandle): Page {
@@ -1370,10 +2022,49 @@ export class AttachedBrowserSession implements BrowserSession {
       };
     });
 
-    // **No dialog handler, and that is the read-only rule, not an omission.**
-    // Answering a native dialog is the `dialog` verb, and no verb of the
-    // write half runs here; a dialog on his tab is his to answer, and an
-    // attached session that dismissed it for him would be acting on his page.
+    // **The page moving drops the arm.** A disposition belongs to the page
+    // that armed it: a click on a link, a submitted form or a script's
+    // redirect carries the tab to another page without this session's own
+    // goto, and a standing "accept" would then answer that page's dialog for
+    // the owner — on a site the act list may not even name. The same event
+    // bumps the repeat guard's generation.
+    page.on('framenavigated', (frame) => {
+      if (frame !== page.mainFrame()) return;
+      this.#navGen += 1;
+      this.#dialogs.delete(handle);
+    });
+
+    // **A dialog is answered only when the `dialog` verb armed an answer
+    // first.** The verb arms a disposition (`#actOnListedSite`, behind the
+    // gate); this handler spends it, once. A dialog with nothing armed is
+    // his to answer — an attached session dismissing a stranger on his own
+    // initiative would be acting on his page without being asked to.
+    //
+    // **And the answer is gated at the moment it is given.** The arm was
+    // decided against the page that armed it; the dialog arrives from
+    // whatever the page is now, so the site fence is asked again against
+    // the live address, and the dialog's own message goes through the
+    // consequence table — `confirm("Permanently delete your account?")`
+    // raised by a control that was named something harmless is a consequential
+    // step, and the owner's. Either refusal spends the arm and leaves the
+    // dialog where it was: his to answer.
+    page.on('dialog', (dialog) => {
+      const disposition = this.#dialogs.get(handle);
+      if (disposition === undefined) return;
+      this.#dialogs.delete(handle);
+      const fence = decide({
+        siteHost: hostOf(page.url()),
+        verb: 'dialog',
+        stage: 'fence',
+        pageHasSecretField: false,
+        actSites: this.#actSites,
+      });
+      if (fence.decision !== 'allow' || isConsequentialText(dialog.message())) return;
+      const answered = disposition.accept
+        ? dialog.accept(disposition.promptText)
+        : dialog.dismiss();
+      void answered.catch(() => undefined); // the tab may be gone by the time it lands
+    });
   }
 
   #recording(handle: string): PageRecording {
@@ -1425,4 +2116,27 @@ export class AttachedBrowserSession implements BrowserSession {
     }
     return locator;
   }
+}
+
+/**
+ * The one call the act operation's after-commit closure makes.
+ *
+ * The seam's `act` takes no caller context, and the owner-grant seam must
+ * not widen it for the sessions that have no use for one — so the context
+ * arrives through this wrapper: an attached session gets the grant and the
+ * claim identity, every other session gets exactly the call it has always
+ * gotten. Split rather than a fourth parameter on the interface because a
+ * context on, say, a launched session would be a field nothing reads — and
+ * a field nothing reads is a field somebody eventually sets by mistake.
+ */
+export function actAttached(
+  session: BrowserSession,
+  tab: TabHandle,
+  request: ActionRequest,
+  secrets: SecretScope | undefined,
+  context: AttachedActContext | undefined,
+): Promise<ArtifactResult> {
+  return session instanceof AttachedBrowserSession
+    ? session.act(tab, request, secrets, context)
+    : session.act(tab, request, secrets);
 }

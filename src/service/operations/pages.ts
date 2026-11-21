@@ -12,7 +12,8 @@ import type {
 // a pure predicate on the request, with no browser anything, imported so
 // the service door and the seam door consult **one** list rather than two
 // that can drift.
-import { isViewMovingAction } from '../../browser/attached.ts';
+import { actAttached, hostOf, type AttachedActContext } from '../../browser/attached.ts';
+import { decide as gateDecide, type GateRefusal } from '../../attach/gate.ts';
 import { append, type EventKind } from '../events.ts';
 import { claimIdForKey, extendLease, resolveLease, type ResolvedLease } from '../leases.ts';
 import { resolveOwnedTabOrRefuse } from '../ownership.ts';
@@ -352,6 +353,24 @@ function browserKind(scope: ArbitrationScope, browserId: string): string | undef
 }
 
 /**
+ * The refusal names `src/attach/gate.ts` can answer with — the set whose
+ * session-door refusals get their own `deny` row in {@link afterCommitWork}.
+ * `read_only`'s half that only the page can know (the focus gate) was the
+ * original single member; the rest arrived with the act fence, and pinning
+ * the whole set here means a new gate verdict that does not land in it is a
+ * visible omission, not a silently unrecorded refusal.
+ */
+const GATE_DENIAL_RULES: ReadonlySet<GateRefusal> = new Set<GateRefusal>([
+  'attached.read_only',
+  'attached.act_site_off_list',
+  'attached.field_forbidden',
+  'attached.needs_owner',
+  'attached.act_repeat',
+  'attached.grant_invalid',
+  'attached.no_grant',
+]);
+
+/**
  * Refuse an attached breach **as the calling operation's own denial**: one
  * `deny` row through `recordRefusal` — which survives the rollback the
  * throw causes, and is the only row the call writes — then throw, before
@@ -651,12 +670,12 @@ function afterCommitWork(
           if (
             attachedDenial !== undefined &&
             error instanceof BrokerError &&
-            error.rule === 'attached.read_only'
+            GATE_DENIAL_RULES.has(error.rule as GateRefusal)
           ) {
             append(scope.db, {
               kind: attachedDenial.kind,
               outcome: 'deny',
-              guard: 'attached.read_only',
+              guard: error.rule,
               adapter: scope.adapter,
               claimId,
               tabId: tab.tabId,
@@ -864,6 +883,20 @@ export function decideNavigate(
       // and this assignment is the whole of the redirect fix: the value was
       // always available here and was being thrown away.
       arrived = await session.navigate(page, url, waitMs, secrets);
+      // **Record the arrival, not the request.** This is the fact the
+      // attached act fence reads at a later call's decide step, and the
+      // difference is the redirect: a requested address is what the caller
+      // meant, the arrived address is what the browser is actually showing,
+      // and a site fence that consulted the caller's intent would fence a
+      // page that had been carried somewhere else. Written outside the
+      // (already committed) transaction, single-row, the way the driver
+      // name above is — and left untouched if the navigation failed,
+      // because a failed navigation has not moved anybody.
+      scope.db
+        .prepare<{ url: string; id: string }, void>(
+          'UPDATE tabs SET last_url = @url WHERE id = @id',
+        )
+        .run({ url: arrived.url, id: tab.tabId });
     },
     lease.claimId,
   );
@@ -911,6 +944,18 @@ export interface ActInput extends TabOperationInput {
    * and it is preferable to a separate input type per verb.
    */
   readonly uploadRoot?: string | undefined;
+  /**
+   * The act-site list (`BROKER_ATTACHED_ACT_SITES`), same handed-in-not-read
+   * discipline as {@link uploadRoot}: this door and the session door must see
+   * one configuration snapshot, not two.
+   */
+  readonly attachedActSites?: readonly string[];
+  /**
+   * An owner grant carried by an operator-side retry. Opaque to this layer:
+   * it is passed to the attached session untouched, never logged, never put
+   * in any ledger row, and never quoted back in a refusal.
+   */
+  readonly ownerGrant?: string;
 }
 
 export interface ActResult extends TabOperationResult {
@@ -1067,27 +1112,49 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
   const request = resolveActionFiles(validated, input.uploadRoot);
   const { lease, tab, expiresAt } = admit(scope, input, 'act');
 
-  // **The attached door, before any row and before any work** (§13n): a
-  // verb that would write to a person's page is refused as `act`'s own
-  // denial — no `allow` row, no secret bookkeeping, no after-commit closure
-  // — and so no `pageFor` opening a tab on the way to a refusal. The
-  // allow-list asked here is the session's own `isViewMovingAction`: two
-  // doors, one set, so they cannot drift. Secret placeholders need no
-  // attached branch here: `act.secret_placement` and the unresolvable-
-  // sentinel rule already refuse them in this handler **before admission**
-  // for every browser (§3.8a), so a secret never reaches a decision about
-  // this kind at all — and every action that *could* carry a resolved
-  // secret is on the wrong side of this allow-list anyway.
-  if (browserKind(scope, tab.browserId) === 'attached' && !isViewMovingAction(request)) {
-    refuseAttachedOperation(
-      scope,
-      lease,
-      tab,
-      'act',
-      'attached.read_only',
-      `The ${request.action} action is not available on an attached browser: the browser belongs to a person, and scroll, hover and view-moving key presses are the whole allow-list. Nothing was asked of the browser, and no tab was opened.`,
-      { action: request.action },
-    );
+  // **The attached door, before any row and before any work** (§13n, and
+  // the act-site fence S2 widens): an action the gate can refuse on what
+  // this layer already holds — the verb, the site, the configured list — is
+  // refused as `act`'s own denial: no `allow` row, no secret bookkeeping, no
+  // after-commit closure, and so no `pageFor` opening a tab on the way to a
+  // refusal.
+  //
+  // **The gate here is the session's own `decide`**, called with only the
+  // facts this door can honestly hold: no page facts (the browser is not
+  // asked anything inside the transaction), and the site read from
+  // `tabs.last_url` — the address the **last navigation reported arriving
+  // at**, not the one it requested, because a redirect that leaves a
+  // read-only site on an acting site is exactly the case the fence exists
+  // for. `pageHasSecretField: false` is not a claim about the page; it is
+  // the honest statement that this door has not read one, and it can only
+  // make this door *more* permissive than the session's fuller decision —
+  // which then re-decides with the real facts, and its refusals get their
+  // own deny rows. Two doors, one gate function, so they cannot drift.
+  if (browserKind(scope, tab.browserId) === 'attached') {
+    const arrival = scope.db
+      .prepare<{ id: string }, { last_url: string | null }>(
+        'SELECT last_url FROM tabs WHERE id = @id',
+      )
+      .get({ id: tab.tabId });
+    const decision = gateDecide({
+      siteHost: hostOf(arrival?.last_url ?? ''),
+      verb: request.action,
+      ...(request.action === 'press' ? { value: request.value } : {}),
+      stage: 'fence',
+      pageHasSecretField: false,
+      actSites: input.attachedActSites ?? [],
+    });
+    if (decision.decision !== 'allow') {
+      refuseAttachedOperation(
+        scope,
+        lease,
+        tab,
+        'act',
+        decision.decision,
+        `${decision.message} Nothing was asked of the browser, and no tab was opened.`,
+        { action: request.action },
+      );
+    }
   }
 
   // Read before this call's own names are recorded, so `received` means
@@ -1137,17 +1204,29 @@ export function decideAct(scope: ArbitrationScope, input: ActInput): Arbitration
     sessionId: lease.sessionId,
     browserId: tab.browserId,
   });
+  // The attached session's acting calls carry the grant seam's caller half;
+  // every other session is handed the plain call. The token itself is passed
+  // through untouched and is never written to a row, a detail, or a message
+  // on any path out of this file.
+  const attachedContext: AttachedActContext | undefined =
+    browserKind(scope, tab.browserId) === 'attached'
+      ? {
+          claimId: lease.claimId,
+          leaseKey: input.key,
+          ...(input.ownerGrant === undefined ? {} : { ownerGrant: input.ownerGrant }),
+        }
+      : undefined;
   const work = afterCommitWork(
     scope,
     input,
     tab,
-    (session, page) => session.act(page, request, secrets),
+    (session, page) => actAttached(session, page, request, secrets, attachedContext),
     lease.claimId,
-    // The one session refusal this verb can still hit after admission.
-    // The decide door refused every off-list action by name before any row
-    // existed, so an `attached.read_only` coming back from the session is
-    // the page's own fact — a movement key refused by the focus gate — and
-    // this names the row it owes.
+    // Session refusals this verb can still hit after admission: the gate's
+    // page-fact half (which control a press reaches, what a ref is, whether
+    // this replays across a navigation, what the grant says) is only
+    // knowable at execution time, and each of those owes its own deny row —
+    // `attachedDenial` lets the catch name the refusing rule, not pin one.
     { kind: 'act', sessionId: lease.sessionId, detail: { action: request.action } },
   );
   return {

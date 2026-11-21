@@ -105,6 +105,8 @@ async function withAttachedStore(
     // here or could.
     attachedExtensionId: 'abcdefghijklmnopqrstuvwxyz012345',
     attachedToken: 'a-token-never-logged',
+    attachedActSites: [],
+    ownerGrantSecret: undefined,
     // A configured binary for the attached name — the open path needs it to
     // run the connect page. It is never executed here: the opener is always
     // injected, so no spawn happens and no file has to exist.

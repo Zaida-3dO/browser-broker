@@ -73,6 +73,8 @@ describe('the doctor report', () => {
         attachedTabs: 3,
         attachedExtensionId: undefined,
         attachedToken: undefined,
+        attachedActSites: [],
+        ownerGrantSecret: undefined,
       });
       try {
         const report = runDoctor(temp.environment, store.db);
@@ -117,6 +119,8 @@ describe('the doctor report', () => {
         attachedTabs: 3,
         attachedExtensionId: undefined,
         attachedToken: undefined,
+        attachedActSites: [],
+        ownerGrantSecret: undefined,
       });
       try {
         const withPair = runDoctor(pair.environment, store.db, { configuredTabBudget: 15 });
@@ -501,6 +505,8 @@ describe('the discovery probe reaching runDoctor from a production route', () =>
         attachedBrowsers: ['desk'],
         attachedExtensionId: 'abcdefghijklmnopabcdefghijklmnop',
         attachedToken: 'a-configured-token',
+        attachedActSites: [],
+        ownerGrantSecret: undefined,
         browserPaths: new Map([['desk', executable]]),
       });
       try {

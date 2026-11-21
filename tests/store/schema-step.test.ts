@@ -75,15 +75,15 @@ test(
     // EXPECTED_VERSION deliberately: deriving it would make the test agree
     // with the build by construction, and the assertion is precisely that a
     // build refuses a version it does not know.
-    store.db.pragma('user_version = 13');
+    store.db.pragma('user_version = 14');
     await assert.rejects(stepSchema(store.db), (error: unknown) => {
       assert.ok(error instanceof StartupRefusal);
       assert.equal(error.rule, 'startup.schema_stepped');
-      assert.match(error.message, /13/);
+      assert.match(error.message, /14/);
       return true;
     });
     // Nothing was written: the version is untouched, not reset.
-    assert.equal(readStoreVersion(store.db), 13);
+    assert.equal(readStoreVersion(store.db), 14);
   }),
 );
 
@@ -307,10 +307,19 @@ test(
       )
       .run();
 
+    // `tabs` is read on its **pre-step-thirteen** columns, named rather than
+    // `SELECT *`: step thirteen adds one (`last_url`), so a `SELECT *` taken
+    // at v11 would differ from one taken at the build's current version by
+    // that column alone, and the byte-for-byte assertion here is about the
+    // twelve columns step twelve's copy list must carry, not about a column
+    // that did not exist at v11. The added column is pinned by its own
+    // v12-to-thirteen test below.
+    const TAB_COLUMNS = `id, claim_id, browser_id, driver_tab_id, state, opened_at, closed_at,
+                  close_failed, close_attempts, created_at, updated_at`;
     const before = {
       browsers: store.db.prepare('SELECT * FROM browsers ORDER BY id').all(),
       claims: store.db.prepare('SELECT * FROM claims ORDER BY id').all(),
-      tabs: store.db.prepare('SELECT * FROM tabs ORDER BY id').all(),
+      tabs: store.db.prepare(`SELECT ${TAB_COLUMNS} FROM tabs ORDER BY id`).all(),
     };
 
     await stepSchema(store.db);
@@ -321,7 +330,10 @@ test(
     // twelve.
     assert.deepEqual(store.db.prepare('SELECT * FROM browsers ORDER BY id').all(), before.browsers);
     assert.deepEqual(store.db.prepare('SELECT * FROM claims ORDER BY id').all(), before.claims);
-    assert.deepEqual(store.db.prepare('SELECT * FROM tabs ORDER BY id').all(), before.tabs);
+    assert.deepEqual(
+      store.db.prepare(`SELECT ${TAB_COLUMNS} FROM tabs ORDER BY id`).all(),
+      before.tabs,
+    );
 
     // Named once more for the pair the rebuild exists to lose: sign-in
     // state on an in-flight sign-in, the step ten columns the copy list
@@ -351,6 +363,109 @@ test(
         .prepare("INSERT INTO browsers (id, kind, state) VALUES ('odd', 'ephemeral', 'stopped')")
         .run();
     }, /CHECK constraint failed/);
+  }),
+);
+
+test(
+  'A v12 STORE WITH BROWSERS, CLAIMS AND TABS STEPS TO THIRTEEN WITH EVERY VALUE INTACT',
+  withStore(async (store) => {
+    // Step thirteen adds one column to `tabs` and one table. The column is
+    // the shape most migrations lose quietly — an `ALTER` that fails on a
+    // STRICT table, or a later rebuild that forgets the new column from its
+    // copy list — so the populated case runs the step over a store that has
+    // leases and tabs in it and asserts every prior column survives, not
+    // merely that the step applied.
+    await stepTo(store, 12);
+
+    store.db
+      .prepare(
+        `INSERT INTO claims
+           (id, key_hash, session_id, browser_id, state, purpose,
+            expires_at, ttl_seconds, activated_at, ended_at, revoke_reason)
+         VALUES ('claim-1', 'hash-1', 'session-1', 'regular', 'active', 'reading a page',
+            '2026-11-16T00:10:00.000Z', 600, '2026-11-16T00:00:00.000Z', NULL, NULL)`,
+      )
+      .run();
+    store.db
+      .prepare(
+        `INSERT INTO tabs (id, claim_id, browser_id, driver_tab_id, state)
+         VALUES ('tab-1', 'claim-1', 'regular', 'driver-1', 'open')`,
+      )
+      .run();
+
+    const before = {
+      browsers: store.db.prepare('SELECT * FROM browsers ORDER BY id').all(),
+      claims: store.db.prepare('SELECT * FROM claims ORDER BY id').all(),
+      tabs: store.db
+        .prepare(
+          `SELECT id, claim_id, browser_id, driver_tab_id, state, opened_at, closed_at,
+                  close_failed, close_attempts, created_at, updated_at
+             FROM tabs ORDER BY id`,
+        )
+        .all(),
+    };
+
+    await stepSchema(store.db);
+    assert.equal(readStoreVersion(store.db), EXPECTED_VERSION);
+
+    // Prior rows, byte for byte. `tabs` is read on its pre-step columns
+    // because the step **adds one** — the new column arriving (null on
+    // existing rows, which is the honest "no navigation has committed yet")
+    // is asserted next, separately.
+    assert.deepEqual(store.db.prepare('SELECT * FROM browsers ORDER BY id').all(), before.browsers);
+    assert.deepEqual(store.db.prepare('SELECT * FROM claims ORDER BY id').all(), before.claims);
+    assert.deepEqual(
+      store.db
+        .prepare(
+          `SELECT id, claim_id, browser_id, driver_tab_id, state, opened_at, closed_at,
+                  close_failed, close_attempts, created_at, updated_at
+             FROM tabs ORDER BY id`,
+        )
+        .all(),
+      before.tabs,
+    );
+
+    // The new column, on the row that existed before the step: present, and
+    // null until a navigation records its arrival.
+    const carried = store.db
+      .prepare<{ id: string }, { lastUrl: string | null }>(
+        'SELECT last_url AS lastUrl FROM tabs WHERE id = @id',
+      )
+      .get({ id: 'tab-1' });
+    assert.deepEqual(carried, { lastUrl: null });
+    store.db
+      .prepare(`UPDATE tabs SET last_url = 'https://example.com/arrived' WHERE id = 'tab-1'`)
+      .run();
+    assert.equal(
+      store.db
+        .prepare<{ id: string }, { lastUrl: string | null }>(
+          'SELECT last_url AS lastUrl FROM tabs WHERE id = @id',
+        )
+        .get({ id: 'tab-1' })?.lastUrl,
+      'https://example.com/arrived',
+    );
+
+    // The log table exists and takes both halves of what it is for: a
+    // performed act, and a refusal whose outcome is the rule that refused.
+    store.db
+      .prepare(
+        `INSERT INTO attached_actions (claim_id, driver_tab_id, verb, ref, accessible_name, host, outcome)
+         VALUES ('claim-1', 'driver-1', 'click', 'e7', 'Search', 'example.com', 'acted'),
+                ('claim-1', 'driver-1', 'click', 'e9', 'Pay now', 'example.com', 'attached.needs_owner')`,
+      )
+      .run();
+    // And refuses an outcome that is neither the success word nor a rule
+    // name — a write path that has drifted should fail at the row, not in
+    // whatever report reads the table.
+    assert.throws(() => {
+      store.db
+        .prepare(
+          `INSERT INTO attached_actions (claim_id, verb, outcome) VALUES ('claim-1', 'click', 'maybe')`,
+        )
+        .run();
+    }, /CHECK constraint failed/);
+
+    assert.deepEqual(store.db.pragma('foreign_key_check'), []);
   }),
 );
 

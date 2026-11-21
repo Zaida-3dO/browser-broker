@@ -126,6 +126,8 @@ test('opening a store on a network location refuses before the file is created',
           attachedTabs: 3,
           attachedExtensionId: undefined,
           attachedToken: undefined,
+          attachedActSites: [],
+          ownerGrantSecret: undefined,
           // Not a fixture about BROKER_BROWSER_<NAME>_PATH: no browser here is
           // pointed at a binary of its own, and an empty map is exactly what a
           // default installation has.

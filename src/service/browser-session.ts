@@ -589,6 +589,48 @@ async function acquireAttached(
     ...(options.artifacts === undefined
       ? {}
       : { outputDirectory: path.join(options.artifacts.root, 'snapshots') }),
+    // S2's acting half. The act list gates the session door exactly as the
+    // service door gates the wire; the grant secret is carried to the
+    // session that verifies against it and nowhere else — it is never
+    // logged, and the action-log sink below writes verdicts, not tokens.
+    ...(options.environment.attachedActSites.length === 0
+      ? {}
+      : { attachedActSites: options.environment.attachedActSites }),
+    ...(options.environment.ownerGrantSecret === undefined
+      ? {}
+      : { ownerGrantSecret: options.environment.ownerGrantSecret }),
+    // The `attached_actions` table (step 13). An insert outside any
+    // arbitration transaction, on the store's own connection, the way the
+    // ledger's post-commit `append` lands: the decision is already durable
+    // and the audit row must survive the browser half failing afterwards.
+    actionLog: (entry) => {
+      options.store.db
+        .prepare<
+          {
+            claimId: string;
+            driverTabId: string;
+            verb: string;
+            ref: string | null;
+            accessibleName: string | null;
+            host: string;
+            outcome: string;
+          },
+          void
+        >(
+          `INSERT INTO attached_actions
+             (claim_id, driver_tab_id, verb, ref, accessible_name, host, outcome)
+           VALUES (@claimId, @driverTabId, @verb, @ref, @accessibleName, @host, @outcome)`,
+        )
+        .run({
+          claimId: entry.claimId,
+          driverTabId: entry.driverTabId,
+          verb: entry.verb,
+          ref: entry.ref ?? null,
+          accessibleName: entry.accessibleName ?? null,
+          host: entry.host,
+          outcome: entry.outcome,
+        });
+    },
   });
 }
 

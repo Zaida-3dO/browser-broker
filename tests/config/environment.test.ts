@@ -123,9 +123,11 @@ test('every variable this build declares is the set below, and no other', () => 
   // a deliberate edit here rather than a silent widening.
   assert.deepEqual([...DECLARED_VARIABLES].sort(), [
     'BROKER_ARTIFACTS_ROOT',
-    // The attached four (§13n): the list defaults to off, the tab cap
+    // The attached five (§13n, S2): the list defaults to off, the tab cap
     // defaults to 3, and the two tokens have no default at all. Their
-    // refusals are tested in `browsers.test.ts`.
+    // refusals are tested in `browsers.test.ts`; the act-site list's shape
+    // refusals below.
+    'BROKER_ATTACHED_ACT_SITES',
     'BROKER_ATTACHED_BROWSERS',
     'BROKER_ATTACHED_EXTENSION_ID',
     'BROKER_ATTACHED_TABS',
@@ -133,6 +135,9 @@ test('every variable this build declares is the set below, and no other', () => 
     'BROKER_DB',
     'BROKER_LAUNCH_READINESS_TIMEOUT_SECONDS',
     'BROKER_LEASE_SECONDS',
+    // S2's grant seam: unset means inert. Verified against in `tests/attach`
+    // and the session tests; here only the read.
+    'BROKER_OWNER_GRANT_SECRET',
     'BROKER_PRIVATE_BROWSERS',
     'BROKER_PROFILE_ROOT',
     'BROKER_QUEUE_SECONDS',
@@ -146,6 +151,75 @@ test('every variable this build declares is the set below, and no other', () => 
     // `upload-root.test.ts`.
     'BROKER_UPLOAD_ROOT',
   ]);
+});
+
+// ── The act-site list and the owner-grant secret (S2) ───────────────────
+
+test('the act-site list defaults empty, and blank entries and non-hosts refuse', () => {
+  // Empty is the acting capability off — the read-only posture stays the
+  // default. And an entry that can never match a navigation is a silent
+  // never-allow, so it refuses at startup rather than mystifying a lease.
+  assert.deepEqual(
+    readEnvironment({ env: {}, homedir: home, platform: 'linux' }).attachedActSites,
+    [],
+  );
+
+  for (const bad of [
+    'example.com,', // a trailing comma is an empty entry
+    ',example.com',
+    'https://example.com', // scheme, not host
+    'example.com:8080', // port
+    '/path/on/example.com', // path
+    'ex_ample.com', // underscore is not a host character
+    '*.', // a wildcard with nothing after it
+  ]) {
+    assert.throws(
+      () =>
+        readEnvironment({
+          env: { BROKER_ATTACHED_ACT_SITES: bad },
+          homedir: home,
+          platform: 'linux',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StartupRefusal, `${bad} was accepted as a host list`);
+        assert.match(error.message, /BROKER_ATTACHED_ACT_SITES/);
+        return true;
+      },
+      `${bad} must not be a legal act-site entry`,
+    );
+  }
+});
+
+test('legal act-site entries are kept verbatim, wildcards and single-label hosts included', () => {
+  const environment = readEnvironment({
+    env: { BROKER_ATTACHED_ACT_SITES: 'example.com, *.read.example.org,localhost' },
+    homedir: home,
+    platform: 'linux',
+  });
+  // Trimmed at the commas, never lower-cased or otherwise rewritten: the
+  // apex-versus-wildcard reading belongs to `src/attach/gate.ts`, and this
+  // file's job is only to say an entry is shape-legal.
+  assert.deepEqual(environment.attachedActSites, [
+    'example.com',
+    '*.read.example.org',
+    'localhost',
+  ]);
+});
+
+test('the owner-grant secret has no default and is never quoted back', () => {
+  // Unset is the answer: the seam is inert (§3.5). And when set, the
+  // refusal family this key shares (tokens) names the variable, never the
+  // value — the same discipline `BROKER_ATTACHED_TOKEN` is held to.
+  assert.equal(
+    readEnvironment({ env: {}, homedir: home, platform: 'linux' }).ownerGrantSecret,
+    undefined,
+  );
+  const set = readEnvironment({
+    env: { BROKER_OWNER_GRANT_SECRET: 'fixture-signing-key' },
+    homedir: home,
+    platform: 'linux',
+  });
+  assert.equal(set.ownerGrantSecret, 'fixture-signing-key');
 });
 
 // ── The three numbers (#12, #52) ────────────────────────────────────────
